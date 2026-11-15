@@ -6,9 +6,18 @@
 #include <string.h>
 #include <stdio.h>
 #include <wchar.h>
+#include <signal.h>
+#include <errno.h>
 #include "input.h"
 
+static volatile sig_atomic_t g_resized = 0;
+static void on_sigwinch(int sig) { (void)sig; g_resized = 1; }
+
 void input_enable_raw(void) {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_sigwinch;
+	sigaction(SIGWINCH, &sa, NULL);
 	struct termios t;
 	if (tcgetattr(STDIN_FILENO, &t) == 0) {
 		t.c_iflag &= ~(unsigned int)(IXON | IXOFF | ICRNL | INLCR | IGNCR | ISTRIP);
@@ -140,8 +149,12 @@ static KeyAction parse_csi(const char *seq) {
 
 InputEvent input_read(void) {
 	InputEvent ev = {ACT_NONE, 0};
+	if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; return ev; }
 	unsigned char b = 0;
-	if (!read_byte(&b)) return ev;
+	if (!read_byte(&b)) {
+		if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; }
+		return ev;
+	}
 
 	if (b == 27) {
 		if (!wait_byte(20)) { ev.action = ACT_ESC; return ev; }

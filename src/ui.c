@@ -176,15 +176,15 @@ void draw_fkey_bar(int y, int width) {
 }
 
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active) {
-	int normal_attr = COLOR_PAIR(1) | A_BOLD;
-	int dir_attr = COLOR_PAIR(7) | A_BOLD;
-	int exec_attr = COLOR_PAIR(8) | A_BOLD;
-	int mark_attr = COLOR_PAIR(3) | A_BOLD;
+	int normal_attr = COLOR_PAIR(1);
+	int dir_attr = COLOR_PAIR(7);
+	int exec_attr = COLOR_PAIR(8);
+	int mark_attr = COLOR_PAIR(3);
 
-	int cur_normal_attr = COLOR_PAIR(11) | A_BOLD;
-	int cur_dir_attr = COLOR_PAIR(9) | A_BOLD;
-	int cur_exec_attr = COLOR_PAIR(10) | A_BOLD;
-	int cur_mark_attr = COLOR_PAIR(4) | A_BOLD;
+	int cur_normal_attr = COLOR_PAIR(11);
+	int cur_dir_attr = COLOR_PAIR(9);
+	int cur_exec_attr = COLOR_PAIR(10);
+	int cur_mark_attr = COLOR_PAIR(4);
 
 	attrset(normal_attr);
 
@@ -306,9 +306,9 @@ void draw_screen(void) {
 			wtmp[cmd_sel_end] = L'\0';
 			char sub_utf[MAX_CMD];
 			if (wcstombs(sub_utf, wtmp + cmd_sel_start, sizeof(sub_utf)) != (size_t)-1) {
-				attron(COLOR_PAIR(2));
+				attron(COLOR_PAIR(6) | A_REVERSE);
 				mvprintw(height - 2, prompt_cols + cmd_sel_start, "%s", sub_utf);
-				attroff(COLOR_PAIR(2));
+				attroff(COLOR_PAIR(6) | A_REVERSE);
 			}
 		}
 	}
@@ -620,6 +620,7 @@ void ui_help(void) {
 		"Ctrl+PageDown  Enter selected directory",
 		"Alt+Enter      Insert current name to command line",
 		"Alt+[ / Alt+]  Insert left / right panel path",
+		"Alt+Shift+Arr  Select words (also Ctrl+Shift+Arr)",
 		"Ctrl+E / X     Command history (Up/Down in terminal)",
 		"Esc / Ctrl+U   Clear command line",
 		"Shift+Arrows   Select/unselect item and move cursor",

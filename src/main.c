@@ -159,9 +159,138 @@ static void history_save(void) {
 }
 
 
-static void print_term_prompt(const wchar_t *wcmd) {
+static void get_git_branch(const char *dir, char *out, size_t out_size) {
+	out[0] = '\0';
+	char cur[MAX_PATH];
+	snprintf(cur, sizeof(cur), "%s", dir);
+	while (1) {
+		char head[MAX_PATH + 16];
+		snprintf(head, sizeof(head), "%s/.git/HEAD", cur);
+		FILE *f = fopen(head, "r");
+		if (f) {
+			char line[256] = {0};
+			if (fgets(line, sizeof(line), f)) {
+				size_t l = strlen(line);
+				while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+				const char *ref = strstr(line, "ref: refs/heads/");
+				if (ref) snprintf(out, out_size, " (%s)", ref + 16);
+				else if (l >= 7) snprintf(out, out_size, " (%.7s)", line);
+			}
+			fclose(f);
+			return;
+		}
+		char *sl = strrchr(cur, '/');
+		if (!sl || sl == cur) break;
+		*sl = '\0';
+	}
+}
+
+static void load_prompt_template(char *tmpl, size_t tmpl_size) {
+	const char *home = getenv("HOME");
+	if (!home || !*home) home = "/tmp";
+	char dir[MAX_PATH], path[MAX_PATH + 16];
+	snprintf(dir, sizeof(dir), "%s/.config", home);
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), "%s/.config/xcommander", home);
+	mkdir(dir, 0755);
+	snprintf(path, sizeof(path), "%s/prompt", dir);
+
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		f = fopen(path, "w");
+		if (f) {
+			fprintf(f, "# xCommander Terminal Prompt (Ctrl+O)\n");
+			fprintf(f, "# Macros: \\u=user, \\h=host, \\w=path(~), \\W=dir, \\g=git, \\$=$/#, \\e=ESC\n");
+			fprintf(f, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ \n");
+			fclose(f);
+		}
+		snprintf(tmpl, tmpl_size, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ ");
+		return;
+	}
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		size_t l = strlen(line);
+		while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+		if (line[0] == '\0' || line[0] == '#') continue;
+		snprintf(tmpl, tmpl_size, "%s", line);
+		fclose(f);
+		return;
+	}
+	fclose(f);
+	snprintf(tmpl, tmpl_size, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ ");
+}
+
+static void format_custom_prompt(const char *path, char *out, size_t out_size) {
+	char tmpl[512];
+	load_prompt_template(tmpl, sizeof(tmpl));
+
+	const char *user = getenv("USER");
+	if (!user || !*user) user = "user";
+
+	char host[128] = "linux";
+	if (gethostname(host, sizeof(host) - 1) == 0) {
+		char *dot = strchr(host, '.');
+		if (dot) *dot = '\0';
+	}
+
+	char short_w[MAX_PATH];
+	const char *home = getenv("HOME");
+	if (home && *home && strncmp(path, home, strlen(home)) == 0 &&
+	    (path[strlen(home)] == '/' || path[strlen(home)] == '\0')) {
+		snprintf(short_w, sizeof(short_w), "~%s", path + strlen(home));
+	} else {
+		snprintf(short_w, sizeof(short_w), "%s", path);
+	}
+
+	const char *base_w = strrchr(short_w, '/');
+	base_w = (base_w && *(base_w + 1)) ? (base_w + 1) : short_w;
+
+	char git_br[128];
+	get_git_branch(path, git_br, sizeof(git_br));
+
+	size_t j = 0;
+	for (size_t i = 0; tmpl[i] != '\0' && j + 1 < out_size; i++) {
+		if (tmpl[i] == '\\' && tmpl[i + 1] != '\0') {
+			char next = tmpl[i + 1];
+			if (next == 'e') { out[j++] = '\033'; i++; continue; }
+			if (next == 'n') { out[j++] = '\n'; i++; continue; }
+			const char *rep = NULL;
+			if (next == 'u') rep = user;
+			else if (next == 'h') rep = host;
+			else if (next == 'w') rep = short_w;
+			else if (next == 'W') rep = base_w;
+			else if (next == 'g') rep = git_br;
+			else if (next == '$') rep = (geteuid() == 0) ? "#" : "$";
+			if (rep) {
+				size_t rlen = strlen(rep);
+				if (j + rlen >= out_size) rlen = out_size - 1 - j;
+				memcpy(out + j, rep, rlen);
+				j += rlen;
+				i++;
+				continue;
+			}
+		}
+		out[j++] = tmpl[i];
+	}
+	out[j] = '\0';
+}
+
+static void print_term_prompt_ex(const wchar_t *wcmd, int with_header) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
-	printf("\r\033[K%s$ ", path);
+	char prompt_str[MAX_PATH + 256];
+	format_custom_prompt(path, prompt_str, sizeof(prompt_str));
+	char *last_nl = strrchr(prompt_str, '\n');
+	if (last_nl) {
+		*last_nl = '\0';
+		if (with_header) {
+			const char *hdr = prompt_str;
+			while (*hdr == '\n') { printf("\r\n"); hdr++; }
+			printf("\r\033[K%s\r\n", hdr);
+		}
+		printf("\r\033[K%s", last_nl + 1);
+	} else {
+		printf("\r\033[K%s", prompt_str);
+	}
 	if (wcmd && cmd_sel_start >= 0 && cmd_sel_end > cmd_sel_start && cmd_sel_end <= cmd_len) {
 		wchar_t part[MAX_CMD];
 		char utf[MAX_CMD];
@@ -190,6 +319,10 @@ static void print_term_prompt(const wchar_t *wcmd) {
 		printf("\033[%dD", cmd_len - cmd_pos);
 	}
 	fflush(stdout);
+}
+
+static void print_term_prompt(const wchar_t *wcmd) {
+	print_term_prompt_ex(wcmd, 0);
 }
 
 static int confirm_exit(const wchar_t *wcmd) {
@@ -342,7 +475,7 @@ int main(int argc, char **argv) {
 		ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
 		if (len > 0) {
 			self[len] = '\0';
-			const char *terms[] = {"xterm", "kitty", "alacritty", "konsole", "xfce4-terminal", "gnome-terminal", NULL};
+			const char *terms[] = {"kitty", "xfce4-terminal", "konsole", "xterm", NULL};
 			for (int i = 0; terms[i]; i++) {
 				char check[128];
 				snprintf(check, sizeof(check), "command -v %s >/dev/null 2>&1", terms[i]);
@@ -392,6 +525,10 @@ int main(int argc, char **argv) {
 	while (1) {
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;
+		if (ev.action == ACT_RESIZE) {
+			if (!terminal_mode) { endwin(); refresh(); clearok(stdscr, TRUE); draw_screen(); refresh(); }
+			continue;
+		}
 		if (ev.action == ACT_CTRL_Q || ev.action == ACT_F10) {
 			if (confirm_exit(wcmd)) break;
 			if (!terminal_mode) { draw_screen(); refresh(); }
@@ -422,7 +559,7 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_CTRL_O) {
 			terminal_mode = !terminal_mode;
-			if (terminal_mode) { def_prog_mode(); endwin(); input_enable_raw(); print_term_prompt(wcmd); }
+			if (terminal_mode) { def_prog_mode(); endwin(); input_enable_raw(); print_term_prompt_ex(wcmd, 1); }
 			else { reset_prog_mode(); input_enable_raw(); clearok(stdscr, TRUE); load_directory(&left_panel); load_directory(&right_panel); refresh(); draw_screen(); refresh(); }
 			continue;
 		}
@@ -464,7 +601,7 @@ int main(int argc, char **argv) {
 			} else if (ev.action == ACT_CTRL_U || ev.action == ACT_ESC) {
 				cmd_sel_anchor = -1; cmd_update_sel(); cmd_pos = 0; cmd_len = 0; *wcmd = L'\0'; *cmd_buffer = '\0'; history_idx = history_count;
 			} else if (ev.action == ACT_ENTER) {
-				if (terminal_mode) { printf("\n"); fflush(stdout); }
+				if (terminal_mode) { printf("\r\n"); fflush(stdout); }
 				if (cmd_len > 0) {
 					wcstombs(cmd_buffer, wcmd, sizeof(cmd_buffer)); cmd_buffer[sizeof(cmd_buffer) - 1] = '\0';
 					if (strcmp(cmd_buffer, "exit") == 0 || strcmp(cmd_buffer, "quit") == 0) {
@@ -483,11 +620,10 @@ int main(int argc, char **argv) {
 				wcmd[cmd_pos++] = ev.ch; cmd_len++;
 			}
 			wcstombs(cmd_buffer, wcmd, sizeof(cmd_buffer)); cmd_buffer[sizeof(cmd_buffer) - 1] = '\0';
-			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd);
+			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(wcmd, ev.action == ACT_ENTER ? 1 : 0);
 			continue;
 		}
 		if (terminal_mode) {
-			if (ev.action == ACT_ENTER) { printf("\n"); print_term_prompt(wcmd); }
 			continue;
 		}
 		if (ev.action == ACT_TAB) active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
