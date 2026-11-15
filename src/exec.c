@@ -12,6 +12,7 @@
 #include "exec.h"
 #include "panel.h"
 #include "ui.h"
+#include "input.h"
 
 static void build_full_path(char *out, size_t out_size, const char *dir, const char *name) {
 	if (strcmp(dir, "/") == 0) {
@@ -365,7 +366,7 @@ void execute_system_command(const char *cmd) {
 		endwin();
 	}
 
-	system("stty sane");
+	input_restore_sane();
 
 	char pwd_file[128];
 	char other_pwd_file[128];
@@ -420,7 +421,7 @@ void execute_system_command(const char *cmd) {
 	}
 	unlink(other_pwd_file);
 
-	system("stty -icanon -echo -ixon -isig lnext undef");
+	input_enable_raw();
 
 	if (!terminal_mode) {
 		reset_prog_mode();

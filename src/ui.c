@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "exec.h"
 #include "panel.h"
+#include "input.h"
 
 static int build_cmd_prompt(char *out, int out_size, int max_cols) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
@@ -83,7 +84,7 @@ void ui_init(void) {
 	initscr();
 	start_color();
 	raw();
-	system("stty lnext undef");
+	input_enable_raw();
 	noecho();
 	keypad(stdscr, TRUE);
 	define_key("\033[1;2D", KEY_SLEFT);
@@ -367,19 +368,11 @@ int ui_confirm(const char *title, const char *msg) {
 
 		wrefresh(win);
 
-		int ch = wgetch(win);
-		if (ch == KEY_LEFT || ch == KEY_RIGHT || ch == '\t' || ch == KEY_BTAB) {
-			selected = 1 - selected;
-		} else if (ch == '\n' || ch == KEY_ENTER || ch == '\r' || ch == ' ') {
-			res = selected;
-			break;
-		} else if (ch == 27 || ch == 'n' || ch == 'N') {
-			res = 0;
-			break;
-		} else if (ch == 'y' || ch == 'Y') {
-			res = 1;
-			break;
-		}
+		InputEvent ev = input_read();
+		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) selected = 1 - selected;
+		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = selected; break; }
+		else if (ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L'n' || ev.ch == L'N' || ev.ch == L'т' || ev.ch == L'Т'))) { res = 0; break; }
+		else if (ev.action == ACT_CHAR && (ev.ch == L'y' || ev.ch == L'Y' || ev.ch == L'н' || ev.ch == L'Н')) { res = 1; break; }
 	}
 
 	delwin(win);
@@ -420,10 +413,8 @@ void ui_message(const char *title, const char *msg) {
 	wrefresh(win);
 
 	while (1) {
-		int ch = wgetch(win);
-		if (ch == '\n' || ch == KEY_ENTER || ch == '\r' || ch == 27 || ch == ' ') {
-			break;
-		}
+		InputEvent ev = input_read();
+		if (ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
 	}
 
 	delwin(win);
@@ -523,174 +514,69 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 		}
 		wrefresh(win);
 
-		wint_t wch;
-		int status = wget_wch(win, &wch);
-		if (status == ERR) continue;
-
-		if (status == KEY_CODE_YES) {
-			const char *kn = keyname((int)wch);
-			if (wch == KEY_DOWN) {
-				focus = (focus == 0) ? 1 : 0;
-			} else if (wch == KEY_UP) {
-				focus = 0;
-			} else if ((wch == KEY_MAX + 1 || (wch == KEY_MAX + 1 || strcmp(kn, "kLFT6") == 0))) {
-				focus = 0;
-				if (sel_anchor == -1) sel_anchor = pos;
-				pos = ui_word_left(wbuf, pos);
-			} else if ((wch == KEY_MAX + 2 || (wch == KEY_MAX + 2 || strcmp(kn, "kRIT6") == 0))) {
-				focus = 0;
-				if (sel_anchor == -1) sel_anchor = pos;
-				pos = ui_word_right(wbuf, pos, len);
-			} else if (wch == KEY_SLEFT) {
-				focus = 0;
-				if (sel_anchor == -1) sel_anchor = pos;
-				if (pos > 0) pos--;
-			} else if (wch == KEY_SRIGHT) {
-				focus = 0;
-				if (sel_anchor == -1) sel_anchor = pos;
-				if (pos < len) pos++;
-			} else if (strcmp(kn, "kLFT5") == 0) {
-				focus = 0;
-				sel_anchor = -1;
-				pos = ui_word_left(wbuf, pos);
-			} else if (strcmp(kn, "kRIT5") == 0) {
-				focus = 0;
-				sel_anchor = -1;
-				pos = ui_word_right(wbuf, pos, len);
-			} else if (wch == KEY_LEFT) {
-				sel_anchor = -1;
-				if (focus == 0 && pos > 0) pos--;
-				else if (focus == 2) focus = 1;
-				else if (focus == 1) focus = 2;
-			} else if (wch == KEY_RIGHT) {
-				sel_anchor = -1;
-				if (focus == 0 && pos < len) pos++;
-				else if (focus == 1) focus = 2;
-				else if (focus == 2) focus = 1;
-			} else if (wch == KEY_HOME) {
-				focus = 0;
-				sel_anchor = -1;
-				pos = 0;
-			} else if (wch == KEY_END) {
-				focus = 0;
-				sel_anchor = -1;
-				pos = len;
-			} else if (wch == KEY_BACKSPACE && focus == 0) {
-				if (sel_anchor != -1 && sel_anchor != pos) {
-					int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-					int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-					len -= (s2 - s1);
-					pos = s1;
-					sel_anchor = -1;
-				} else if (pos > 0) {
-					wmemmove(wbuf + pos - 1, wbuf + pos, (size_t)(len - pos + 1));
-					pos--;
-					len--;
-				}
-			} else if (wch == KEY_DC && focus == 0) {
-				if (sel_anchor != -1 && sel_anchor != pos) {
-					int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-					int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-					len -= (s2 - s1);
-					pos = s1;
-					sel_anchor = -1;
-				} else if (pos < len) {
-					wmemmove(wbuf + pos, wbuf + pos + 1, (size_t)(len - pos));
-					len--;
+		InputEvent ev = input_read();
+		if (ev.action == ACT_NONE) continue;
+		if (ev.action == ACT_DOWN) focus = (focus == 0) ? 1 : 0;
+		else if (ev.action == ACT_UP) focus = 0;
+		else if (ev.action == ACT_WORD_SEL_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_left(wbuf, pos); }
+		else if (ev.action == ACT_WORD_SEL_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_right(wbuf, pos, len); }
+		else if (ev.action == ACT_SHIFT_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos > 0) pos--; }
+		else if (ev.action == ACT_SHIFT_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos < len) pos++; }
+		else if (ev.action == ACT_CTRL_LEFT) { focus = 0; sel_anchor = -1; pos = ui_word_left(wbuf, pos); }
+		else if (ev.action == ACT_CTRL_RIGHT) { focus = 0; sel_anchor = -1; pos = ui_word_right(wbuf, pos, len); }
+		else if (ev.action == ACT_LEFT) { sel_anchor = -1; if (focus == 0 && pos > 0) pos--; else if (focus == 2) focus = 1; else if (focus == 1) focus = 2; }
+		else if (ev.action == ACT_RIGHT) { sel_anchor = -1; if (focus == 0 && pos < len) pos++; else if (focus == 1) focus = 2; else if (focus == 2) focus = 1; }
+		else if (ev.action == ACT_HOME || ev.action == ACT_CTRL_A) { focus = 0; sel_anchor = -1; pos = 0; }
+		else if (ev.action == ACT_END) { focus = 0; sel_anchor = -1; pos = len; }
+		else if (ev.action == ACT_BACKSPACE && focus == 0) {
+			if (sel_anchor != -1 && sel_anchor != pos) {
+				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
+				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
+			} else if (pos > 0) { wmemmove(wbuf + pos - 1, wbuf + pos, (size_t)(len - pos + 1)); pos--; len--; }
+		} else if (ev.action == ACT_DELETE && focus == 0) {
+			if (sel_anchor != -1 && sel_anchor != pos) {
+				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
+				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
+			} else if (pos < len) { wmemmove(wbuf + pos, wbuf + pos + 1, (size_t)(len - pos)); len--; }
+		} else if (ev.action == ACT_ESC) { res = 0; break; }
+		else if (ev.action == ACT_TAB) { focus = (focus + 1) % 3; }
+		else if (ev.action == ACT_ENTER) {
+			if (focus == 2) res = 0; else { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; res = 1; }
+			break;
+		} else if (ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_Y || ev.action == ACT_CTRL_X) {
+			int s1 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor < pos) ? sel_anchor : pos) : 0;
+			int s2 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor > pos) ? sel_anchor : pos) : len;
+			if (s2 > s1) {
+				wchar_t wsub[MAX_PATH]; wmemcpy(wsub, wbuf + s1, (size_t)(s2 - s1)); wsub[s2 - s1] = L'\0';
+				char utf_sub[MAX_PATH];
+				if (wcstombs(utf_sub, wsub, sizeof(utf_sub)) != (size_t)-1) { utf_sub[sizeof(utf_sub) - 1] = '\0'; clipboard_copy(utf_sub); }
+				if (ev.action == ACT_CTRL_X && sel_anchor != -1 && sel_anchor != pos) {
+					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
 				}
 			}
-		} else {
-			if (wch == 27) {
-				res = 0;
-				break;
-			} else if (wch == L'\t') {
-				focus = (focus + 1) % 3;
-			} else if (wch == L'\n' || wch == L'\r') {
-				if (focus == 2) {
-					res = 0;
-				} else {
-					wcstombs(buf, wbuf, (size_t)max_len);
-					buf[max_len - 1] = '\0';
-					res = 1;
-				}
-				break;
-			} else if (wch == 127 || wch == 8) {
-				focus = 0;
-				if (sel_anchor != -1 && sel_anchor != pos) {
-					int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-					int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-					len -= (s2 - s1);
-					pos = s1;
-					sel_anchor = -1;
-				} else if (pos > 0) {
-					wmemmove(wbuf + pos - 1, wbuf + pos, (size_t)(len - pos + 1));
-					pos--;
-					len--;
-				}
-			} else if (wch == 3 || wch == 25 || wch == 24) {
-				int s1 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor < pos) ? sel_anchor : pos) : 0;
-				int s2 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor > pos) ? sel_anchor : pos) : len;
-				if (s2 > s1) {
-					wchar_t wsub[MAX_PATH];
-					wmemcpy(wsub, wbuf + s1, (size_t)(s2 - s1));
-					wsub[s2 - s1] = L'\0';
-					char utf_sub[MAX_PATH];
-					if (wcstombs(utf_sub, wsub, sizeof(utf_sub)) != (size_t)-1) {
-						utf_sub[sizeof(utf_sub) - 1] = '\0';
-						clipboard_copy(utf_sub);
-					}
-					if (wch == 24 && sel_anchor != -1 && sel_anchor != pos) {
-						wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-						len -= (s2 - s1);
-						pos = s1;
-						sel_anchor = -1;
-					}
-				}
-			} else if (wch == 22) {
-				focus = 0;
-				if (sel_anchor != -1 && sel_anchor != pos) {
-					int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-					int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-					len -= (s2 - s1);
-					pos = s1;
-					sel_anchor = -1;
-				}
-				char raw[MAX_PATH] = {0};
-				if (clipboard_paste(raw, sizeof(raw)) > 0) {
-					wchar_t wadd[MAX_PATH];
-					size_t alen = mbstowcs(wadd, raw, MAX_PATH - 1);
-					if (alen != (size_t)-1 && alen > 0) {
-						if (len + (int)alen >= MAX_PATH - 2) alen = (size_t)(MAX_PATH - 2 - len);
-						wmemmove(wbuf + pos + alen, wbuf + pos, (size_t)(len - pos + 1));
-						wmemcpy(wbuf + pos, wadd, alen);
-						pos += (int)alen;
-						len += (int)alen;
-					}
-				}
-			} else if (wch == 21) {
-				focus = 0;
-				len = 0;
-				pos = 0;
-				sel_anchor = -1;
-				wbuf[0] = L'\0';
-			} else if (iswprint(wch) && len < MAX_PATH - 2) {
-				focus = 0;
-				if (sel_anchor != -1 && sel_anchor != pos) {
-					int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-					int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1));
-					len -= (s2 - s1);
-					pos = s1;
-					sel_anchor = -1;
-				}
-				wmemmove(wbuf + pos + 1, wbuf + pos, (size_t)(len - pos + 1));
-				wbuf[pos++] = (wchar_t)wch;
-				len++;
+		} else if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
+			focus = 0;
+			if (sel_anchor != -1 && sel_anchor != pos) {
+				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
+				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
 			}
+			char raw[MAX_PATH] = {0};
+			if (clipboard_paste(raw, sizeof(raw)) > 0) {
+				wchar_t wadd[MAX_PATH]; size_t alen = mbstowcs(wadd, raw, MAX_PATH - 1);
+				if (alen != (size_t)-1 && alen > 0) {
+					if (len + (int)alen >= MAX_PATH - 2) alen = (size_t)(MAX_PATH - 2 - len);
+					wmemmove(wbuf + pos + alen, wbuf + pos, (size_t)(len - pos + 1));
+					wmemcpy(wbuf + pos, wadd, alen); pos += (int)alen; len += (int)alen;
+				}
+			}
+		} else if (ev.action == ACT_CTRL_U) { focus = 0; len = 0; pos = 0; sel_anchor = -1; wbuf[0] = L'\0'; }
+		else if (ev.action == ACT_CHAR && iswprint(ev.ch) && len < MAX_PATH - 2) {
+			focus = 0;
+			if (sel_anchor != -1 && sel_anchor != pos) {
+				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
+				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
+			}
+			wmemmove(wbuf + pos + 1, wbuf + pos, (size_t)(len - pos + 1)); wbuf[pos++] = ev.ch; len++;
 		}
 	}
 
@@ -763,10 +649,8 @@ void ui_help(void) {
 	wrefresh(win);
 
 	while (1) {
-		int ch = wgetch(win);
-		if (ch == 27 || ch == '\n' || ch == KEY_ENTER || ch == '\r' || ch == ' ' || ch == KEY_F(1) || ch == KEY_F(10)) {
-			break;
-		}
+		InputEvent ev = input_read();
+		if (ev.action == ACT_ESC || ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10 || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
 	}
 
 	delwin(win);
@@ -922,21 +806,15 @@ void ui_user_menu(void) {
 		mvwprintw(win, box_h - 1, hx, "%s", hint);
 		wrefresh(win);
 
-		int ch = wgetch(win);
-		if (ch == 27 || ch == KEY_F(2) || ch == KEY_F(10)) {
-			break;
-		} else if (ch == KEY_UP && count > 0) {
-			sel = (sel > 0) ? (sel - 1) : (count - 1);
-		} else if (ch == KEY_DOWN && count > 0) {
-			sel = (sel + 1) % count;
-		} else if (ch == KEY_F(4)) {
+		InputEvent ev = input_read();
+		if (ev.action == ACT_ESC || ev.action == ACT_F2 || ev.action == ACT_F10) break;
+		else if (ev.action == ACT_UP && count > 0) sel = (sel > 0) ? (sel - 1) : (count - 1);
+		else if (ev.action == ACT_DOWN && count > 0) sel = (sel + 1) % count;
+		else if (ev.action == ACT_F4) {
 			edit_file(menu_path);
-			clearok(stdscr, TRUE);
-			refresh();
-			draw_screen();
-			refresh();
+			clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
 			reload = 1;
-		} else if ((ch == '\n' || ch == KEY_ENTER || ch == '\r') && count > 0) {
+		} else if (ev.action == ACT_ENTER && count > 0) {
 			char final_cmd[MAX_CMD];
 			expand_menu_cmd(cmds[sel], final_cmd, sizeof(final_cmd));
 			delwin(win);
