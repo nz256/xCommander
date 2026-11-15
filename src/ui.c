@@ -80,6 +80,7 @@ static void mvwprint_utf8(WINDOW *win, int y, int x, int max_cols, const char *s
 }
 
 void ui_init(void) {
+	setenv("NCURSES_NO_HARD_SCROLL", "1", 1);
 	const char *term = getenv("TERM");
 	if (!term || !*term || strcmp(term, "dumb") == 0) {
 		setenv("TERM", "xterm-256color", 1);
@@ -90,6 +91,8 @@ void ui_init(void) {
 	input_enable_raw();
 	noecho();
 	keypad(stdscr, TRUE);
+	idlok(stdscr, FALSE);
+	scrollok(stdscr, FALSE);
 	define_key("\033[1;2D", KEY_SLEFT);
 	define_key("\033[1;2C", KEY_SRIGHT);
 	define_key("\033[1;6D", KEY_MAX + 1);
@@ -118,6 +121,7 @@ void ui_init(void) {
 	set_escdelay(25);
 
 	if (COLORS >= 256) {
+		init_pair(12, 18, 252);
 		init_pair(1, 51, 18);    /* Рамки и обычные файлы (ярко-голубой на тёмно-синем) */
 		init_pair(2, 16, 37);    /* Чёрный текст на бирюзовом */
 		init_pair(3, 226, 18);   /* Выделенные файлы (ярко-жёлтый на тёмно-синем) */
@@ -130,6 +134,7 @@ void ui_init(void) {
 		init_pair(10, 46, 37);   /* Исполняемые файлы под курсором */
 		init_pair(11, 51, 37);   /* Обычные файлы под курсором (ярко-голубой на бирюзовом) */
 	} else {
+		init_pair(12, COLOR_BLUE, COLOR_WHITE);
 		init_pair(1, COLOR_CYAN, COLOR_BLUE);
 		init_pair(2, COLOR_BLACK, COLOR_CYAN);
 		init_pair(3, COLOR_YELLOW, COLOR_BLUE);
@@ -141,6 +146,7 @@ void ui_init(void) {
 		init_pair(9, COLOR_WHITE, COLOR_CYAN);
 		init_pair(10, COLOR_GREEN, COLOR_CYAN);
 		init_pair(11, COLOR_CYAN, COLOR_CYAN);
+		init_pair(12, COLOR_YELLOW, COLOR_WHITE);
 	}
 
 	bkgd(COLOR_PAIR(1));
@@ -418,12 +424,13 @@ int ui_confirm(const char *title, const char *msg) {
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	keypad(win, TRUE);
 	wbkgd(win, COLOR_PAIR(5));
+	idlok(win, FALSE);
+	scrollok(win, FALSE);
 
 	int selected = 1;
 	int res = 0;
 
 	while (1) {
-		werase(win);
 		draw_win_box(win);
 		mvwprintw(win, 0, 2, " %s ", title);
 
@@ -445,7 +452,9 @@ int ui_confirm(const char *title, const char *msg) {
 		mvwprintw(win, 3, btn_x + 10, "%s", btn_no);
 		wattroff(win, selected == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 
-		wrefresh(win);
+		printf("\033[?2026h"); fflush(stdout);
+		wnoutrefresh(win); doupdate();
+		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) selected = 1 - selected;
@@ -474,6 +483,7 @@ void ui_message(const char *title, const char *msg) {
 	int start_x = (width - box_w) / 2;
 
 	curs_set(0);
+	wnoutrefresh(stdscr);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	wbkgd(win, COLOR_PAIR(5));
 	draw_win_box(win);
@@ -666,12 +676,57 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 }
 
 void ui_help(void) {
+	const char *lines[] = {
+		"=== 1. NAVIGATION & PANELS ===",
+		"  Tab                Switch active panel (Left / Right)",
+		"  Arrows / PgUp/Dn   Move cursor / page scroll in panel",
+		"  Enter              Open directory or run executable",
+		"  Ctrl+PgUp / PgDn   Go to parent (..) / enter directory",
+		"  Ctrl+U             Swap left and right panels with cursor",
+		"  Insert / Shift+Arr Mark or unmark files and directories",
+		"  Alt+<char>         Quick search by prefix (auto EN/RU layout)",
+		"                     Continue typing without Alt; Esc to cancel",
+		"",
+		"=== 2. FILE OPERATIONS & BUILT-IN VIEWER ===",
+		"  F1                 Open this Help guide",
+		"  F2                 Open User Menu (supports submenus & hotkeys)",
+		"  F3                 Built-in Text / Hex file viewer:",
+		"                       F2: Wrap/Unwrap  |  F4: Text/Hex mode",
+		"                       F7: Search text  |  Shift+F7: Next match",
+		"  F4                 Edit file in $EDITOR (default: nano)",
+		"  Shift+F4           Create new file and open in editor",
+		"  F5 / F6            Copy / Move or rename selected items",
+		"  F7 / F8            Create directory / Delete selected items",
+		"",
+		"=== 3. COMMAND LINE & SMART CLIPBOARD ===",
+		"  Alt+[ / Alt+]      Insert Left / Right panel path into cmd",
+		"  Alt+Enter          Insert current filename into cmd",
+		"  Ctrl+C / Ctrl+X    Copy / Cut file (URI-list) or selected text",
+		"  Ctrl+V / Shift+Ins Paste file, text, or multiline script dialog",
+		"  Shift+Arrows       Select characters in command line",
+		"  Alt+Shift+Arrows   Select whole words (also Ctrl+Shift+Arrows)",
+		"  Ctrl+Left / Right  Jump cursor by words",
+		"  Ctrl+E / Ctrl+X    Browse persistent command history",
+		"  Ctrl+U / Esc       Clear command line (when text is entered)",
+		"",
+		"=== 4. TERMINAL MODE & CUSTOMIZATION ===",
+		"  Ctrl+O             Toggle full terminal mode / panels",
+		"  F10 / Ctrl+Q       Save state & history and quit xCommander",
+		"  Config files:",
+		"    ~/.config/xcommander/menu    User Menu & submenus (F2 -> F4)",
+		"    ~/.config/xcommander/prompt  Custom color PS1 prompt (\\u \\h \\w \\g \\n)",
+		"    ~/.local/state/xcommander/   Saved panel paths & command history",
+		"  Script hooks: $XC_PWD_FILE & $XC_OTHER_PWD_FILE update panel dirs"
+	};
+	int total = (int)(sizeof(lines) / sizeof(lines[0]));
+	int top = 0;
+
 	int height, width;
 	getmaxyx(stdscr, height, width);
 
-	int box_w = 64;
+	int box_w = 74;
 	if (box_w > width - 4) box_w = width - 4;
-	int box_h = 25;
+	int box_h = 22;
 	if (box_h > height - 2) box_h = height - 2;
 
 	int start_y = (height - box_h) / 2;
@@ -679,65 +734,55 @@ void ui_help(void) {
 
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	keypad(win, TRUE);
 	wbkgd(win, COLOR_PAIR(5));
+
 	draw_win_box(win);
-
-#ifndef XC_VERSION
-#define XC_VERSION "0.1"
-#endif
-#ifndef XC_BUILD
-#define XC_BUILD 1
-#endif
-	mvwprintw(win, 0, 2, " xCommander [%06d] - Help (F1) ", XC_BUILD);
-
-	const char *lines[] = {
-		"Tab            Switch between panels",
-		"Arrows         Navigate list (Left/Right by columns)",
-		"Enter          Open directory or run executable",
-		"Ctrl+PageUp    Go to parent directory (..)",
-		"Ctrl+PageDown  Enter selected directory",
-		"Alt+Enter      Insert current name to command line",
-		"Alt+[ / Alt+]  Insert left / right panel path",
-		"Alt+Shift+Arr  Select words (also Ctrl+Shift+Arr)",
-		"Ctrl+E / X     Command history (Up/Down in terminal)",
-		"Esc / Ctrl+U   Clear command line",
-		"Shift+Arrows   Select/unselect item and move cursor",
-		"Insert         Select or unselect current item",
-		"F1             Show this help",
-		"F3             View file (built-in Text/Hex viewer)",
-		"F4             Edit file ($EDITOR / vi)",
-		"Shift+F4       Create new file and open in editor",
-		"F5             Copy file or selected items",
-		"F6             Move / rename",
-		"F7             Create new directory",
-		"F8             Delete file, directory or selection",
-		"Ctrl+O         Toggle panels (terminal mode)",
-		"F10 / Ctrl+Q   Quit xCommander (or type exit)"
-	};
-	int total = (int)(sizeof(lines) / sizeof(lines[0]));
-
-	for (int i = 0; i < total && (i + 2) < (box_h - 3); i++) {
-		mvwprint_utf8(win, i + 2, 3, box_w - 6, lines[i]);
-	}
-
-	const char *btn = "[ Close ]";
-	int btn_x = (box_w - (int)strlen(btn)) / 2;
+	mvwprintw(win, 0, 2, " xCommander Help (F1) ");
+	const char *btn = "[ Close (Esc) ]";
 	wattron(win, COLOR_PAIR(2));
-	mvwprintw(win, box_h - 2, btn_x, "%s", btn);
+	mvwprintw(win, box_h - 2, (box_w - (int)strlen(btn)) / 2, "%s", btn);
 	wattroff(win, COLOR_PAIR(2));
-	wrefresh(win);
+	const char *nav = " Up/Down/PgUp/PgDn: Scroll ";
+	if (box_w > (int)strlen(nav) + 4) mvwprintw(win, box_h - 1, box_w - (int)strlen(nav) - 2, "%s", nav);
 
 	while (1) {
+		int vis = box_h - 4;
+		if (vis < 1) vis = 1;
+		if (top > total - vis) top = (total > vis) ? (total - vis) : 0;
+		if (top < 0) top = 0;
+
+		char pos_str[32];
+		snprintf(pos_str, sizeof(pos_str), " %d-%d/%d ", top + 1, (top + vis < total ? top + vis : total), total);
+		if (box_w > (int)strlen(pos_str) + 4) {
+			mvwprintw(win, 0, box_w - (int)strlen(pos_str) - 2, "%s", pos_str);
+		}
+
+		for (int i = 0; i < vis; i++) {
+			mvwhline(win, 1 + i, 2, ' ', box_w - 4);
+			if (top + i >= total) continue;
+			const char *ln = lines[top + i];
+			int is_hdr = (strncmp(ln, "===", 3) == 0);
+			if (is_hdr) wattron(win, COLOR_PAIR(5) | A_UNDERLINE);
+			mvwprint_utf8(win, 1 + i, 2, box_w - 4, ln);
+			if (is_hdr) wattroff(win, COLOR_PAIR(5) | A_UNDERLINE);
+		}
+		printf("\033[?2026h"); fflush(stdout);
+		wnoutrefresh(win); doupdate();
+		printf("\033[?2026l"); fflush(stdout);
+
 		InputEvent ev = input_read();
-		if (ev.action == ACT_ESC || ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10 || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
+		if (ev.action == ACT_ESC || ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10) break;
+		else if (ev.action == ACT_UP && top > 0) top--;
+		else if (ev.action == ACT_DOWN && top + vis < total) top++;
+		else if (ev.action == ACT_PGUP) { top -= vis; if (top < 0) top = 0; }
+		else if (ev.action == ACT_PGDN) { top += vis; }
+		else if (ev.action == ACT_HOME) top = 0;
+		else if (ev.action == ACT_END) top = total;
 	}
 
 	delwin(win);
 	touchwin(stdscr);
 }
-
-#include <sys/stat.h>
 
 static void get_user_menu_path(char *out, size_t out_size) {
 	const char *cfg = getenv("XDG_CONFIG_HOME");

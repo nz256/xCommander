@@ -473,7 +473,12 @@ size_t clipboard_paste_raw(char *out, size_t out_size) {
 	const char *cmd = "( [ -n \"$WAYLAND_DISPLAY\" ] && wl-paste -n ) 2>/dev/null || xclip -o -selection clipboard 2>/dev/null || xsel --clipboard --output 2>/dev/null";
 	FILE *p = popen(cmd, "r");
 	if (!p) return 0;
-	size_t n = fread(out, 1, out_size - 1, p);
+	size_t n = 0;
+	while (n + 1 < out_size) {
+		size_t r = fread(out + n, 1, out_size - 1 - n, p);
+		if (r == 0) break;
+		n += r;
+	}
 	pclose(p);
 	out[n] = '\0';
 	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = '\0';

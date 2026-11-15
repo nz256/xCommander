@@ -345,6 +345,42 @@ static void format_custom_prompt(const char *path, char *out, size_t out_size) {
 	out[j] = '\0';
 }
 
+static void get_state_path(char *out, size_t out_size) {
+	char hist_path[MAX_PATH + 32];
+	get_history_path(hist_path, sizeof(hist_path));
+	char *sl = strrchr(hist_path, '/');
+	if (sl) *sl = '\0';
+	snprintf(out, out_size, "%s/state", hist_path);
+}
+
+static void state_save(void) {
+	char path[MAX_PATH + 32];
+	get_state_path(path, sizeof(path));
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	fprintf(f, "%s\n%s\n%d\n",
+		left_panel.current_path,
+		right_panel.current_path,
+		(active_panel == &right_panel) ? 1 : 0);
+	fclose(f);
+}
+
+static int state_load(char *lpath, size_t lsize, char *rpath, size_t rsize, int *act_right) {
+	char path[MAX_PATH + 32];
+	get_state_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (!f) return 0;
+	char b1[MAX_PATH] = {0}, b2[MAX_PATH] = {0}, b3[32] = {0};
+	if (!fgets(b1, sizeof(b1), f) || !fgets(b2, sizeof(b2), f)) { fclose(f); return 0; }
+	if (fgets(b3, sizeof(b3), f)) *act_right = (atoi(b3) == 1) ? 1 : 0;
+	fclose(f);
+	size_t l1 = strlen(b1); while (l1 > 0 && (b1[l1 - 1] == '\n' || b1[l1 - 1] == '\r')) b1[--l1] = '\0';
+	size_t l2 = strlen(b2); while (l2 > 0 && (b2[l2 - 1] == '\n' || b2[l2 - 1] == '\r')) b2[--l2] = '\0';
+	if (l1 > 0) snprintf(lpath, lsize, "%s", b1);
+	if (l2 > 0) snprintf(rpath, rsize, "%s", b2);
+	return (l1 > 0 && l2 > 0);
+}
+
 static void print_term_prompt_ex(const wchar_t *wcmd, int with_header) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
 	char prompt_str[MAX_PATH + 256];
@@ -568,15 +604,24 @@ int main(int argc, char **argv) {
         history_load();
 
 	char cwd[MAX_PATH];
+	if (getcwd(cwd, sizeof(cwd)) == NULL) strcpy(cwd, ".");
+	char saved_l[MAX_PATH] = {0}, saved_r[MAX_PATH] = {0};
+	int act_right = 0;
+	int has_state = state_load(saved_l, sizeof(saved_l), saved_r, sizeof(saved_r), &act_right);
+
 	if (argc > 1 && argv[1][0] != '\0') {
 		snprintf(left_panel.current_path, MAX_PATH, "%s", argv[1]);
-		snprintf(right_panel.current_path, MAX_PATH, "%s", argv[1]);
-	} else if (getcwd(cwd, sizeof(cwd)) != NULL) {
+		if (has_state && access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
+		else strcpy(right_panel.current_path, cwd);
+		act_right = 0;
+	} else if (has_state) {
+		if (access(saved_l, R_OK | X_OK) == 0) snprintf(left_panel.current_path, MAX_PATH, "%s", saved_l);
+		else strcpy(left_panel.current_path, cwd);
+		if (access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
+		else strcpy(right_panel.current_path, cwd);
+	} else {
 		strcpy(left_panel.current_path, cwd);
 		strcpy(right_panel.current_path, cwd);
-	} else {
-		strcpy(left_panel.current_path, ".");
-		strcpy(right_panel.current_path, ".");
 	}
 
 	left_panel.parent_name[0] = '\0';
@@ -584,7 +629,7 @@ int main(int argc, char **argv) {
 
 	load_directory(&left_panel);
 	load_directory(&right_panel);
-	active_panel = &left_panel;
+	active_panel = act_right ? &right_panel : &left_panel;
 
 	clear();
 	refresh();
@@ -622,7 +667,7 @@ int main(int argc, char **argv) {
 				if (clipboard_paste_files(active_panel) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
 				draw_screen(); refresh();
 			} else {
-				char raw_clip[8192] = {0};
+				char raw_clip[65536] = {0};
 				if (!terminal_mode && clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
 					if (ui_multiline_paste(raw_clip)) {
 						char tmp_sh[128];
@@ -630,7 +675,7 @@ int main(int argc, char **argv) {
 						FILE *sf = fopen(tmp_sh, "w");
 						if (sf) {
 							fputs(raw_clip, sf);
-							fputc('\n', sf);
+							fputs("\nprintf \"\\n--- Done (exit: $?). Press any key... ---\"\nread -n 1 -s -r\n", sf);
 							fclose(sf);
 							char run_sh[160];
 							snprintf(run_sh, sizeof(run_sh), ". \"%s\"", tmp_sh);
@@ -646,6 +691,25 @@ int main(int argc, char **argv) {
 					if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(wcmd); }
 				}
 			}
+			continue;
+		}
+		if (!terminal_mode && cmd_len == 0 && ev.action == ACT_CTRL_U) {
+			char tmp_path[MAX_PATH];
+			snprintf(tmp_path, sizeof(tmp_path), "%s", left_panel.current_path);
+			snprintf(left_panel.current_path, sizeof(left_panel.current_path), "%s", right_panel.current_path);
+			snprintf(right_panel.current_path, sizeof(right_panel.current_path), "%s", tmp_path);
+			int l_sel = left_panel.selected;
+			int r_sel = right_panel.selected;
+			left_panel.parent_name[0] = '\0';
+			right_panel.parent_name[0] = '\0';
+			quick_search_reset();
+			load_directory(&left_panel);
+			load_directory(&right_panel);
+			if (r_sel < left_panel.count) left_panel.selected = r_sel;
+			if (l_sel < right_panel.count) right_panel.selected = l_sel;
+			active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			draw_screen();
+			refresh();
 			continue;
 		}
 		if (ev.action == ACT_CTRL_O) {
@@ -790,6 +854,7 @@ int main(int argc, char **argv) {
 		if (!terminal_mode) { draw_screen(); refresh(); }
 	}
 	history_save();
+	state_save();
 	input_restore_sane();
 	endwin();
 	return 0;
