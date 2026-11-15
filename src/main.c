@@ -300,17 +300,40 @@ static void clipboard_copy_from_cmd(const wchar_t *wcmd) {
 	}
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	if (!isatty(STDIN_FILENO)) {
+		setenv("TERM", "xterm-256color", 1);
+		char self[MAX_PATH];
+		ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
+		if (len > 0) {
+			self[len] = '\0';
+			const char *terms[] = {"konsole", "alacritty", "kitty", "xfce4-terminal", "gnome-terminal", "xterm", NULL};
+			for (int i = 0; terms[i]; i++) {
+				char check[128];
+				snprintf(check, sizeof(check), "command -v %s >/dev/null 2>&1", terms[i]);
+				if (system(check) == 0) {
+					if (strcmp(terms[i], "gnome-terminal") == 0) {
+						execlp(terms[i], terms[i], "--", self, (argc > 1 ? argv[1] : NULL), (char *)NULL);
+					} else {
+						execlp(terms[i], terms[i], "-e", self, (argc > 1 ? argv[1] : NULL), (char *)NULL);
+					}
+				}
+			}
+		}
+		return 1;
+	}
 	setlocale(LC_ALL, "");
 	ui_init();
 	nonl();
 	system("stty -ixon");
-	printf("\033[>4;2m");
-	fflush(stdout);
+	
         history_load();
 
 	char cwd[MAX_PATH];
-	if (getcwd(cwd, sizeof(cwd)) != NULL) {
+	if (argc > 1 && argv[1][0] != '\0') {
+		snprintf(left_panel.current_path, MAX_PATH, "%s", argv[1]);
+		snprintf(right_panel.current_path, MAX_PATH, "%s", argv[1]);
+	} else if (getcwd(cwd, sizeof(cwd)) != NULL) {
 		strcpy(left_panel.current_path, cwd);
 		strcpy(right_panel.current_path, cwd);
 	} else {
@@ -396,8 +419,7 @@ int main(void) {
 				raw();
 				system("stty lnext undef");
 				clearok(stdscr, TRUE);
-				printf("\033[>4;2m");
-				fflush(stdout);
+				
 				load_directory(&left_panel);
 				load_directory(&right_panel);
 				refresh();
@@ -436,14 +458,14 @@ int main(void) {
 		if (!terminal_mode && status == OK && wch == 10) {
 			is_insert_name = 1;
 		} else if (!terminal_mode && status == OK && wch == 27) {
-			nodelay(stdscr, TRUE);
+			wtimeout(stdscr, 15);
 			char seq[32] = {0};
 			int slen = 0;
 			wint_t nw;
 			while (slen < 30 && get_wch(&nw) == OK) {
 				seq[slen++] = (char)nw;
 			}
-			nodelay(stdscr, FALSE);
+			wtimeout(stdscr, -1);
 			if (strstr(seq, "27;5;99~") != NULL || strstr(seq, "99;5u") != NULL) {
 				if (cmd_len == 0 && cmd_sel_start < 0) clipboard_stage_files(active_panel, 0);
 				else clipboard_copy_from_cmd(wcmd);
@@ -474,6 +496,36 @@ int main(void) {
 			    strstr(seq, "27;5;13~") != NULL ||
 			    strstr(seq, "13;5u") != NULL) {
 				is_insert_name = 1;
+			} else if (strcmp(seq, "OP") == 0 || strcmp(seq, "[11~") == 0 || strcmp(seq, "[1;1P") == 0) {
+				wch = KEY_F(1); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OQ") == 0 || strcmp(seq, "[12~") == 0 || strcmp(seq, "[1;1Q") == 0) {
+				wch = KEY_F(2); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OR") == 0 || strcmp(seq, "[13~") == 0 || strcmp(seq, "[1;1R") == 0) {
+				wch = KEY_F(3); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OS") == 0 || strcmp(seq, "[14~") == 0 || strcmp(seq, "[1;1S") == 0) {
+				wch = KEY_F(4); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[15~") == 0 || strcmp(seq, "[15;1~") == 0) {
+				wch = KEY_F(5); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OP") == 0 || strcmp(seq, "[11~") == 0 || strcmp(seq, "[1;2P") == 0) {
+				wch = KEY_F(1); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OQ") == 0 || strcmp(seq, "[12~") == 0 || strcmp(seq, "[1;2Q") == 0) {
+				wch = KEY_F(2); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OR") == 0 || strcmp(seq, "[13~") == 0 || strcmp(seq, "[1;2R") == 0) {
+				wch = KEY_F(3); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "OS") == 0 || strcmp(seq, "[14~") == 0 || strcmp(seq, "[1;2S") == 0) {
+				wch = KEY_F(4); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[15~") == 0) {
+				wch = KEY_F(5); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[[A") == 0 || strcmp(seq, "[A") == 0) {
+				wch = KEY_F(1); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[[B") == 0 || strcmp(seq, "[B") == 0) {
+				wch = KEY_F(2); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[[C") == 0 || strcmp(seq, "[C") == 0) {
+				wch = KEY_F(3); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[[D") == 0 || strcmp(seq, "[D") == 0) {
+				wch = KEY_F(4); status = KEY_CODE_YES;
+			} else if (strcmp(seq, "[[E") == 0 || strcmp(seq, "[E") == 0) {
+				wch = KEY_F(5); status = KEY_CODE_YES;
 			}
 		}
 		if (is_insert_name) {

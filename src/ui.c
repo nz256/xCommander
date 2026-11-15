@@ -76,26 +76,58 @@ static void mvwprint_utf8(WINDOW *win, int y, int x, int max_cols, const char *s
 }
 
 void ui_init(void) {
+	const char *term = getenv("TERM");
+	if (!term || !*term || strcmp(term, "dumb") == 0) {
+		setenv("TERM", "xterm-256color", 1);
+	}
 	initscr();
 	start_color();
 	raw();
 	system("stty lnext undef");
 	noecho();
 	keypad(stdscr, TRUE);
+	define_key("\033OP", KEY_F(1));
+	define_key("\033OQ", KEY_F(2));
+	define_key("\033OR", KEY_F(3));
+	define_key("\033OS", KEY_F(4));
+	define_key("\033[11~", KEY_F(1));
+	define_key("\033[12~", KEY_F(2));
+	define_key("\033[13~", KEY_F(3));
+	define_key("\033[14~", KEY_F(4));
+	define_key("\033[15~", KEY_F(5));
+	define_key("\033[1;1P", KEY_F(1));
+	define_key("\033[1;1Q", KEY_F(2));
+	define_key("\033[1;1R", KEY_F(3));
+	define_key("\033[1;1S", KEY_F(4));
+	define_key("\033[15;1~", KEY_F(5));
 	curs_set(0);
 	set_escdelay(25);
 
-	init_pair(1, COLOR_CYAN, COLOR_BLUE);     /* Рамки и обычные файлы (ярко-голубой с A_BOLD) */
-	init_pair(2, COLOR_BLACK, COLOR_CYAN);    /* Чёрный текст на бирюзовом (курсор обычных файлов, F-клавиши) */
-	init_pair(3, COLOR_YELLOW, COLOR_BLUE);   /* Выделенные файлы (ярко-жёлтый с A_BOLD) */
-	init_pair(4, COLOR_YELLOW, COLOR_CYAN);   /* Выделенные файлы под курсором */
-	init_pair(5, COLOR_BLACK, COLOR_WHITE);   /* Модальные окна */
-	init_pair(6, COLOR_WHITE, COLOR_BLACK);   /* Командная строка и цифры F-клавиш */
-	init_pair(7, COLOR_WHITE, COLOR_BLUE);    /* Каталоги (ярко-белый с A_BOLD) */
-	init_pair(8, COLOR_GREEN, COLOR_BLUE);    /* Исполняемые файлы (ярко-зелёный с A_BOLD) */
-	init_pair(9, COLOR_WHITE, COLOR_CYAN);    /* Каталоги под курсором */
-	init_pair(10, COLOR_GREEN, COLOR_CYAN);   /* Исполняемые файлы под курсором */
-	init_pair(11, COLOR_CYAN, COLOR_CYAN);    /* Обычные файлы под курсором (ярко-голубой) */
+	if (COLORS >= 256) {
+		init_pair(1, 51, 18);    /* Рамки и обычные файлы (ярко-голубой на тёмно-синем) */
+		init_pair(2, 16, 37);    /* Чёрный текст на бирюзовом */
+		init_pair(3, 226, 18);   /* Выделенные файлы (ярко-жёлтый на тёмно-синем) */
+		init_pair(4, 226, 37);   /* Выделенные файлы под курсором */
+		init_pair(5, 16, 252);   /* Модальные окна (чёрный на светло-сером) */
+		init_pair(6, 231, 16);   /* Командная строка и цифры F-клавиш */
+		init_pair(7, 231, 18);   /* Каталоги (ярко-белый на тёмно-синем) */
+		init_pair(8, 46, 18);    /* Исполняемые файлы (ярко-зелёный на тёмно-синем) */
+		init_pair(9, 231, 37);   /* Каталоги под курсором */
+		init_pair(10, 46, 37);   /* Исполняемые файлы под курсором */
+		init_pair(11, 51, 37);   /* Обычные файлы под курсором (ярко-голубой на бирюзовом) */
+	} else {
+		init_pair(1, COLOR_CYAN, COLOR_BLUE);
+		init_pair(2, COLOR_BLACK, COLOR_CYAN);
+		init_pair(3, COLOR_YELLOW, COLOR_BLUE);
+		init_pair(4, COLOR_YELLOW, COLOR_CYAN);
+		init_pair(5, COLOR_BLACK, COLOR_WHITE);
+		init_pair(6, COLOR_WHITE, COLOR_BLACK);
+		init_pair(7, COLOR_WHITE, COLOR_BLUE);
+		init_pair(8, COLOR_GREEN, COLOR_BLUE);
+		init_pair(9, COLOR_WHITE, COLOR_CYAN);
+		init_pair(10, COLOR_GREEN, COLOR_CYAN);
+		init_pair(11, COLOR_CYAN, COLOR_CYAN);
+	}
 
 	bkgd(COLOR_PAIR(1));
 }
