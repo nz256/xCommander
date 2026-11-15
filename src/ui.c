@@ -86,6 +86,16 @@ void ui_init(void) {
 	system("stty lnext undef");
 	noecho();
 	keypad(stdscr, TRUE);
+	define_key("\033[1;2D", KEY_SLEFT);
+	define_key("\033[1;2C", KEY_SRIGHT);
+	define_key("\033[1;6D", KEY_MAX + 1);
+	define_key("\033[1;6C", KEY_MAX + 2);
+	define_key("\033[1;4D", KEY_MAX + 1);
+	define_key("\033[1;4C", KEY_MAX + 2);
+	define_key("\033[1;2D", KEY_SLEFT);
+	define_key("\033[1;2C", KEY_SRIGHT);
+	define_key("\033[1;6D", KEY_MAX + 1);
+	define_key("\033[1;6C", KEY_MAX + 2);
 	define_key("\033OP", KEY_F(1));
 	define_key("\033OQ", KEY_F(2));
 	define_key("\033OR", KEY_F(3));
@@ -523,11 +533,11 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 				focus = (focus == 0) ? 1 : 0;
 			} else if (wch == KEY_UP) {
 				focus = 0;
-			} else if (strcmp(kn, "kLFT6") == 0) {
+			} else if ((wch == KEY_MAX + 1 || (wch == KEY_MAX + 1 || strcmp(kn, "kLFT6") == 0))) {
 				focus = 0;
 				if (sel_anchor == -1) sel_anchor = pos;
 				pos = ui_word_left(wbuf, pos);
-			} else if (strcmp(kn, "kRIT6") == 0) {
+			} else if ((wch == KEY_MAX + 2 || (wch == KEY_MAX + 2 || strcmp(kn, "kRIT6") == 0))) {
 				focus = 0;
 				if (sel_anchor == -1) sel_anchor = pos;
 				pos = ui_word_right(wbuf, pos, len);
@@ -722,7 +732,8 @@ void ui_help(void) {
 		"Enter          Open directory or run executable",
 		"Ctrl+PageUp    Go to parent directory (..)",
 		"Ctrl+PageDown  Enter selected directory",
-		"Ctrl+J         Insert current name to command line",
+		"Alt+Enter      Insert current name to command line",
+		"Alt+[ / Alt+]  Insert left / right panel path",
 		"Ctrl+E / X     Command history (Up/Down in terminal)",
 		"Esc / Ctrl+U   Clear command line",
 		"Shift+Arrows   Select/unselect item and move cursor",

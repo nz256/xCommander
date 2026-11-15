@@ -300,6 +300,41 @@ static void clipboard_copy_from_cmd(const wchar_t *wcmd) {
 	}
 }
 
+static void insert_panel_path_to_cmd(wchar_t *wcmd, const Panel *p) {
+	if (!p || !*p->current_path) return;
+	char formatted[MAX_PATH + 8];
+	if (strchr(p->current_path, ' ') != NULL) {
+		snprintf(formatted, sizeof(formatted), "\"%s\" ", p->current_path);
+	} else if (strcmp(p->current_path, "/") == 0) {
+		snprintf(formatted, sizeof(formatted), "/");
+	} else {
+		snprintf(formatted, sizeof(formatted), "%s/", p->current_path);
+	}
+
+	wchar_t wadd[MAX_PATH + 8];
+	size_t add_len = mbstowcs(wadd, formatted, MAX_PATH + 7);
+	if (add_len == (size_t)-1 || add_len == 0) return;
+	wadd[add_len] = L'\0';
+
+	if (cmd_sel_start >= 0) cmd_delete_sel(wcmd);
+
+	if (cmd_pos > 0 && wcmd[cmd_pos - 1] != L' ' && cmd_len < MAX_CMD - 2) {
+		wmemmove(wcmd + cmd_pos + 1, wcmd + cmd_pos, (size_t)(cmd_len - cmd_pos + 1));
+		wcmd[cmd_pos++] = L' ';
+		cmd_len++;
+	}
+
+	if (cmd_len + (int)add_len < MAX_CMD - 1) {
+		wmemmove(wcmd + cmd_pos + add_len, wcmd + cmd_pos, (size_t)(cmd_len - cmd_pos + 1));
+		wmemcpy(wcmd + cmd_pos, wadd, add_len);
+		cmd_pos += (int)add_len;
+		cmd_len += (int)add_len;
+	}
+
+	wcstombs(cmd_buffer, wcmd, sizeof(cmd_buffer));
+	cmd_buffer[sizeof(cmd_buffer) - 1] = '\0';
+}
+
 int main(int argc, char **argv) {
 	if (!isatty(STDIN_FILENO)) {
 		setenv("TERM", "xterm-256color", 1);
@@ -307,7 +342,7 @@ int main(int argc, char **argv) {
 		ssize_t len = readlink("/proc/self/exe", self, sizeof(self) - 1);
 		if (len > 0) {
 			self[len] = '\0';
-			const char *terms[] = {"konsole", "alacritty", "kitty", "xfce4-terminal", "gnome-terminal", "xterm", NULL};
+			const char *terms[] = {"xterm", "kitty", "alacritty", "konsole", "xfce4-terminal", "gnome-terminal", NULL};
 			for (int i = 0; terms[i]; i++) {
 				char check[128];
 				snprintf(check, sizeof(check), "command -v %s >/dev/null 2>&1", terms[i]);
@@ -326,6 +361,8 @@ int main(int argc, char **argv) {
 	ui_init();
 	nonl();
 	system("stty -ixon");
+	printf("\033[>4;2m");
+	fflush(stdout);
 	
         history_load();
 
@@ -385,6 +422,13 @@ int main(int argc, char **argv) {
 			} else {
 				clipboard_stage_files(active_panel, 1);
 			}
+			continue;
+		}
+
+		/* Ctrl+] (29): вставить путь правой панели в командную строку */
+		if (status == OK && wch == 29) {
+			insert_panel_path_to_cmd(wcmd, &right_panel);
+			if (!terminal_mode) { draw_screen(); doupdate(); } else { print_term_prompt(wcmd); }
 			continue;
 		}
 
@@ -482,6 +526,28 @@ int main(int argc, char **argv) {
 					continue;
 				}
 			}
+			if (strstr(seq, "27;5;91~") != NULL || strstr(seq, "91;5u") != NULL || strcmp(seq, "[") == 0) {
+				insert_panel_path_to_cmd(wcmd, &left_panel);
+				draw_screen();
+				doupdate();
+				continue;
+			}
+			if (strstr(seq, "27;5;93~") != NULL || strstr(seq, "93;5u") != NULL || strcmp(seq, "]") == 0) {
+				insert_panel_path_to_cmd(wcmd, &right_panel);
+				draw_screen();
+				doupdate();
+				continue;
+			}
+			if (strstr(seq, "27;5;111~") != NULL || strstr(seq, "111;5u") != NULL) {
+				terminal_mode = 1;
+				def_prog_mode();
+				printf("\033[>4;0m");
+				fflush(stdout);
+				endwin();
+				system("stty -icanon -echo -ixon -isig lnext undef");
+				print_term_prompt(wcmd);
+				continue;
+			}
 			if (strstr(seq, "27;5;118~") != NULL || strstr(seq, "118;5u") != NULL) {
 				if (cmd_len == 0 && clipboard_has_files()) {
 					if (clipboard_paste_files(active_panel) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
@@ -496,6 +562,38 @@ int main(int argc, char **argv) {
 			    strstr(seq, "27;5;13~") != NULL ||
 			    strstr(seq, "13;5u") != NULL) {
 				is_insert_name = 1;
+			} else if ((strcmp(seq, "[1;6D") == 0 || strcmp(seq, "[1;4D") == 0)) {
+				if (cmd_len > 0) {
+					if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos;
+					cmd_pos = word_jump_left(wcmd, cmd_pos);
+					cmd_update_sel();
+					if (!terminal_mode) { draw_screen(); doupdate(); } else { print_term_prompt(wcmd); }
+				}
+				continue;
+			} else if ((strcmp(seq, "[1;6C") == 0 || strcmp(seq, "[1;4C") == 0)) {
+				if (cmd_len > 0) {
+					if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos;
+					cmd_pos = word_jump_right(wcmd, cmd_pos, cmd_len);
+					cmd_update_sel();
+					if (!terminal_mode) { draw_screen(); doupdate(); } else { print_term_prompt(wcmd); }
+				}
+				continue;
+			} else if (strcmp(seq, "[1;6D") == 0) {
+				if (cmd_len > 0) {
+					if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos;
+					cmd_pos = word_jump_left(wcmd, cmd_pos);
+					cmd_update_sel();
+					if (!terminal_mode) { draw_screen(); doupdate(); } else { print_term_prompt(wcmd); }
+				}
+				continue;
+			} else if (strcmp(seq, "[1;6C") == 0) {
+				if (cmd_len > 0) {
+					if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos;
+					cmd_pos = word_jump_right(wcmd, cmd_pos, cmd_len);
+					cmd_update_sel();
+					if (!terminal_mode) { draw_screen(); doupdate(); } else { print_term_prompt(wcmd); }
+				}
+				continue;
 			} else if (strcmp(seq, "OP") == 0 || strcmp(seq, "[11~") == 0 || strcmp(seq, "[1;1P") == 0) {
 				wch = KEY_F(1); status = KEY_CODE_YES;
 			} else if (strcmp(seq, "OQ") == 0 || strcmp(seq, "[12~") == 0 || strcmp(seq, "[1;1Q") == 0) {

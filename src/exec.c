@@ -367,12 +367,58 @@ void execute_system_command(const char *cmd) {
 
 	system("stty sane");
 
-	char full_cmd[MAX_CMD + MAX_PATH + 32];
+	char pwd_file[128];
+	char other_pwd_file[128];
+	snprintf(pwd_file, sizeof(pwd_file), "/tmp/xc_pwd_%d", (int)getpid());
+	snprintf(other_pwd_file, sizeof(other_pwd_file), "/tmp/xc_other_pwd_%d", (int)getpid());
+	unlink(pwd_file);
+	unlink(other_pwd_file);
+
+	char full_cmd[MAX_CMD + MAX_PATH + 128];
 	const char *shell = getenv("SHELL");
 	if (!shell) shell = "/bin/bash";
 
-	snprintf(full_cmd, sizeof(full_cmd), "%s -ic 'cd \"%s\" && %s'", shell, active_panel->current_path, cmd);
+	setenv("XC_PWD_FILE", pwd_file, 1);
+	setenv("XC_OTHER_PWD_FILE", other_pwd_file, 1);
+	snprintf(full_cmd, sizeof(full_cmd), "%s -ic 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
 	system(full_cmd);
+	unsetenv("XC_PWD_FILE");
+	unsetenv("XC_OTHER_PWD_FILE");
+
+	FILE *pf = fopen(pwd_file, "r");
+	if (pf) {
+		char new_dir[MAX_PATH];
+		if (fgets(new_dir, sizeof(new_dir), pf) != NULL) {
+			size_t len = strlen(new_dir);
+			while (len > 0 && (new_dir[len - 1] == '\n' || new_dir[len - 1] == '\r')) {
+				new_dir[--len] = '\0';
+			}
+			if (len > 0 && active_panel && strcmp(active_panel->current_path, new_dir) != 0) {
+				snprintf(active_panel->current_path, MAX_PATH, "%s", new_dir);
+				load_directory(active_panel);
+			}
+		}
+		fclose(pf);
+	}
+	unlink(pwd_file);
+
+	Panel *other_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
+	FILE *opf = fopen(other_pwd_file, "r");
+	if (opf) {
+		char other_dir[MAX_PATH];
+		if (fgets(other_dir, sizeof(other_dir), opf) != NULL) {
+			size_t len = strlen(other_dir);
+			while (len > 0 && (other_dir[len - 1] == '\n' || other_dir[len - 1] == '\r')) {
+				other_dir[--len] = '\0';
+			}
+			if (len > 0 && other_panel && strcmp(other_panel->current_path, other_dir) != 0) {
+				snprintf(other_panel->current_path, MAX_PATH, "%s", other_dir);
+				load_directory(other_panel);
+			}
+		}
+		fclose(opf);
+	}
+	unlink(other_pwd_file);
 
 	system("stty -icanon -echo -ixon -isig lnext undef");
 
