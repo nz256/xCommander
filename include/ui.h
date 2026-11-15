@@ -11,5 +11,6 @@ int ui_confirm(const char *title, const char *msg);
 void ui_message(const char *title, const char *msg);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
 void ui_help(void);
+void ui_user_menu(void);
 
 #endif

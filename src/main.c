@@ -619,6 +619,8 @@ int main(void) {
 			active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
 		} else if (wch == KEY_F(1)) {
 			ui_help();
+		} else if (wch == KEY_F(2)) {
+			ui_user_menu();
 		} else if (wch == KEY_F(3)) {
 			if (active_panel->count > 0) {
 				FileEntry *current = &active_panel->files[active_panel->selected];

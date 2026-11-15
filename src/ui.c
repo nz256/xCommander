@@ -6,6 +6,7 @@
 #include <wctype.h>
 #include "ui.h"
 #include "exec.h"
+#include "panel.h"
 
 static int build_cmd_prompt(char *out, int out_size, int max_cols) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
@@ -180,7 +181,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	int title_x = start_x + (width - title_w) / 2;
 	if (title_x < start_x + 1) title_x = start_x + 1;
 
-	attrset(is_active ? (A_NORMAL | COLOR_PAIR(2)) : normal_attr);
+	attrset(is_active ? (A_NORMAL | COLOR_PAIR(2)) : (attr_t)normal_attr);
 	mvprintw(start_y, title_x, " %s ", short_path);
 	attrset(normal_attr);
 
@@ -722,6 +723,185 @@ void ui_help(void) {
 		int ch = wgetch(win);
 		if (ch == 27 || ch == '\n' || ch == KEY_ENTER || ch == '\r' || ch == ' ' || ch == KEY_F(1) || ch == KEY_F(10)) {
 			break;
+		}
+	}
+
+	delwin(win);
+	touchwin(stdscr);
+}
+
+#include <sys/stat.h>
+
+static void get_user_menu_path(char *out, size_t out_size) {
+	const char *cfg = getenv("XDG_CONFIG_HOME");
+	char dir[MAX_PATH];
+	if (cfg && *cfg) {
+		snprintf(dir, sizeof(dir), "%s/xcommander", cfg);
+	} else {
+		const char *home = getenv("HOME");
+		if (!home || !*home) home = "/tmp";
+		char cdir[MAX_PATH];
+		snprintf(cdir, sizeof(cdir), "%s/.config", home);
+		mkdir(cdir, 0755);
+		snprintf(dir, sizeof(dir), "%s/.config/xcommander", home);
+	}
+	mkdir(dir, 0755);
+	snprintf(out, out_size, "%s/menu", dir);
+}
+
+static void ensure_default_user_menu(const char *path) {
+	struct stat st;
+	if (stat(path, &st) == 0) return;
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	fprintf(f, "# xCommander User Menu (F2)\n");
+	fprintf(f, "# Format: Title | command\n");
+	fprintf(f, "# Macros: %%f = current item, %%p = active path, %%o = other panel path\n\n");
+	fprintf(f, "Pack current item to .tar.gz | tar -czvf \"%%f.tar.gz\" \"%%f\"\n");
+	fprintf(f, "Pack current item to .zip    | zip -r \"%%f.zip\" \"%%f\"\n");
+	fprintf(f, "Extract archive here         | tar -xvf \"%%f\" || unzip \"%%f\"\n");
+	fprintf(f, "Disk usage of current dir    | du -sh . && read -n 1 -s -r -p \"Press any key...\"\n");
+	fprintf(f, "Git status                   | git status && read -n 1 -s -r -p \"Press any key...\"\n");
+	fclose(f);
+}
+
+static void expand_menu_cmd(const char *tmpl, char *out, size_t out_size) {
+	const char *cur_name = (active_panel && active_panel->count > 0) ? active_panel->files[active_panel->selected].name : "";
+	const char *act_path = (active_panel) ? active_panel->current_path : ".";
+	Panel *other = (active_panel == &left_panel) ? &right_panel : &left_panel;
+	const char *oth_path = (other) ? other->current_path : ".";
+
+	size_t j = 0;
+	for (size_t i = 0; tmpl[i] != '\0' && j + 1 < out_size; i++) {
+		if (tmpl[i] == '%' && tmpl[i + 1] != '\0') {
+			const char *rep = NULL;
+			if (tmpl[i + 1] == 'f') rep = cur_name;
+			else if (tmpl[i + 1] == 'p') rep = act_path;
+			else if (tmpl[i + 1] == 'o') rep = oth_path;
+			if (rep) {
+				size_t rlen = strlen(rep);
+				if (j + rlen >= out_size) rlen = out_size - 1 - j;
+				memcpy(out + j, rep, rlen);
+				j += rlen;
+				i++;
+				continue;
+			}
+		}
+		out[j++] = tmpl[i];
+	}
+	out[j] = '\0';
+}
+
+void ui_user_menu(void) {
+	char menu_path[MAX_PATH + 32];
+	get_user_menu_path(menu_path, sizeof(menu_path));
+	ensure_default_user_menu(menu_path);
+
+	char titles[64][128];
+	char cmds[64][MAX_CMD];
+	int count = 0;
+	int sel = 0;
+	int reload = 1;
+
+	int height, width;
+	getmaxyx(stdscr, height, width);
+
+	int box_w = 58;
+	if (box_w > width - 4) box_w = width - 4;
+	int box_h = 16;
+	if (box_h > height - 2) box_h = height - 2;
+
+	int start_y = (height - box_h) / 2;
+	int start_x = (width - box_w) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	keypad(win, TRUE);
+	wbkgd(win, COLOR_PAIR(5));
+
+	while (1) {
+		if (reload) {
+			count = 0;
+			FILE *f = fopen(menu_path, "r");
+			if (f) {
+				char line[MAX_CMD + 160];
+				while (fgets(line, sizeof(line), f) && count < 64) {
+					size_t l = strlen(line);
+					while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+					char *p = line;
+					while (*p == ' ' || *p == '\t') p++;
+					if (*p == '\0' || *p == '#') continue;
+
+					char *sep = strchr(p, '|');
+					if (!sep) continue;
+					*sep = '\0';
+
+					char *t_end = sep - 1;
+					while (t_end > p && (*t_end == ' ' || *t_end == '\t')) *t_end-- = '\0';
+
+					char *c = sep + 1;
+					while (*c == ' ' || *c == '\t') c++;
+
+					snprintf(titles[count], sizeof(titles[0]), "%s", p);
+					snprintf(cmds[count], sizeof(cmds[0]), "%s", c);
+					count++;
+				}
+				fclose(f);
+			}
+			if (sel >= count) sel = (count > 0) ? (count - 1) : 0;
+			reload = 0;
+		}
+
+		werase(win);
+		draw_win_box(win);
+		mvwprintw(win, 0, 2, " User Menu (F2) ");
+
+		int vis = box_h - 4;
+		if (vis < 1) vis = 1;
+		int top = 0;
+		if (sel >= vis) top = sel - vis + 1;
+
+		if (count == 0) {
+			mvwprint_utf8(win, 2, 3, box_w - 6, "Menu is empty. Press F4 to edit.");
+		} else {
+			for (int i = 0; i < vis && (top + i) < count; i++) {
+				int idx = top + i;
+				wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+				mvwhline(win, 2 + i, 2, ' ', box_w - 4);
+				mvwprint_utf8(win, 2 + i, 3, box_w - 6, titles[idx]);
+				wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			}
+		}
+
+		const char *hint = "[ Enter: Run | F4: Edit Menu | Esc: Close ]";
+		int hx = (box_w - (int)strlen(hint)) / 2;
+		if (hx < 2) hx = 2;
+		mvwprintw(win, box_h - 1, hx, "%s", hint);
+		wrefresh(win);
+
+		int ch = wgetch(win);
+		if (ch == 27 || ch == KEY_F(2) || ch == KEY_F(10)) {
+			break;
+		} else if (ch == KEY_UP && count > 0) {
+			sel = (sel > 0) ? (sel - 1) : (count - 1);
+		} else if (ch == KEY_DOWN && count > 0) {
+			sel = (sel + 1) % count;
+		} else if (ch == KEY_F(4)) {
+			edit_file(menu_path);
+			clearok(stdscr, TRUE);
+			refresh();
+			draw_screen();
+			refresh();
+			reload = 1;
+		} else if ((ch == '\n' || ch == KEY_ENTER || ch == '\r') && count > 0) {
+			char final_cmd[MAX_CMD];
+			expand_menu_cmd(cmds[sel], final_cmd, sizeof(final_cmd));
+			delwin(win);
+			touchwin(stdscr);
+			execute_system_command(final_cmd);
+			load_directory(&left_panel);
+			load_directory(&right_panel);
+			return;
 		}
 	}
 
