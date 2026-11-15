@@ -50,7 +50,9 @@ static int read_byte(unsigned char *b) {
 	return read(STDIN_FILENO, b, 1) == 1;
 }
 
+static wchar_t g_mod_ch = 0;
 static KeyAction map_modified_code(int code, int mod) {
+	g_mod_ch = 0;
 	int has_shift = (mod == 2 || mod == 4 || mod == 6 || mod == 8);
 	int has_alt   = (mod == 3 || mod == 4 || mod == 7 || mod == 8);
 	int has_ctrl  = (mod == 5 || mod == 6 || mod == 7 || mod == 8);
@@ -74,6 +76,10 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'v' || code == 'V') return ACT_CTRL_V;
 		if (code == 'x' || code == 'X') return ACT_CTRL_X;
 		if (code == 'y' || code == 'Y') return ACT_CTRL_Y;
+	}
+	if (has_alt && !has_ctrl && code >= 32) {
+		g_mod_ch = (wchar_t)code;
+		return ACT_ALT_CHAR;
 	}
 	return ACT_NONE;
 }
@@ -138,7 +144,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 14) return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
 		if (p1 == 15) return ACT_F5;
 		if (p1 == 17) return ACT_F6;
-		if (p1 == 18) return ACT_F7;
+		if (p1 == 18) return (mod == 2) ? ACT_SHIFT_F7 : ACT_F7;
 		if (p1 == 19) return ACT_F8;
 		if (p1 == 20) return ACT_F9;
 		if (p1 == 21) return ACT_F10;
@@ -183,7 +189,7 @@ InputEvent input_read(void) {
 					seq[idx++] = (char)c;
 				}
 				seq[idx] = '\0';
-				ev.action = parse_csi(seq);
+				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR) ev.ch = g_mod_ch;
 				return ev;
 			}
 		} else if (b2 == 'O') {
@@ -208,6 +214,23 @@ InputEvent input_read(void) {
 			return ev;
 		} else if (b2 == 13 || b2 == 10) {
 			ev.action = ACT_INSERT_NAME;
+			return ev;
+		} else if (b2 >= 32) {
+			char utf[8] = {0};
+			int expected = 1;
+			if ((b2 & 0xE0) == 0xC0) expected = 2;
+			else if ((b2 & 0xF0) == 0xE0) expected = 3;
+			else if ((b2 & 0xF8) == 0xF0) expected = 4;
+			utf[0] = (char)b2;
+			for (int i = 1; i < expected; i++) {
+				unsigned char nb = 0;
+				if (wait_byte(10) && read_byte(&nb)) utf[i] = (char)nb;
+			}
+			wchar_t wc = 0;
+			if (mbtowc(&wc, utf, (size_t)expected) > 0) {
+				ev.action = ACT_ALT_CHAR;
+				ev.ch = wc;
+			}
 			return ev;
 		}
 		return ev;

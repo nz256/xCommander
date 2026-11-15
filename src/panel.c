@@ -59,7 +59,13 @@ void load_directory(Panel *p) {
 
 		p->files[p->count].is_dir = 0;
 		p->files[p->count].is_exec = 0;
+		p->files[p->count].size = 0;
+		p->files[p->count].mode = 0;
+		p->files[p->count].mtime = 0;
 		if (stat(full_path, &st) == 0) {
+			p->files[p->count].size = st.st_size;
+			p->files[p->count].mode = st.st_mode;
+			p->files[p->count].mtime = st.st_mtime;
 			if (S_ISDIR(st.st_mode)) {
 				p->files[p->count].is_dir = 1;
 			} else if (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) {

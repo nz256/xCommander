@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #ifndef XC_H
 #define XC_H
 
@@ -11,6 +12,9 @@ typedef struct {
 	int is_dir;
 	int is_exec;
 	int is_selected;
+	off_t size;
+	mode_t mode;
+	time_t mtime;
 } FileEntry;
 
 typedef struct {
@@ -31,5 +35,8 @@ extern int cmd_pos;
 extern int cmd_sel_start;
 extern int cmd_sel_end;
 extern int terminal_mode;
+extern char quick_search[MAX_FILENAME];
+extern int quick_search_active;
+extern int quick_search_nomatch;
 
 #endif

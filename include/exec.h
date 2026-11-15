@@ -14,6 +14,7 @@ int delete_items(const Panel *panel);
 
 void clipboard_copy(const char *text);
 size_t clipboard_paste(char *out, size_t out_size);
+size_t clipboard_paste_raw(char *out, size_t out_size);
 
 void clipboard_stage_files(const Panel *panel, int is_cut);
 int clipboard_has_files(void);

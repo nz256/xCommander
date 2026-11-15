@@ -1,4 +1,7 @@
 #define _GNU_SOURCE
+#include <ctype.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
@@ -175,6 +178,31 @@ void draw_fkey_bar(int y, int width) {
 	attrset(A_NORMAL);
 }
 
+static void format_size(off_t bytes, char *out, size_t out_size) {
+	if (bytes < 1024) {
+		snprintf(out, out_size, "%lld B", (long long)bytes);
+	} else if (bytes < 1024 * 1024) {
+		snprintf(out, out_size, "%.1f K", (double)bytes / 1024.0);
+	} else if (bytes < 1024LL * 1024 * 1024) {
+		snprintf(out, out_size, "%.1f M", (double)bytes / (1024.0 * 1024.0));
+	} else {
+		snprintf(out, out_size, "%.2f G", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+	}
+}
+
+static void format_perms(mode_t m, char out[10]) {
+	out[0] = (m & S_IRUSR) ? 'r' : '-';
+	out[1] = (m & S_IWUSR) ? 'w' : '-';
+	out[2] = (m & S_IXUSR) ? 'x' : '-';
+	out[3] = (m & S_IRGRP) ? 'r' : '-';
+	out[4] = (m & S_IWGRP) ? 'w' : '-';
+	out[5] = (m & S_IXGRP) ? 'x' : '-';
+	out[6] = (m & S_IROTH) ? 'r' : '-';
+	out[7] = (m & S_IWOTH) ? 'w' : '-';
+	out[8] = (m & S_IXOTH) ? 'x' : '-';
+	out[9] = '\0';
+}
+
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active) {
 	int normal_attr = COLOR_PAIR(1);
 	int dir_attr = COLOR_PAIR(7);
@@ -193,18 +221,22 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	int col2_w = inner_w - col1_w - 1;
 	int mid_x = start_x + 1 + col1_w;
 
+	int info_sep_y = start_y + height - 3;
 	for (int i = 1; i < width - 1; i++) {
 		mvaddstr(start_y, start_x + i, "─");
+		mvaddstr(info_sep_y, start_x + i, "─");
 		mvaddstr(start_y + height - 1, start_x + i, "─");
 	}
 	mvaddstr(start_y, mid_x, "┬");
-	mvaddstr(start_y + height - 1, mid_x, "┴");
+	mvaddstr(info_sep_y, mid_x, "┴");
 
 	for (int i = 1; i < height - 1; i++) {
 		mvaddstr(start_y + i, start_x, "│");
-		mvaddstr(start_y + i, mid_x, "│");
+		if (start_y + i < info_sep_y) mvaddstr(start_y + i, mid_x, "│");
 		mvaddstr(start_y + i, start_x + width - 1, "│");
 	}
+	mvaddstr(info_sep_y, start_x, "├");
+	mvaddstr(info_sep_y, start_x + width - 1, "┤");
 
 	mvaddstr(start_y, start_x, "┌");
 	mvaddstr(start_y, start_x + width - 1, "┐");
@@ -228,7 +260,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	mvprintw(start_y, title_x, " %s ", short_path);
 	attrset(normal_attr);
 
-	int visible_lines = height - 2;
+	int visible_lines = height - 4;
 	if (visible_lines < 1) visible_lines = 1;
 	int page_capacity = visible_lines * 2;
 
@@ -273,6 +305,53 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 			if (file_idx < p->count && col_w > 1) {
 				mvwprint_utf8(stdscr, y, col_x + 1, col_w - 1, p->files[file_idx].name);
 			}
+		}
+	}
+
+	int info_y = start_y + height - 2;
+	attrset(normal_attr);
+	for (int k = 0; k < inner_w; k++) mvaddch(info_y, start_x + 1 + k, ' ');
+
+	int marked_cnt = 0;
+	off_t marked_bytes = 0;
+	for (int i = 0; i < p->count; i++) {
+		if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
+			marked_cnt++;
+			if (!p->files[i].is_dir) marked_bytes += p->files[i].size;
+		}
+	}
+
+	if (is_active && quick_search_active && inner_w > 2) {
+		char sline[MAX_FILENAME + 32];
+		snprintf(sline, sizeof(sline), "Search: %s_", quick_search);
+		attrset(quick_search_nomatch ? (COLOR_PAIR(4) | A_REVERSE) : COLOR_PAIR(2));
+		mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, sline);
+	} else if (marked_cnt > 0 && inner_w > 2) {
+		char sz[32], summary[128];
+		format_size(marked_bytes, sz, sizeof(sz));
+		snprintf(summary, sizeof(summary), "Selected: %d item(s), %s", marked_cnt, sz);
+		attrset(mark_attr);
+		mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, summary);
+	} else if (p->count > 0 && p->selected >= 0 && p->selected < p->count && inner_w > 2) {
+		const FileEntry *cur = &p->files[p->selected];
+		char sz[32], perms[10], tbuf[32] = "", meta[96];
+		if (strcmp(cur->name, "..") == 0) snprintf(sz, sizeof(sz), "<UP>");
+		else if (cur->is_dir) snprintf(sz, sizeof(sz), "<DIR>");
+		else format_size(cur->size, sz, sizeof(sz));
+		format_perms(cur->mode, perms);
+		struct tm *tm_info = localtime(&cur->mtime);
+		if (tm_info) strftime(tbuf, sizeof(tbuf), "%d %b %H:%M", tm_info);
+		snprintf(meta, sizeof(meta), "%s  %s  %s", sz, perms, tbuf);
+
+		int meta_len = (int)strlen(meta);
+		int left_avail = inner_w - 2 - meta_len - 2;
+		if (left_avail > 0) {
+			mvwprint_utf8(stdscr, info_y, start_x + 2, left_avail, cur->name);
+		}
+		if (inner_w - 2 >= meta_len) {
+			mvprintw(info_y, start_x + width - 2 - meta_len, "%s", meta);
+		} else if (inner_w > 2) {
+			mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, sz);
 		}
 	}
 
@@ -626,7 +705,7 @@ void ui_help(void) {
 		"Shift+Arrows   Select/unselect item and move cursor",
 		"Insert         Select or unselect current item",
 		"F1             Show this help",
-		"F3             View file (less)",
+		"F3             View file (built-in Text/Hex viewer)",
 		"F4             Edit file ($EDITOR / vi)",
 		"Shift+F4       Create new file and open in editor",
 		"F5             Copy file or selected items",
@@ -683,13 +762,13 @@ static void ensure_default_user_menu(const char *path) {
 	FILE *f = fopen(path, "w");
 	if (!f) return;
 	fprintf(f, "# xCommander User Menu (F2)\n");
-	fprintf(f, "# Format: Title | command\n");
+	fprintf(f, "# Format: [Key:] Title | command\n");
 	fprintf(f, "# Macros: %%f = current item, %%p = active path, %%o = other panel path\n\n");
-	fprintf(f, "Pack current item to .tar.gz | tar -czvf \"%%f.tar.gz\" \"%%f\"\n");
-	fprintf(f, "Pack current item to .zip    | zip -r \"%%f.zip\" \"%%f\"\n");
-	fprintf(f, "Extract archive here         | tar -xvf \"%%f\" || unzip \"%%f\"\n");
-	fprintf(f, "Disk usage of current dir    | du -sh . && read -n 1 -s -r -p \"Press any key...\"\n");
-	fprintf(f, "Git status                   | git status && read -n 1 -s -r -p \"Press any key...\"\n");
+	fprintf(f, "1: Pack current item to .tar.gz | tar -czvf \"%%f.tar.gz\" \"%%f\"\n");
+	fprintf(f, "2: Pack current item to .zip    | zip -r \"%%f.zip\" \"%%f\"\n");
+	fprintf(f, "x: Extract archive here         | tar -xvf \"%%f\" || unzip \"%%f\"\n");
+	fprintf(f, "d: Disk usage of current dir    | du -sh . && read -n 1 -s -r -p \"Press any key...\"\n");
+	fprintf(f, "g: Git status                   | git status && read -n 1 -s -r -p \"Press any key...\"\n");
 	fclose(f);
 }
 
@@ -720,16 +799,105 @@ static void expand_menu_cmd(const char *tmpl, char *out, size_t out_size) {
 	out[j] = '\0';
 }
 
+typedef struct MenuNode {
+	char hotkey;
+	char title[128];
+	char cmd[MAX_CMD];
+	int is_submenu;
+	struct MenuNode **children;
+	int child_count;
+	int child_cap;
+	struct MenuNode *parent;
+} MenuNode;
+
+static MenuNode *menu_node_new(const char *title, const char *cmd, char hk, int is_sub, MenuNode *parent) {
+	MenuNode *n = calloc(1, sizeof(MenuNode));
+	if (!n) return NULL;
+	n->hotkey = hk;
+	n->is_submenu = is_sub;
+	n->parent = parent;
+	snprintf(n->title, sizeof(n->title), "%s", title);
+	if (cmd) snprintf(n->cmd, sizeof(n->cmd), "%s", cmd);
+	return n;
+}
+
+static void menu_node_add_child(MenuNode *parent, MenuNode *child) {
+	if (!parent || !child) return;
+	if (parent->child_count >= parent->child_cap) {
+		int ncap = (parent->child_cap == 0) ? 8 : (parent->child_cap * 2);
+		MenuNode **tmp = realloc(parent->children, (size_t)ncap * sizeof(MenuNode *));
+		if (!tmp) return;
+		parent->children = tmp;
+		parent->child_cap = ncap;
+	}
+	parent->children[parent->child_count++] = child;
+}
+
+static void free_user_menu_tree(MenuNode *node) {
+	if (!node) return;
+	for (int i = 0; i < node->child_count; i++) free_user_menu_tree(node->children[i]);
+	free(node->children);
+	free(node);
+}
+
+static MenuNode *load_user_menu_tree(const char *path) {
+	MenuNode *root = menu_node_new("User Menu (F2)", NULL, 0, 1, NULL);
+	FILE *f = fopen(path, "r");
+	if (!f) return root;
+
+	MenuNode *cur = root;
+	char line[MAX_CMD + 160];
+	while (fgets(line, sizeof(line), f)) {
+		size_t l = strlen(line);
+		while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ' || line[l - 1] == '\t')) line[--l] = '\0';
+		char *p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p == '\0' || *p == '#') continue;
+
+		if (strcmp(p, "}") == 0) {
+			if (cur->parent) cur = cur->parent;
+			continue;
+		}
+
+		char hk = '\0';
+		if (p[0] != '\0' && p[1] == ':') {
+			hk = p[0];
+			p += 2;
+			while (*p == ' ' || *p == '\t') p++;
+		}
+
+		size_t plen = strlen(p);
+		if (plen > 0 && p[plen - 1] == '{') {
+			p[--plen] = '\0';
+			while (plen > 0 && (p[plen - 1] == ' ' || p[plen - 1] == '\t')) p[--plen] = '\0';
+			MenuNode *sub = menu_node_new(p, NULL, hk, 1, cur);
+			menu_node_add_child(cur, sub);
+			cur = sub;
+			continue;
+		}
+
+		char *sep = strchr(p, '|');
+		if (!sep) continue;
+		*sep = '\0';
+		char *tend = sep - 1;
+		while (tend > p && (*tend == ' ' || *tend == '\t')) *tend-- = '\0';
+		char *c = sep + 1;
+		while (*c == ' ' || *c == '\t') c++;
+		menu_node_add_child(cur, menu_node_new(p, c, hk, 0, cur));
+	}
+	fclose(f);
+	return root;
+}
+
 void ui_user_menu(void) {
 	char menu_path[MAX_PATH + 32];
 	get_user_menu_path(menu_path, sizeof(menu_path));
 	ensure_default_user_menu(menu_path);
 
-	char titles[64][128];
-	char cmds[64][MAX_CMD];
-	int count = 0;
+	MenuNode *root = load_user_menu_tree(menu_path);
+	MenuNode *cur_menu = root;
 	int sel = 0;
-	int reload = 1;
+	int btn_focus = 0;
 
 	int height, width;
 	getmaxyx(stdscr, height, width);
@@ -744,89 +912,225 @@ void ui_user_menu(void) {
 
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	keypad(win, TRUE);
 	wbkgd(win, COLOR_PAIR(5));
 
 	while (1) {
-		if (reload) {
-			count = 0;
-			FILE *f = fopen(menu_path, "r");
-			if (f) {
-				char line[MAX_CMD + 160];
-				while (fgets(line, sizeof(line), f) && count < 64) {
-					size_t l = strlen(line);
-					while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
-					char *p = line;
-					while (*p == ' ' || *p == '\t') p++;
-					if (*p == '\0' || *p == '#') continue;
-
-					char *sep = strchr(p, '|');
-					if (!sep) continue;
-					*sep = '\0';
-
-					char *t_end = sep - 1;
-					while (t_end > p && (*t_end == ' ' || *t_end == '\t')) *t_end-- = '\0';
-
-					char *c = sep + 1;
-					while (*c == ' ' || *c == '\t') c++;
-
-					snprintf(titles[count], sizeof(titles[0]), "%s", p);
-					snprintf(cmds[count], sizeof(cmds[0]), "%s", c);
-					count++;
-				}
-				fclose(f);
-			}
-			if (sel >= count) sel = (count > 0) ? (count - 1) : 0;
-			reload = 0;
-		}
+		int has_back = (cur_menu->parent != NULL) ? 1 : 0;
+		int total_items = cur_menu->child_count + has_back;
+		if (sel >= total_items) sel = (total_items > 0) ? (total_items - 1) : 0;
+		if (sel < 0) sel = 0;
 
 		werase(win);
 		draw_win_box(win);
-		mvwprintw(win, 0, 2, " User Menu (F2) ");
+		if (cur_menu->parent == NULL) {
+			mvwprintw(win, 0, 2, " User Menu (F2) ");
+		} else {
+			char hdr[160];
+			snprintf(hdr, sizeof(hdr), " User Menu: %s ", cur_menu->title);
+			mvwprint_utf8(win, 0, 2, box_w - 4, hdr);
+		}
 
-		int vis = box_h - 4;
+		int vis = box_h - 5;
 		if (vis < 1) vis = 1;
 		int top = 0;
 		if (sel >= vis) top = sel - vis + 1;
 
-		if (count == 0) {
+		if (total_items == 0) {
 			mvwprint_utf8(win, 2, 3, box_w - 6, "Menu is empty. Press F4 to edit.");
 		} else {
-			for (int i = 0; i < vis && (top + i) < count; i++) {
+			for (int i = 0; i < vis && (top + i) < total_items; i++) {
 				int idx = top + i;
+				char disp[180];
+				if (has_back && idx == 0) {
+					snprintf(disp, sizeof(disp), ".. (Back)");
+				} else {
+					MenuNode *node = cur_menu->children[idx - has_back];
+					const char *mark = node->is_submenu ? " [>]" : "";
+					if (node->hotkey) snprintf(disp, sizeof(disp), "%c. %s%s", node->hotkey, node->title, mark);
+					else snprintf(disp, sizeof(disp), "   %s%s", node->title, mark);
+				}
 				wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 				mvwhline(win, 2 + i, 2, ' ', box_w - 4);
-				mvwprint_utf8(win, 2 + i, 3, box_w - 6, titles[idx]);
+				mvwprint_utf8(win, 2 + i, 3, box_w - 6, disp);
 				wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			}
 		}
 
-		const char *hint = "[ Enter: Run | F4: Edit Menu | Esc: Close ]";
-		int hx = (box_w - (int)strlen(hint)) / 2;
-		if (hx < 2) hx = 2;
-		mvwprintw(win, box_h - 1, hx, "%s", hint);
+		const char *b_run  = "[ Run ]";
+		const char *b_edit = "[ Edit (F4) ]";
+		const char *b_cls  = "[ Close ]";
+		int total_bw = 7 + 3 + 13 + 3 + 9;
+		int bx = (box_w - total_bw) / 2;
+		if (bx < 2) bx = 2;
+
+		wattron(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, box_h - 2, bx, "%s", b_run);
+		wattroff(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		wattron(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, box_h - 2, bx + 10, "%s", b_edit);
+		wattroff(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		wattron(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, box_h - 2, bx + 26, "%s", b_cls);
+		wattroff(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 		wrefresh(win);
 
 		InputEvent ev = input_read();
-		if (ev.action == ACT_ESC || ev.action == ACT_F2 || ev.action == ACT_F10) break;
-		else if (ev.action == ACT_UP && count > 0) sel = (sel > 0) ? (sel - 1) : (count - 1);
-		else if (ev.action == ACT_DOWN && count > 0) sel = (sel + 1) % count;
-		else if (ev.action == ACT_F4) {
+		if (ev.action == ACT_F2 || ev.action == ACT_F10) break;
+		if (ev.action == ACT_ESC) {
+			if (cur_menu->parent) { cur_menu = cur_menu->parent; sel = 0; btn_focus = 0; continue; }
+			break;
+		}
+		if (ev.action == ACT_BACKSPACE && cur_menu->parent) {
+			cur_menu = cur_menu->parent; sel = 0; btn_focus = 0; continue;
+		}
+		if (ev.action == ACT_TAB || ev.action == ACT_RIGHT) {
+			btn_focus = (btn_focus + 1) % 3;
+		} else if (ev.action == ACT_LEFT) {
+			if (btn_focus > 0) btn_focus = (btn_focus + 2) % 3;
+			else if (cur_menu->parent) { cur_menu = cur_menu->parent; sel = 0; }
+			else btn_focus = 2;
+		} else if (ev.action == ACT_UP && total_items > 0) {
+			btn_focus = 0;
+			sel = (sel > 0) ? (sel - 1) : (total_items - 1);
+		} else if (ev.action == ACT_DOWN && total_items > 0) {
+			btn_focus = 0;
+			sel = (sel + 1) % total_items;
+		} else if (ev.action == ACT_F4 || (ev.action == ACT_ENTER && btn_focus == 1)) {
 			edit_file(menu_path);
 			clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
-			reload = 1;
-		} else if (ev.action == ACT_ENTER && count > 0) {
-			char final_cmd[MAX_CMD];
-			expand_menu_cmd(cmds[sel], final_cmd, sizeof(final_cmd));
-			delwin(win);
-			touchwin(stdscr);
-			execute_system_command(final_cmd);
-			load_directory(&left_panel);
-			load_directory(&right_panel);
-			return;
+			free_user_menu_tree(root);
+			root = load_user_menu_tree(menu_path);
+			cur_menu = root;
+			sel = 0; btn_focus = 0;
+		} else if (ev.action == ACT_ENTER && btn_focus == 2) {
+			break;
+		} else if (ev.action == ACT_CHAR && cur_menu->child_count > 0) {
+			wchar_t ch = towlower(ev.ch);
+			const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбюё";
+			const char *en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
+			for (int k = 0; ru[k] != L'\0'; k++) {
+				if (ch == ru[k]) { ch = (wchar_t)en[k]; break; }
+			}
+			MenuNode *hit = NULL;
+			for (int i = 0; i < cur_menu->child_count; i++) {
+				MenuNode *n = cur_menu->children[i];
+				if (n->hotkey && (wchar_t)tolower((unsigned char)n->hotkey) == ch) { hit = n; break; }
+			}
+			if (hit) {
+				if (hit->is_submenu) {
+					cur_menu = hit; sel = 0; btn_focus = 0;
+				} else {
+					char final_cmd[MAX_CMD];
+					expand_menu_cmd(hit->cmd, final_cmd, sizeof(final_cmd));
+					free_user_menu_tree(root);
+					delwin(win);
+					touchwin(stdscr);
+					execute_system_command(final_cmd);
+					load_directory(&left_panel);
+					load_directory(&right_panel);
+					return;
+				}
+			}
+		} else if (ev.action == ACT_ENTER && btn_focus == 0 && total_items > 0) {
+			if (has_back && sel == 0) {
+				cur_menu = cur_menu->parent; sel = 0;
+			} else {
+				MenuNode *node = cur_menu->children[sel - has_back];
+				if (node->is_submenu) {
+					cur_menu = node; sel = 0;
+				} else {
+					char final_cmd[MAX_CMD];
+					expand_menu_cmd(node->cmd, final_cmd, sizeof(final_cmd));
+					free_user_menu_tree(root);
+					delwin(win);
+					touchwin(stdscr);
+					execute_system_command(final_cmd);
+					load_directory(&left_panel);
+					load_directory(&right_panel);
+					return;
+				}
+			}
+		}
+	}
+
+	free_user_menu_tree(root);
+	delwin(win);
+	touchwin(stdscr);
+}
+
+int ui_multiline_paste(const char *text) {
+	int height, width;
+	getmaxyx(stdscr, height, width);
+
+	int box_w = width - 8;
+	if (box_w > 84) box_w = 84;
+	if (box_w < 40) box_w = 40;
+
+	int max_lines = height - 8;
+	if (max_lines > 14) max_lines = 14;
+	if (max_lines < 3) max_lines = 3;
+
+	int box_h = max_lines + 5;
+	int start_y = (height - box_h) / 2;
+	int start_x = (width - box_w) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	wbkgd(win, COLOR_PAIR(5));
+
+	int selected = 1;
+	int res = 0;
+
+	while (1) {
+		werase(win);
+		draw_win_box(win);
+		mvwprintw(win, 0, (box_w - 17) / 2, " Multiline paste ");
+
+		const char *p = text;
+		for (int row = 0; row < max_lines && *p; row++) {
+			const char *nl = strchr(p, '\n');
+			int len = nl ? (int)(nl - p) : (int)strlen(p);
+			if (len > 0 && p[len - 1] == '\r') len--;
+			char line[256];
+			if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
+			memcpy(line, p, (size_t)len);
+			line[len] = '\0';
+			mvwprint_utf8(win, 1 + row, 2, box_w - 4, line);
+			if (!nl) break;
+			p = nl + 1;
+		}
+
+		const char *btn_exec = "[ Execute ]";
+		const char *btn_can  = "[ Cancel ]";
+		int total_w = 11 + 4 + 10;
+		int btn_x = (box_w - total_w) / 2;
+		if (btn_x < 2) btn_x = 2;
+
+		wattron(win, selected == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, box_h - 2, btn_x, "%s", btn_exec);
+		wattroff(win, selected == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		wattron(win, selected == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, box_h - 2, btn_x + 15, "%s", btn_can);
+		wattroff(win, selected == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) {
+			selected = 1 - selected;
+		} else if (ev.action == ACT_ENTER) {
+			res = selected;
+			break;
+		} else if (ev.action == ACT_ESC) {
+			res = 0;
+			break;
 		}
 	}
 
 	delwin(win);
 	touchwin(stdscr);
+	return res;
 }

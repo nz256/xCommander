@@ -467,16 +467,25 @@ void clipboard_copy(const char *text) {
 	clipboard_write_sys(text);
 }
 
-size_t clipboard_paste(char *out, size_t out_size) {
+size_t clipboard_paste_raw(char *out, size_t out_size) {
 	if (!out || out_size == 0) return 0;
 	out[0] = '\0';
 	const char *cmd = "( [ -n \"$WAYLAND_DISPLAY\" ] && wl-paste -n ) 2>/dev/null || xclip -o -selection clipboard 2>/dev/null || xsel --clipboard --output 2>/dev/null";
 	FILE *p = popen(cmd, "r");
 	if (!p) return 0;
-
 	size_t n = fread(out, 1, out_size - 1, p);
 	pclose(p);
 	out[n] = '\0';
+	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = '\0';
+	if (strncmp(out, "file://", 7) == 0) {
+		n -= 7;
+		memmove(out, out + 7, n + 1);
+	}
+	return n;
+}
+
+size_t clipboard_paste(char *out, size_t out_size) {
+	size_t n = clipboard_paste_raw(out, out_size);
 	for (size_t i = 0; i < n; i++) {
 		if (out[i] == '\n' || out[i] == '\r') out[i] = ' ';
 	}
@@ -506,18 +515,33 @@ void clipboard_stage_files(const Panel *panel, int is_cut) {
 
 	if (clip_count > 0) {
 		snprintf(clip_last_sys, sizeof(clip_last_sys), "%s", clip_paths[0]);
-		clipboard_write_sys(clip_last_sys);
+		static char uri_buf[MAX_FILES * (MAX_PATH * 2 + 16)];
+		size_t uoff = 0;
+		for (int i = 0; i < clip_count && uoff + 32 < sizeof(uri_buf); i++) {
+			int w = snprintf(uri_buf + uoff, sizeof(uri_buf) - uoff, "file://%s\r\n", clip_paths[i]);
+			if (w > 0) uoff += (size_t)w;
+		}
+		const char *ucmd = "( [ -n \"$WAYLAND_DISPLAY\" ] && wl-copy -t text/uri-list ) 2>/dev/null || xclip -selection clipboard -t text/uri-list 2>/dev/null";
+		FILE *up = popen(ucmd, "w");
+		if (up) {
+			fwrite(uri_buf, 1, uoff, up);
+			pclose(up);
+		} else {
+			clipboard_write_sys(clip_last_sys);
+		}
 	}
 }
 
 int clipboard_has_files(void) {
 	if (clip_count <= 0) return 0;
-	char cur[MAX_PATH * 2] = {0};
-	if (clipboard_paste(cur, sizeof(cur)) > 0 && strcmp(cur, clip_last_sys) != 0) {
-		clip_count = 0;
-		clip_is_cut = 0;
-		clip_last_sys[0] = '\0';
-		return 0;
+	char sys_buf[MAX_PATH * 2] = {0};
+	if (clipboard_paste(sys_buf, sizeof(sys_buf)) > 0) {
+		char *sp = strchr(sys_buf, ' ');
+		if (sp) *sp = '\0';
+		if (strcmp(sys_buf, clip_last_sys) != 0) {
+			clip_count = 0;
+			return 0;
+		}
 	}
 	return 1;
 }

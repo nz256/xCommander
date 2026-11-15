@@ -12,6 +12,7 @@
 #include "ui.h"
 #include "exec.h"
 #include "input.h"
+#include "viewer.h"
 
 Panel left_panel, right_panel;
 Panel *active_panel = NULL;
@@ -23,6 +24,75 @@ int cmd_sel_start = -1;
 int cmd_sel_end = -1;
 static int cmd_sel_anchor = -1;
 int terminal_mode = 0;
+char quick_search[MAX_FILENAME] = "";
+int quick_search_active = 0;
+int quick_search_nomatch = 0;
+static wchar_t wsearch[MAX_FILENAME] = L"";
+static int wsearch_len = 0;
+
+static wchar_t alt_layout_char(wchar_t c) {
+	int is_up = iswupper(c);
+	wchar_t lc = towlower(c);
+	const wchar_t *en = L"qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
+	const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбюё";
+	for (int i = 0; en[i] != L'\0'; i++) {
+		if (lc == en[i]) return is_up ? towupper(ru[i]) : ru[i];
+		if (lc == ru[i]) return is_up ? towupper(en[i]) : en[i];
+	}
+	return c;
+}
+
+static int match_prefix_mode(const char *name, const wchar_t *wpfx, int plen, int alt_mode) {
+	wchar_t wname[MAX_FILENAME];
+	size_t nlen = mbstowcs(wname, name, MAX_FILENAME - 1);
+	if (nlen == (size_t)-1 || (int)nlen < plen) return 0;
+	for (int i = 0; i < plen; i++) {
+		wchar_t target = (alt_mode && wpfx[i] < 128) ? alt_layout_char(wpfx[i]) : wpfx[i];
+		if (towlower(wname[i]) != towlower(target)) return 0;
+	}
+	return 1;
+}
+
+static int match_prefix_icase(const char *name, const wchar_t *wpfx, int plen) {
+	wchar_t wname[MAX_FILENAME];
+	size_t nlen = mbstowcs(wname, name, MAX_FILENAME - 1);
+	if (nlen == (size_t)-1 || (int)nlen < plen) return 0;
+	for (int i = 0; i < plen; i++) {
+		if (towlower(wname[i]) != towlower(wpfx[i])) return 0;
+	}
+	return 1;
+}
+
+static int quick_search_jump(int start_from) {
+	if (!active_panel || active_panel->count == 0 || wsearch_len <= 0) return 0;
+	for (int alt_mode = 0; alt_mode <= 1; alt_mode++) {
+		for (int off = 0; off < active_panel->count; off++) {
+			int idx = (start_from + off) % active_panel->count;
+			if (strcmp(active_panel->files[idx].name, "..") == 0) continue;
+			if (match_prefix_mode(active_panel->files[idx].name, wsearch, wsearch_len, alt_mode)) {
+				active_panel->selected = idx;
+				wchar_t wdisp[MAX_FILENAME];
+				for (int k = 0; k < wsearch_len; k++) {
+					wdisp[k] = (alt_mode && wsearch[k] < 128) ? alt_layout_char(wsearch[k]) : wsearch[k];
+				}
+				wdisp[wsearch_len] = L'\0';
+				if (alt_mode) wmemcpy(wsearch, wdisp, (size_t)(wsearch_len + 1));
+				wcstombs(quick_search, wdisp, sizeof(quick_search));
+				quick_search[sizeof(quick_search) - 1] = '\0';
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+static void quick_search_reset(void) {
+	quick_search_nomatch = 0;
+	quick_search_active = 0;
+	wsearch_len = 0;
+	wsearch[0] = L'\0';
+	quick_search[0] = '\0';
+}
 
 #define MAX_HISTORY 64
 static char cmd_history[MAX_HISTORY][MAX_CMD];
@@ -552,8 +622,29 @@ int main(int argc, char **argv) {
 				if (clipboard_paste_files(active_panel) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
 				draw_screen(); refresh();
 			} else {
-				clipboard_paste_to_cmd(wcmd);
-				if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(wcmd); }
+				char raw_clip[8192] = {0};
+				if (!terminal_mode && clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
+					if (ui_multiline_paste(raw_clip)) {
+						char tmp_sh[128];
+						snprintf(tmp_sh, sizeof(tmp_sh), "/tmp/xc_paste_%d.sh", (int)getpid());
+						FILE *sf = fopen(tmp_sh, "w");
+						if (sf) {
+							fputs(raw_clip, sf);
+							fputc('\n', sf);
+							fclose(sf);
+							char run_sh[160];
+							snprintf(run_sh, sizeof(run_sh), ". \"%s\"", tmp_sh);
+							execute_system_command(run_sh);
+							unlink(tmp_sh);
+							load_directory(&left_panel);
+							load_directory(&right_panel);
+						}
+					}
+					draw_screen(); refresh();
+				} else {
+					clipboard_paste_to_cmd(wcmd);
+					if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(wcmd); }
+				}
 			}
 			continue;
 		}
@@ -565,6 +656,45 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_INSERT_LEFT_PATH) { insert_panel_path_to_cmd(wcmd, &left_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd); continue; }
 		if (ev.action == ACT_INSERT_RIGHT_PATH) { insert_panel_path_to_cmd(wcmd, &right_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd); continue; }
+		if (!terminal_mode && iswprint(ev.ch) &&
+		    (ev.action == ACT_ALT_CHAR || (quick_search_active && ev.action == ACT_CHAR))) {
+			if (quick_search_active && wsearch_len == 1 && towlower(wsearch[0]) == towlower(ev.ch)) {
+				quick_search_jump((active_panel->selected + 1) % active_panel->count);
+			} else if (wsearch_len < MAX_FILENAME - 2) {
+				wsearch[wsearch_len] = ev.ch;
+				wsearch[wsearch_len + 1] = L'\0';
+				wsearch_len++;
+				if (quick_search_jump(active_panel->selected)) {
+					quick_search_active = 1;
+					quick_search_nomatch = 0;
+				} else {
+					wsearch[--wsearch_len] = L'\0';
+					if (quick_search_active) quick_search_nomatch = 1;
+					beep();
+				}
+			}
+			draw_screen(); refresh();
+			continue;
+		}
+		if (!terminal_mode && quick_search_active) {
+			if (ev.action == ACT_BACKSPACE) {
+				if (wsearch_len > 0) {
+					wsearch[--wsearch_len] = L'\0';
+					wcstombs(quick_search, wsearch, sizeof(quick_search));
+					quick_search[sizeof(quick_search) - 1] = '\0';
+					if (wsearch_len == 0) quick_search_reset();
+					else quick_search_jump(0);
+				}
+				draw_screen(); refresh();
+				continue;
+			} else if (ev.action == ACT_ESC) {
+				quick_search_reset();
+				draw_screen(); refresh();
+				continue;
+			} else if (ev.action != ACT_ENTER) {
+				quick_search_reset();
+			}
+		}
 		if (ev.action == ACT_INSERT_NAME) { insert_current_name_to_cmd(wcmd); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd); continue; }
 		int is_hist_prev = (ev.action == ACT_CTRL_E) || (terminal_mode && ev.action == ACT_UP);
 		int is_hist_next = (ev.action == ACT_CTRL_X) || (terminal_mode && ev.action == ACT_DOWN);
@@ -631,7 +761,7 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_F2) ui_user_menu();
 		else if (ev.action == ACT_F3 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); view_file(fp); }
+			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); ui_view_file(fp); }
 		} else if (ev.action == ACT_F4 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); edit_file(fp); load_directory(&left_panel); load_directory(&right_panel); }
@@ -644,11 +774,11 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_SHIFT_DOWN || ev.action == ACT_INSERT) { panel_toggle_mark(active_panel, active_panel->selected); if (active_panel->selected < active_panel->count - 1) active_panel->selected++; }
 		else if (ev.action == ACT_UP && active_panel->selected > 0) active_panel->selected--;
 		else if (ev.action == ACT_DOWN && active_panel->selected < active_panel->count - 1) active_panel->selected++;
-		else if (ev.action == ACT_LEFT || ev.action == ACT_PGUP) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 4; if (vis < 1) vis = 1; active_panel->selected -= vis; if (active_panel->selected < 0) active_panel->selected = 0; }
-		else if (ev.action == ACT_RIGHT || ev.action == ACT_PGDN) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 4; if (vis < 1) vis = 1; active_panel->selected += vis; if (active_panel->selected >= active_panel->count) active_panel->selected = (active_panel->count > 0) ? (active_panel->count - 1) : 0; }
+		else if (ev.action == ACT_LEFT || ev.action == ACT_PGUP) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 6; if (vis < 1) vis = 1; active_panel->selected -= vis; if (active_panel->selected < 0) active_panel->selected = 0; }
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_PGDN) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 6; if (vis < 1) vis = 1; active_panel->selected += vis; if (active_panel->selected >= active_panel->count) active_panel->selected = (active_panel->count > 0) ? (active_panel->count - 1) : 0; }
 		else if (ev.action == ACT_ENTER && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (cur->is_dir) change_directory(active_panel, cur->name);
+			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
 			else {
 				char fp[MAX_PATH * 2];
 				if (strcmp(active_panel->current_path, "/") == 0) snprintf(fp, sizeof(fp), "/%s", cur->name);
