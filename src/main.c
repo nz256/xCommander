@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <sys/time.h>
 #include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
@@ -574,6 +575,95 @@ static void insert_panel_path_to_cmd(wchar_t *wcmd, const Panel *p) {
 	cmd_buffer[sizeof(cmd_buffer) - 1] = '\0';
 }
 
+static KeyAction handle_mouse_event(InputEvent ev) {
+	if (terminal_mode) return ACT_NONE;
+	int height, width;
+	getmaxyx(stdscr, height, width);
+	int mx = ev.mouse_x, my = ev.mouse_y;
+	if (mx < 0 || my < 0 || mx >= width || my >= height) return ACT_NONE;
+
+	if (my == height - 1 && ev.action == ACT_MOUSE_LEFT) {
+		int col_w = width / 10;
+		if (col_w < 3) col_w = 3;
+		int idx = mx / col_w;
+		if (idx > 9) idx = 9;
+		const KeyAction fkeys[10] = {
+			ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_F5,
+			ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10
+		};
+		return fkeys[idx];
+	}
+
+	int panel_h = height - 2;
+	if (my >= panel_h) return ACT_NONE;
+
+	int panel_w = width / 2;
+	Panel *target_p = (mx < panel_w) ? &left_panel : &right_panel;
+	int p_start_x = (mx < panel_w) ? 0 : panel_w;
+	int p_width = (mx < panel_w) ? panel_w : (width - panel_w);
+
+	if (ev.action == ACT_MOUSE_WHEEL_UP || ev.action == ACT_MOUSE_WHEEL_DOWN) {
+		int step = 3;
+		if (ev.action == ACT_MOUSE_WHEEL_UP) {
+			target_p->selected -= step;
+			if (target_p->selected < 0) target_p->selected = 0;
+		} else if (target_p->count > 0) {
+			target_p->selected += step;
+			if (target_p->selected >= target_p->count) target_p->selected = target_p->count - 1;
+		}
+		active_panel = target_p;
+		quick_search_reset();
+		draw_screen(); refresh();
+		return ACT_NONE;
+	}
+
+	active_panel = target_p;
+	quick_search_reset();
+
+	int visible_lines = panel_h - 4;
+	if (visible_lines < 1) visible_lines = 1;
+	int row = my - 1;
+	if (row >= 0 && row < visible_lines) {
+		int inner_w = p_width - 2;
+		int col1_w = inner_w / 2;
+		int mid_x = p_start_x + 1 + col1_w;
+		int col = (mx > mid_x) ? 1 : 0;
+		int file_idx = target_p->top_line + col * visible_lines + row;
+
+		if (file_idx >= 0 && file_idx < target_p->count) {
+			static long long last_click_ms = 0;
+			static Panel *last_click_p = NULL;
+			static int last_click_idx = -1;
+
+			struct timeval tv;
+			gettimeofday(&tv, NULL);
+			long long now_ms = (long long)tv.tv_sec * 1000LL + tv.tv_usec / 1000;
+
+			target_p->selected = file_idx;
+			if (ev.action == ACT_MOUSE_RIGHT) {
+				panel_toggle_mark(target_p, file_idx);
+				draw_screen(); refresh();
+				return ACT_NONE;
+			}
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int is_dbl = (last_click_p == target_p && last_click_idx == file_idx && (now_ms - last_click_ms) < 400);
+				last_click_p = target_p;
+				last_click_idx = file_idx;
+				last_click_ms = now_ms;
+				draw_screen(); refresh();
+				if (is_dbl) {
+					last_click_ms = 0;
+					return ACT_ENTER;
+				}
+				return ACT_NONE;
+			}
+		}
+	}
+
+	draw_screen(); refresh();
+	return ACT_NONE;
+}
+
 int main(int argc, char **argv) {
 	if (!isatty(STDIN_FILENO)) {
 		setenv("TERM", "xterm-256color", 1);
@@ -635,11 +725,16 @@ int main(int argc, char **argv) {
 	refresh();
 	draw_screen();
 	refresh();
+	input_enable_raw();
 
 	wchar_t wcmd[MAX_CMD] = L"";
 	while (1) {
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;
+		if (ev.action >= ACT_MOUSE_LEFT && ev.action <= ACT_MOUSE_WHEEL_DOWN) {
+			ev.action = handle_mouse_event(ev);
+			if (ev.action == ACT_NONE) continue;
+		}
 		if (ev.action == ACT_RESIZE) {
 			if (!terminal_mode) { endwin(); refresh(); clearok(stdscr, TRUE); draw_screen(); refresh(); }
 			continue;
@@ -830,7 +925,9 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_TAB) active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
 		else if (ev.action == ACT_F1) ui_help();
+		else if (ev.action == ACT_ALT_F1) { quick_search_reset(); ui_drive_menu(&left_panel, 0); }
 		else if (ev.action == ACT_F2) ui_user_menu();
+		else if (ev.action == ACT_ALT_F2) { quick_search_reset(); ui_drive_menu(&right_panel, 1); }
 		else if (ev.action == ACT_F3 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); ui_view_file(fp); }

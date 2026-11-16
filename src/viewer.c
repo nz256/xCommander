@@ -275,6 +275,14 @@ void ui_view_file(const char *filepath) {
 		refresh();
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_WHEEL_UP) { vs.top_line -= 3; if (vs.top_line < 0) vs.top_line = 0; continue; }
+		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { vs.top_line += 3; if (vs.top_line >= total_rows) vs.top_line = total_rows - 1; continue; }
+		if (ev.action == ACT_MOUSE_LEFT && ev.mouse_y == height - 1) {
+			int col_w = width / 10; if (col_w < 3) col_w = 3;
+			int idx = ev.mouse_x / col_w; if (idx > 9) idx = 9;
+			const KeyAction fk[10] = { ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_NONE, ACT_NONE, ACT_F7, ACT_NONE, ACT_NONE, ACT_F10 };
+			ev.action = fk[idx];
+		}
 		if (ev.action == ACT_NONE) continue;
 		if (ev.action == ACT_RESIZE) { endwin(); refresh(); clearok(stdscr, TRUE); continue; }
 		if (ev.action == ACT_ESC || ev.action == ACT_F3 || ev.action == ACT_F10 || ev.action == ACT_CTRL_Q) break;

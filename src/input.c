@@ -26,12 +26,12 @@ void input_enable_raw(void) {
 		t.c_cc[VTIME] = 0;
 		tcsetattr(STDIN_FILENO, TCSANOW, &t);
 	}
-	printf("\033[>4;2m\033[?1l\033>");
+	printf("\033[>4;2m\033[?1l\033>\033[?1000;1006h");
 	fflush(stdout);
 }
 
 void input_restore_sane(void) {
-	printf("\033[>4;0m");
+	printf("\033[?1000;1006l\033[>4;0m");
 	fflush(stdout);
 	system("stty sane");
 }
@@ -126,8 +126,8 @@ static KeyAction parse_csi(const char *seq) {
 	}
 	if (final == 'H') return ACT_HOME;
 	if (final == 'F') return ACT_END;
-	if (final == 'P') return ACT_F1;
-	if (final == 'Q') return ACT_F2;
+	if (final == 'P') return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+	if (final == 'Q') return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 	if (final == 'R') return ACT_F3;
 	if (final == 'S') return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
 
@@ -138,8 +138,8 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 3) return ACT_DELETE;
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;
 		if (p1 == 6) return (mod == 5) ? ACT_CTRL_PGDN : ACT_PGDN;
-		if (p1 == 11) return ACT_F1;
-		if (p1 == 12) return ACT_F2;
+		if (p1 == 11) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+		if (p1 == 12) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 		if (p1 == 13) return ACT_F3;
 		if (p1 == 14) return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
 		if (p1 == 15) return ACT_F5;
@@ -154,7 +154,7 @@ static KeyAction parse_csi(const char *seq) {
 }
 
 InputEvent input_read(void) {
-	InputEvent ev = {ACT_NONE, 0};
+	InputEvent ev = {ACT_NONE, 0, -1, -1};
 	if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; return ev; }
 	unsigned char b = 0;
 	if (!read_byte(&b)) {
@@ -189,6 +189,23 @@ InputEvent input_read(void) {
 					seq[idx++] = (char)c;
 				}
 				seq[idx] = '\0';
+				if (seq[0] == '<') {
+					int btn = 0, mx = 0, my = 0;
+					char kind = seq[idx - 1];
+					if (sscanf(seq + 1, "%d;%d;%d", &btn, &mx, &my) == 3 && kind == 'M') {
+						ev.mouse_x = mx - 1;
+						ev.mouse_y = my - 1;
+						int base_btn = btn & 3;
+						if (btn & 64) {
+							ev.action = (base_btn == 0) ? ACT_MOUSE_WHEEL_UP : ACT_MOUSE_WHEEL_DOWN;
+						} else if (base_btn == 0) {
+							ev.action = ACT_MOUSE_LEFT;
+						} else if (base_btn == 2) {
+							ev.action = ACT_MOUSE_RIGHT;
+						}
+					}
+					return ev;
+				}
 				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR) ev.ch = g_mod_ch;
 				return ev;
 			}
@@ -214,6 +231,16 @@ InputEvent input_read(void) {
 			return ev;
 		} else if (b2 == 13 || b2 == 10) {
 			ev.action = ACT_INSERT_NAME;
+			return ev;
+		} else if (b2 == 27 && wait_byte(10)) {
+			unsigned char b3 = 0;
+			if (read_byte(&b3) && b3 == 'O' && wait_byte(10)) {
+				unsigned char b4 = 0;
+				if (read_byte(&b4)) {
+					if (b4 == 'P') { ev.action = ACT_ALT_F1; return ev; }
+					if (b4 == 'Q') { ev.action = ACT_ALT_F2; return ev; }
+				}
+			}
 			return ev;
 		} else if (b2 >= 32) {
 			char utf[8] = {0};

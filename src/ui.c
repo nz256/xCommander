@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <sys/statvfs.h>
 #include <ctype.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -457,6 +458,15 @@ int ui_confirm(const char *title, const char *msg) {
 		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
+			if (wy == 3) {
+				if (wx >= btn_x && wx < btn_x + 7) { res = 1; break; }
+				if (wx >= btn_x + 10 && wx < btn_x + 16) { res = 0; break; }
+			}
+			continue;
+		}
 		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) selected = 1 - selected;
 		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = selected; break; }
 		else if (ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L'n' || ev.ch == L'N' || ev.ch == L'т' || ev.ch == L'Т'))) { res = 0; break; }
@@ -503,7 +513,7 @@ void ui_message(const char *title, const char *msg) {
 
 	while (1) {
 		InputEvent ev = input_read();
-		if (ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
+		if (ev.action == ACT_MOUSE_LEFT || ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
 	}
 
 	delwin(win);
@@ -683,6 +693,7 @@ void ui_help(void) {
 		"  Enter              Open directory or run executable",
 		"  Ctrl+PgUp / PgDn   Go to parent (..) / enter directory",
 		"  Ctrl+U             Swap left and right panels with cursor",
+		"  Alt+F1 / Alt+F2    Change drive / mount point (Left / Right)",
 		"  Insert / Shift+Arr Mark or unmark files and directories",
 		"  Alt+<char>         Quick search by prefix (auto EN/RU layout)",
 		"                     Continue typing without Alt; Esc to cancel",
@@ -771,6 +782,13 @@ void ui_help(void) {
 		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_WHEEL_UP) { top -= 3; if (top < 0) top = 0; continue; }
+		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { top += 3; continue; }
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w || wy == box_h - 2) break;
+			continue;
+		}
 		if (ev.action == ACT_ESC || ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10) break;
 		else if (ev.action == ACT_UP && top > 0) top--;
 		else if (ev.action == ACT_DOWN && top + vis < total) top++;
@@ -1022,6 +1040,32 @@ void ui_user_menu(void) {
 		wrefresh(win);
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_WHEEL_UP && total_items > 0) {
+			btn_focus = 0;
+			if (sel > 0) sel--;
+			continue;
+		}
+		if (ev.action == ACT_MOUSE_WHEEL_DOWN && total_items > 0) {
+			btn_focus = 0;
+			if (sel + 1 < total_items) sel++;
+			continue;
+		}
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) break;
+			if (wy == box_h - 2) {
+				if (wx >= bx && wx < bx + 7) { btn_focus = 0; ev.action = ACT_ENTER; }
+				else if (wx >= bx + 10 && wx < bx + 23) { ev.action = ACT_F4; }
+				else if (wx >= bx + 26 && wx < bx + 35) break;
+				else continue;
+			} else if (wy >= 2 && wy < 2 + vis && (top + wy - 2) < total_items) {
+				sel = top + (wy - 2);
+				btn_focus = 0;
+				ev.action = ACT_ENTER;
+			} else {
+				continue;
+			}
+		}
 		if (ev.action == ACT_F2 || ev.action == ACT_F10) break;
 		if (ev.action == ACT_ESC) {
 			if (cur_menu->parent) { cur_menu = cur_menu->parent; sel = 0; btn_focus = 0; continue; }
@@ -1164,6 +1208,15 @@ int ui_multiline_paste(const char *text) {
 		wrefresh(win);
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
+			if (wy == box_h - 2) {
+				if (wx >= btn_x && wx < btn_x + 11) { res = 1; break; }
+				if (wx >= btn_x + 15 && wx < btn_x + 25) { res = 0; break; }
+			}
+			continue;
+		}
 		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) {
 			selected = 1 - selected;
 		} else if (ev.action == ACT_ENTER) {
@@ -1178,4 +1231,278 @@ int ui_multiline_paste(const char *text) {
 	delwin(win);
 	touchwin(stdscr);
 	return res;
+}
+
+void ui_drive_menu(Panel *target_panel, int is_right) {
+	if (!target_panel) return;
+
+	while (1) {
+		char paths[48][MAX_PATH];
+		char devs[48][256];
+		char labels[48][128];
+		int can_unmount[48];
+		int count = 0;
+
+		const char *home = getenv("HOME");
+		if (home && *home) {
+			snprintf(paths[count], MAX_PATH, "%s", home);
+			devs[count][0] = '\0';
+			can_unmount[count] = 0;
+			snprintf(labels[count], sizeof(labels[0]), "~ (Home)");
+			count++;
+		}
+
+		snprintf(paths[count], MAX_PATH, "/");
+		devs[count][0] = '\0';
+		can_unmount[count] = 0;
+		snprintf(labels[count], sizeof(labels[0]), "/ (Root)");
+		count++;
+
+		FILE *mf = fopen("/proc/mounts", "r");
+		if (mf) {
+			char dev[256], mnt[MAX_PATH], fstype[64];
+			while (fscanf(mf, "%255s %4095s %63s %*[^\n]\n", dev, mnt, fstype) == 3 && count < 40) {
+				if (strcmp(mnt, "/") == 0) continue;
+				int is_media = (strncmp(mnt, "/media/", 7) == 0 || strncmp(mnt, "/mnt/", 5) == 0 || strncmp(mnt, "/run/media/", 11) == 0);
+				if (strncmp(dev, "/dev/", 5) != 0 &&
+				    strcmp(fstype, "ntfs3") != 0 &&
+				    strcmp(fstype, "nfs") != 0 &&
+				    strcmp(fstype, "cifs") != 0 &&
+				    !(is_media && strncmp(fstype, "fuse", 4) == 0)) continue;
+				if (strncmp(mnt, "/boot", 5) == 0 || strcmp(mnt, "/efi") == 0 || strncmp(mnt, "/snap", 5) == 0) continue;
+
+				int dup = 0;
+				for (int i = 0; i < count; i++) {
+					if (strcmp(paths[i], mnt) == 0) { dup = 1; break; }
+				}
+				if (dup) continue;
+
+				snprintf(paths[count], MAX_PATH, "%s", mnt);
+				snprintf(devs[count], sizeof(devs[0]), "%s", dev);
+				can_unmount[count] = (is_media && strncmp(dev, "/dev/", 5) == 0) ? 1 : 0;
+				const char *bname = strrchr(mnt, '/');
+				bname = (bname && *(bname + 1)) ? (bname + 1) : mnt;
+				snprintf(labels[count], sizeof(labels[0]), "%s (%s)", bname, fstype);
+				count++;
+			}
+			fclose(mf);
+		}
+
+		if (home && *home) {
+			char bpath[MAX_PATH + 64];
+			snprintf(bpath, sizeof(bpath), "%s/.config/xcommander/bookmarks", home);
+			FILE *bf = fopen(bpath, "r");
+			if (bf) {
+				char line[MAX_PATH];
+				while (fgets(line, sizeof(line), bf) && count < 48) {
+					size_t l = strlen(line);
+					while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = '\0';
+					if (line[0] == '\0' || line[0] == '#') continue;
+					int dup = 0;
+					for (int i = 0; i < count; i++) {
+						if (strcmp(paths[i], line) == 0) { dup = 1; break; }
+					}
+					if (dup) continue;
+					snprintf(paths[count], MAX_PATH, "%s", line);
+					devs[count][0] = '\0';
+					can_unmount[count] = 0;
+					const char *bname = strrchr(line, '/');
+					bname = (bname && *(bname + 1)) ? (bname + 1) : line;
+					snprintf(labels[count], sizeof(labels[0]), "* %s", bname);
+					count++;
+				}
+				fclose(bf);
+			}
+		}
+
+		char free_info[48][32];
+		int sel = 0;
+		for (int i = 0; i < count; i++) {
+			struct statvfs vfs;
+			if (statvfs(paths[i], &vfs) == 0) {
+				off_t avail = (off_t)vfs.f_bavail * (off_t)vfs.f_frsize;
+				char sz[32];
+				format_size(avail, sz, sizeof(sz));
+				snprintf(free_info[i], sizeof(free_info[0]), "%s", sz);
+			} else {
+				free_info[i][0] = '\0';
+			}
+			if (strcmp(paths[i], target_panel->current_path) == 0) sel = i;
+		}
+
+		int height, width;
+		getmaxyx(stdscr, height, width);
+
+		int panel_w = width / 2;
+		int box_w = panel_w - 4;
+		if (box_w > 56) box_w = 56;
+		if (box_w < 42) box_w = 42;
+		if (box_w > width - 2) box_w = width - 2;
+
+		int box_h = count + 5;
+		if (box_h > height - 4) box_h = height - 4;
+		if (box_h < 7) box_h = 7;
+
+		int panel_x = is_right ? panel_w : 0;
+		int start_x = panel_x + (panel_w - box_w) / 2;
+		if (start_x < 1) start_x = 1;
+		if (start_x + box_w >= width) start_x = width - box_w - 1;
+		int start_y = (height - 2 - box_h) / 2;
+		if (start_y < 1) start_y = 1;
+
+		curs_set(0);
+		WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+		wbkgd(win, COLOR_PAIR(5));
+
+		const char *keys = "0123456789abcdefghijklmnopqrstuvwxyz";
+		int chosen = -1;
+		int do_unmount = 0;
+		int btn_focus = 0;
+
+		while (1) {
+			int vis = box_h - 4;
+			if (vis < 1) vis = 1;
+			int top = 0;
+			if (sel >= vis) top = sel - vis + 1;
+
+			werase(win);
+			draw_win_box(win);
+			mvwprintw(win, 0, (box_w - 16) / 2, is_right ? " Change Right " : " Change Left ");
+
+			for (int i = 0; i < vis && (top + i) < count; i++) {
+				int idx = top + i;
+				char kch = (idx < 36) ? keys[idx] : ' ';
+				int flen = (int)strlen(free_info[idx]);
+				int left_w = box_w - 6 - flen;
+				if (left_w < 8) left_w = 8;
+
+				char left_str[160];
+				snprintf(left_str, sizeof(left_str), "%c. %s", kch, labels[idx]);
+
+				wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+				mvwhline(win, 1 + i, 1, ' ', box_w - 2);
+				mvwprint_utf8(win, 1 + i, 2, left_w, left_str);
+				if (flen > 0 && box_w - 3 - flen > 4) {
+					mvwprintw(win, 1 + i, box_w - 2 - flen, "%s", free_info[idx]);
+				}
+				wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			}
+
+			const char *b_sel = "[ Select ]";
+			const char *b_unm = "[ Unmount (F8) ]";
+			const char *b_can = "[ Cancel ]";
+			int total_bw = 10 + 2 + 16 + 2 + 10;
+			int bx = (box_w - total_bw) / 2;
+			if (bx < 2) bx = 2;
+
+			wattron(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, box_h - 2, bx, "%s", b_sel);
+			wattroff(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+			wattron(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, box_h - 2, bx + 12, "%s", b_unm);
+			wattroff(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+			wattron(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, box_h - 2, bx + 30, "%s", b_can);
+			wattroff(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			wrefresh(win);
+
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+			if (ev.action == ACT_TAB || ev.action == ACT_RIGHT) { btn_focus = (btn_focus + 1) % 3; continue; }
+			if (ev.action == ACT_LEFT) { btn_focus = (btn_focus + 2) % 3; continue; }
+			if (ev.action == ACT_MOUSE_WHEEL_UP) { btn_focus = 0; if (sel > 0) sel--; continue; }
+			if (ev.action == ACT_MOUSE_WHEEL_DOWN) { btn_focus = 0; if (sel + 1 < count) sel++; continue; }
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+				if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) break;
+				if (wy == box_h - 2) {
+					if (wx >= bx && wx < bx + 10 && count > 0) { chosen = sel; break; }
+					if (wx >= bx + 12 && wx < bx + 28 && count > 0) { do_unmount = 1; break; }
+					if (wx >= bx + 30 && wx < bx + 40) break;
+					continue;
+				}
+				if (wy >= 1 && wy < 1 + vis && (top + wy - 1) < count) {
+					chosen = top + (wy - 1);
+					break;
+				}
+				continue;
+			}
+			if (ev.action == ACT_F8 || ev.action == ACT_DELETE) {
+				if (count > 0) { do_unmount = 1; break; }
+			}
+			if (ev.action == ACT_UP && sel > 0) { btn_focus = 0; sel--; }
+			else if (ev.action == ACT_DOWN && sel + 1 < count) { btn_focus = 0; sel++; }
+			else if (ev.action == ACT_ENTER) {
+				if (btn_focus == 2) break;
+				if (btn_focus == 1 && count > 0) { do_unmount = 1; break; }
+				if (count > 0) { chosen = sel; break; }
+			} else if (ev.action == ACT_CHAR) {
+				wchar_t ch = towlower(ev.ch);
+				for (int i = 0; i < count && i < 36; i++) {
+					if ((wchar_t)keys[i] == ch) { chosen = i; break; }
+				}
+				if (chosen >= 0) break;
+			}
+		}
+
+		delwin(win);
+		touchwin(stdscr);
+
+		if (do_unmount && sel >= 0 && sel < count) {
+			if (!can_unmount[sel] || devs[sel][0] == '\0') {
+				draw_screen(); refresh();
+				ui_message("Unmount", "Only removable / media drives can be unmounted");
+				draw_screen(); refresh();
+				continue;
+			}
+			char qmsg[160];
+			snprintf(qmsg, sizeof(qmsg), "Unmount %s?", labels[sel]);
+			draw_screen(); refresh();
+			int ok_unm = ui_confirm("Unmount (F8)", qmsg);
+			draw_screen(); refresh();
+			if (!ok_unm) continue;
+			const char *fallback = (home && *home) ? home : "/";
+			size_t mlen = strlen(paths[sel]);
+			if (strncmp(left_panel.current_path, paths[sel], mlen) == 0 &&
+			    (left_panel.current_path[mlen] == '/' || left_panel.current_path[mlen] == '\0')) {
+				snprintf(left_panel.current_path, MAX_PATH, "%s", fallback);
+				load_directory(&left_panel);
+			}
+			if (strncmp(right_panel.current_path, paths[sel], mlen) == 0 &&
+			    (right_panel.current_path[mlen] == '/' || right_panel.current_path[mlen] == '\0')) {
+				snprintf(right_panel.current_path, MAX_PATH, "%s", fallback);
+				load_directory(&right_panel);
+			}
+			draw_screen(); refresh();
+
+			char ucmd[512];
+			snprintf(ucmd, sizeof(ucmd), "udisksctl unmount -b \"%s\" 2>&1", devs[sel]);
+			FILE *up = popen(ucmd, "r");
+			char out_msg[256] = "Unmounted safely";
+			int status = -1;
+			if (up) {
+				char buf[256] = {0};
+				if (fgets(buf, sizeof(buf), up)) {
+					size_t bl = strlen(buf);
+					while (bl > 0 && (buf[bl - 1] == '\n' || buf[bl - 1] == '\r')) buf[--bl] = '\0';
+					if (bl > 0) snprintf(out_msg, sizeof(out_msg), "%s", buf);
+				}
+				status = pclose(up);
+			}
+			draw_screen(); refresh();
+			ui_message(status == 0 ? "Unmount" : "Unmount Error", out_msg);
+			draw_screen(); refresh();
+			continue;
+		}
+
+		if (chosen >= 0 && chosen < count) {
+			snprintf(target_panel->current_path, MAX_PATH, "%s", paths[chosen]);
+			target_panel->parent_name[0] = '\0';
+			load_directory(target_panel);
+			active_panel = target_panel;
+		}
+		break;
+	}
 }

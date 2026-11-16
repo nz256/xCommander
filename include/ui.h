@@ -13,5 +13,6 @@ void ui_message(const char *title, const char *msg);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
 void ui_help(void);
 void ui_user_menu(void);
+void ui_drive_menu(Panel *target_panel, int is_right);
 
 #endif
