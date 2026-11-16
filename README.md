@@ -18,3 +18,7 @@ A minimalist, high-speed two-panel TUI file manager for Linux written in C using
 make
 sudo make install
 ```
+
+## License
+
+This project is licensed under the **BSD 3-Clause License** — see the [LICENSE](LICENSE) file for details.

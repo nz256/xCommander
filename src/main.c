@@ -668,24 +668,32 @@ int main(int argc, char **argv) {
 				draw_screen(); refresh();
 			} else {
 				char raw_clip[65536] = {0};
-				if (!terminal_mode && clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
-					if (ui_multiline_paste(raw_clip)) {
+				if (clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
+					int was_term = terminal_mode;
+					if (was_term) { reset_prog_mode(); refresh(); }
+					int ok = ui_multiline_paste(raw_clip);
+					if (was_term) { endwin(); input_enable_raw(); }
+					if (ok) {
 						char tmp_sh[128];
 						snprintf(tmp_sh, sizeof(tmp_sh), "/tmp/xc_paste_%d.sh", (int)getpid());
 						FILE *sf = fopen(tmp_sh, "w");
 						if (sf) {
+							fputs("printf \"\\n\\033[1;36m%s\\033[0m\\n\" \"$(printf '═%.0s' $(seq 1 ${COLUMNS:-80}))\"\n", sf);
+							fputs("printf \"\\033[1;33m▶ [ $(date +%H:%M:%S) | $PWD ]\\033[0m\\n\"\n", sf);
 							fputs(raw_clip, sf);
-							fputs("\nprintf \"\\n--- Done (exit: $?). Press any key... ---\"\nread -n 1 -s -r\n", sf);
+							fputs("\nrc=$?\nif [ $rc -ne 0 ]; then\n  printf \"\\n\\033[1;31m--- Error (exit: $rc). Press any key... ---\\033[0m\"\n  read -n 1 -s -r\nfi\n", sf);
 							fclose(sf);
 							char run_sh[160];
 							snprintf(run_sh, sizeof(run_sh), ". \"%s\"", tmp_sh);
+							if (was_term) printf("\r\n");
 							execute_system_command(run_sh);
 							unlink(tmp_sh);
 							load_directory(&left_panel);
 							load_directory(&right_panel);
 						}
 					}
-					draw_screen(); refresh();
+					if (!was_term) { draw_screen(); refresh(); }
+					else { print_term_prompt_ex(wcmd, 1); }
 				} else {
 					clipboard_paste_to_cmd(wcmd);
 					if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(wcmd); }
