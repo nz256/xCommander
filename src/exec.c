@@ -366,7 +366,6 @@ void execute_system_command(const char *cmd) {
 		def_prog_mode();
 		endwin();
 	}
-
 	input_restore_sane();
 
 	char pwd_file[128];
@@ -382,7 +381,7 @@ void execute_system_command(const char *cmd) {
 
 	setenv("XC_PWD_FILE", pwd_file, 1);
 	setenv("XC_OTHER_PWD_FILE", other_pwd_file, 1);
-	snprintf(full_cmd, sizeof(full_cmd), "%s -ic 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
+	snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
 	system(full_cmd);
 	unsetenv("XC_PWD_FILE");
 	unsetenv("XC_OTHER_PWD_FILE");
@@ -422,13 +421,12 @@ void execute_system_command(const char *cmd) {
 	}
 	unlink(other_pwd_file);
 
-	input_enable_raw();
-
 	if (!terminal_mode) {
 		reset_prog_mode();
 		clearok(stdscr, TRUE);
 		refresh();
 	}
+	input_enable_raw();
 }
 
 void view_file(const char *filename) {

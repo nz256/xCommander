@@ -1,4 +1,5 @@
 #define _DEFAULT_SOURCE
+#include <fcntl.h>
 #include <unistd.h>
 #include <termios.h>
 #include <sys/select.h>
@@ -17,6 +18,9 @@ int g_mod_shift = 0;
 static volatile sig_atomic_t g_resized = 0;
 static void on_sigwinch(int sig) { (void)sig; g_resized = 1; }
 
+static struct termios g_orig_termios;
+static int g_has_orig_termios = 0;
+
 void input_enable_raw(void) {
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -24,6 +28,10 @@ void input_enable_raw(void) {
 	sigaction(SIGWINCH, &sa, NULL);
 	struct termios t;
 	if (tcgetattr(STDIN_FILENO, &t) == 0) {
+		if (!g_has_orig_termios) {
+			g_orig_termios = t;
+			g_has_orig_termios = 1;
+		}
 		t.c_iflag &= ~(unsigned int)(IXON | IXOFF | ICRNL | INLCR | IGNCR | ISTRIP);
 		t.c_lflag &= ~(unsigned int)(ICANON | ECHO | ISIG | IEXTEN);
 		t.c_cc[VMIN] = 1;
@@ -31,14 +39,32 @@ void input_enable_raw(void) {
 		tcsetattr(STDIN_FILENO, TCSANOW, &t);
 	}
 	g_mod_ctrl = 0; g_mod_alt = 0; g_mod_shift = 0;
-	printf("\033[>4;2m\033[>11u\033[?1l\033>\033[?1000;1006h\033[?1004h");
-	fflush(stdout);
+	const char *on = "\033[>11u\033[?1l\033>\033[?1000;1006h\033[?1004h";
+	ssize_t w = write(STDOUT_FILENO, on, strlen(on));
+	(void)w;
 }
 
 void input_restore_sane(void) {
-	printf("\033[?1004l\033[?1000;1006l\033[<u\033[>4;0m");
-	fflush(stdout);
-	system("stty sane");
+	const char *off = "\033[?1004l\033[?1000;1006l\033[<99u\033[=0;1u\033[>4;0m";
+	ssize_t w = write(STDOUT_FILENO, off, strlen(off));
+	(void)w;
+	usleep(120000);
+	while (1) {
+		fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+		struct timeval tv = {0, 5000};
+		if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+			char drain[256];
+			if (read(STDIN_FILENO, drain, sizeof(drain)) <= 0) break;
+		} else {
+			break;
+		}
+	}
+	if (g_has_orig_termios) {
+		g_orig_termios.c_iflag |= (ICRNL | IXON);
+		g_orig_termios.c_oflag |= (OPOST | ONLCR);
+		g_orig_termios.c_lflag |= (ICANON | ECHO | ISIG | IEXTEN);
+		tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
+	}
 }
 
 static int wait_byte(int timeout_ms) {
