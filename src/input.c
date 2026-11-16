@@ -6,10 +6,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <wchar.h>
+#include <wctype.h>
 #include <signal.h>
 #include <errno.h>
 #include "input.h"
 
+int g_mod_ctrl = 0;
+int g_mod_alt = 0;
+int g_mod_shift = 0;
 static volatile sig_atomic_t g_resized = 0;
 static void on_sigwinch(int sig) { (void)sig; g_resized = 1; }
 
@@ -26,12 +30,13 @@ void input_enable_raw(void) {
 		t.c_cc[VTIME] = 0;
 		tcsetattr(STDIN_FILENO, TCSANOW, &t);
 	}
-	printf("\033[>4;2m\033[?1l\033>\033[?1000;1006h");
+	g_mod_ctrl = 0; g_mod_alt = 0; g_mod_shift = 0;
+	printf("\033[>4;2m\033[>11u\033[?1l\033>\033[?1000;1006h\033[?1004h");
 	fflush(stdout);
 }
 
 void input_restore_sane(void) {
-	printf("\033[?1000;1006l\033[>4;0m");
+	printf("\033[?1004l\033[?1000;1006l\033[<u\033[>4;0m");
 	fflush(stdout);
 	system("stty sane");
 }
@@ -51,16 +56,33 @@ static int read_byte(unsigned char *b) {
 }
 
 static wchar_t g_mod_ch = 0;
+static int ru_to_en_key(int code) {
+	wchar_t lc = (wchar_t)towlower((wint_t)code);
+	const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбюё";
+	const char    *en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
+	for (int i = 0; ru[i] != L'\0'; i++) {
+		if (lc == ru[i]) return (int)(unsigned char)en[i];
+	}
+	return code;
+}
+
 static KeyAction map_modified_code(int code, int mod) {
 	g_mod_ch = 0;
 	int has_shift = (mod == 2 || mod == 4 || mod == 6 || mod == 8);
 	int has_alt   = (mod == 3 || mod == 4 || mod == 7 || mod == 8);
 	int has_ctrl  = (mod == 5 || mod == 6 || mod == 7 || mod == 8);
+	if ((has_ctrl || has_alt) && code >= 1024) {
+		code = ru_to_en_key(code);
+	}
+
 
 	if (code == 13 || code == 10) {
-		return (has_ctrl || has_alt) ? ACT_INSERT_NAME : ACT_ENTER;
+		if (has_ctrl || has_alt) return ACT_INSERT_NAME;
+		if (has_shift) return ACT_SHIFT_ENTER;
+		return ACT_ENTER;
 	}
 	if (code == 91 && (has_ctrl || has_alt)) return ACT_INSERT_LEFT_PATH;
+	if ((code == 93 || code == 125 || code == 1098 || code == 1066) && has_shift && (has_ctrl || has_alt)) return ACT_SELECT_MATCHING_BLOCK;
 	if (code == 93 && (has_ctrl || has_alt)) return ACT_INSERT_RIGHT_PATH;
 
 	if (has_ctrl && !has_alt && !has_shift) {
@@ -72,10 +94,12 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'j' || code == 'J') return ACT_INSERT_NAME;
 		if (code == 'o' || code == 'O') return ACT_CTRL_O;
 		if (code == 'q' || code == 'Q') return ACT_CTRL_Q;
+		if (code == 'r' || code == 'R') return ACT_CTRL_R;
 		if (code == 'u' || code == 'U') return ACT_CTRL_U;
 		if (code == 'v' || code == 'V') return ACT_CTRL_V;
 		if (code == 'x' || code == 'X') return ACT_CTRL_X;
 		if (code == 'y' || code == 'Y') return ACT_CTRL_Y;
+		if (code == 'z' || code == 'Z') return ACT_CTRL_Z;
 	}
 	if (has_alt && !has_ctrl && code >= 32) {
 		g_mod_ch = (wchar_t)code;
@@ -95,19 +119,69 @@ static KeyAction parse_csi(const char *seq) {
 		}
 	}
 
-	if (seq[len - 1] == 'u') {
-		int code = 0, mod = 1;
-		if (sscanf(seq, "%d;%du", &code, &mod) == 2) {
-			return map_modified_code(code, mod);
+	if (strcmp(seq, "I") == 0 || strcmp(seq, "O") == 0) {
+		if (g_mod_ctrl || g_mod_alt || g_mod_shift) {
+			g_mod_ctrl = 0; g_mod_alt = 0; g_mod_shift = 0;
+			return ACT_MOD_CHANGE;
 		}
+		return ACT_NONE;
+	}
+
+	if (seq[len - 1] == 'u') {
+		int code = 0, mod = 1, ev_type = 1;
+		char *semi = strchr(seq, ';');
+		code = atoi(seq);
+		if (semi) {
+			mod = atoi(semi + 1);
+			char *colon = strchr(semi + 1, ':');
+			if (colon) ev_type = atoi(colon + 1);
+		} else {
+			char *colon = strchr(seq, ':');
+			if (colon) ev_type = atoi(colon + 1);
+		}
+		if (mod < 1) mod = 1;
+
+		/* Отслеживание отдельных клавиш-модификаторов Kitty Protocol */
+		if (code == 57441 || code == 57447) { g_mod_shift = (ev_type != 3); return ACT_MOD_CHANGE; }
+		if (code == 57442 || code == 57448) { g_mod_ctrl  = (ev_type != 3); return ACT_MOD_CHANGE; }
+		if (code == 57443 || code == 57449) { g_mod_alt   = (ev_type != 3); return ACT_MOD_CHANGE; }
+
+		/* Игнорируем отпускание (release = 3) для обычных клавиш */
+		if (ev_type == 3) return ACT_NONE;
+
+		/* Синхронизируем флаги модификаторов с текущим нажатием */
+		int m = mod - 1;
+		g_mod_shift = (m & 1) ? 1 : 0;
+		g_mod_alt   = (m & 2) ? 1 : 0;
+		g_mod_ctrl  = (m & 4) ? 1 : 0;
+
+		if (code == 9) return ACT_TAB;
+		if (code == 13 || code == 10) { if (g_mod_ctrl || g_mod_alt) return ACT_INSERT_NAME; if (g_mod_shift) return ACT_SHIFT_ENTER; return ACT_ENTER; }
+		if (code == 27) return ACT_ESC;
+		if (code == 127 || code == 8) return ACT_BACKSPACE;
+
+		if (mod > 1) {
+			KeyAction ma = map_modified_code(code, mod);
+			if (ma != ACT_NONE) return ma;
+		}
+		if (code >= 32 && code < 57344 && !g_mod_ctrl && !g_mod_alt) {
+			wchar_t wc = (wchar_t)code;
+			int caps = ((mod - 1) & 64) ? 1 : 0;
+			if (g_mod_shift ^ caps) wc = towupper(wc);
+			g_mod_ch = wc;
+			return ACT_CHAR;
+		}
+		return ACT_NONE;
 	}
 
 	char final = seq[len - 1];
 	int p1 = 1, mod = 1;
 	if (len == 1) {
 		mod = 1;
-	} else if (sscanf(seq, "%d;%d", &p1, &mod) != 2) {
-		sscanf(seq, "%d", &p1);
+	} else {
+		int ev_type = 1;
+		if (sscanf(seq, "%d;%d:%d", &p1, &mod, &ev_type) == 3 && ev_type == 3) return ACT_NONE;
+		else if (sscanf(seq, "%d;%d", &p1, &mod) != 2) sscanf(seq, "%d", &p1);
 	}
 
 	if (final == 'A') return (mod == 2) ? ACT_SHIFT_UP : ACT_UP;
@@ -124,16 +198,16 @@ static KeyAction parse_csi(const char *seq) {
 		if (mod == 6 || mod == 4) return ACT_WORD_SEL_LEFT;
 		return ACT_LEFT;
 	}
-	if (final == 'H') return ACT_HOME;
-	if (final == 'F') return ACT_END;
+	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
+	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
 	if (final == 'P') return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
 	if (final == 'Q') return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 	if (final == 'R') return ACT_F3;
 	if (final == 'S') return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
 
 	if (final == '~') {
-		if (p1 == 1 || p1 == 7) return ACT_HOME;
-		if (p1 == 4 || p1 == 8) return ACT_END;
+		if (p1 == 1 || p1 == 7) { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
+		if (p1 == 4 || p1 == 8) { if (mod == 2) return ACT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
 		if (p1 == 2) return (mod == 2) ? ACT_SHIFT_INSERT : ACT_INSERT;
 		if (p1 == 3) return ACT_DELETE;
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;
@@ -144,7 +218,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 14) return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
 		if (p1 == 15) return ACT_F5;
 		if (p1 == 17) return ACT_F6;
-		if (p1 == 18) return (mod == 2) ? ACT_SHIFT_F7 : ACT_F7;
+		if (p1 == 18) { if (mod == 2) return ACT_SHIFT_F7; if (mod == 5) return ACT_CTRL_F7; return ACT_F7; }
 		if (p1 == 19) return ACT_F8;
 		if (p1 == 20) return ACT_F9;
 		if (p1 == 21) return ACT_F10;
@@ -206,7 +280,7 @@ InputEvent input_read(void) {
 					}
 					return ev;
 				}
-				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR) ev.ch = g_mod_ch;
+				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR || ev.action == ACT_CHAR) ev.ch = g_mod_ch;
 				return ev;
 			}
 		} else if (b2 == 'O') {
@@ -274,10 +348,12 @@ InputEvent input_read(void) {
 	if (b == 13) { ev.action = ACT_ENTER; return ev; }
 	if (b == 15) { ev.action = ACT_CTRL_O; return ev; }
 	if (b == 17) { ev.action = ACT_CTRL_Q; return ev; }
+	if (b == 18) { ev.action = ACT_CTRL_R; return ev; }
 	if (b == 21) { ev.action = ACT_CTRL_U; return ev; }
 	if (b == 22) { ev.action = ACT_CTRL_V; return ev; }
 	if (b == 24) { ev.action = ACT_CTRL_X; return ev; }
 	if (b == 25) { ev.action = ACT_CTRL_Y; return ev; }
+	if (b == 26) { ev.action = ACT_CTRL_Z; return ev; }
 	if (b == 29) { ev.action = ACT_INSERT_RIGHT_PATH; return ev; }
 
 	if (b >= 32) {

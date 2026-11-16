@@ -13,6 +13,7 @@
 #include "panel.h"
 #include "ui.h"
 #include "input.h"
+#include "editor.h"
 
 static void build_full_path(char *out, size_t out_size, const char *dir, const char *name) {
 	if (strcmp(dir, "/") == 0) {
@@ -149,7 +150,7 @@ int create_and_edit_file(Panel *panel) {
 		build_full_path(full_path, sizeof(full_path), panel->current_path, filename);
 	}
 
-	edit_file(full_path);
+	ui_edit_file(full_path);
 
 	struct stat st;
 	if (stat(full_path, &st) == 0) {

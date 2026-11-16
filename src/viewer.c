@@ -76,10 +76,13 @@ static void viewer_draw_bars(const ViewerState *vs, const char *filepath, int he
 		mvprintw(0, width - rlen, "%s", right_info);
 	}
 
-	const char *labels[] = {
+	const char *labels[10] = {
 		"Help", vs->wrap_mode ? "Unwrap" : "Wrap", "Quit",
 		vs->hex_mode ? "Text" : "Hex", "", "", "Search", "", "", "Quit"
 	};
+	if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+		labels[6] = "Next";
+	}
 	attrset(COLOR_PAIR(6));
 	mvhline(height - 1, 0, ' ', width);
 	int col_w = width / 10;

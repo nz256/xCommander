@@ -4,9 +4,11 @@ A fast, lightweight, FAR Manager-inspired dual-panel TUI file manager and text e
 
 > **Note:** Built primarily for personal daily use on **Arch Linux** with **Kitty** as the primary terminal emulator (leveraging the Kitty Keyboard Protocol for dynamic `Ctrl`/`Alt`/`Shift` function key bars and full modifier support across layouts), while remaining compatible with other modern Linux terminals (`xterm`, `konsole`, `xfce4-terminal`).
 
+![xCommander Screenshot](docs/screenshot.png)
+
 ## Key Features
 
-- **Dual-Panel File Management:** Full UTF-8 support, color-coded directories/executables/selections, detailed status bar, persistent panel state, and instant panel swap (`Ctrl+U`).
+- **Dual-Panel File Management:** Full UTF-8 support, color-coded directories/executables/selections, detailed status bar, persistent panel state, instant panel swap (`Ctrl+U`), and opening folders/files in the system file manager (`Shift+Enter`).
 - **Drive & Mount Menu (`Alt+F1` / `Alt+F2`):** Quick switching between `$HOME`, `/`, mounted partitions (`/media`, `/run/media`, `/mnt`) with free space indicators, custom bookmarks (`~/.config/xcommander/bookmarks`), and safe USB unmount (`F8` / `Delete` via `udisksctl`).
 - **Built-in TUI Text Editor (`F4` / `Shift+F4`):**
   - Modular syntax highlighting (`C/C++`, `Python`, `Shell`, `Config`) toggled with `F4`.

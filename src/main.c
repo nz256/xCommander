@@ -14,6 +14,7 @@
 #include "exec.h"
 #include "input.h"
 #include "viewer.h"
+#include "editor.h"
 
 Panel left_panel, right_panel;
 Panel *active_panel = NULL;
@@ -664,6 +665,30 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 	return ACT_NONE;
 }
 
+static void run_multiline_script(const char *script, int was_term, const wchar_t *wcmd) {
+	if (!script || !*script) return;
+	ml_history_add(active_panel ? active_panel->current_path : ".", script);
+	char tmp_sh[128];
+	snprintf(tmp_sh, sizeof(tmp_sh), "/tmp/xc_paste_%d.sh", (int)getpid());
+	FILE *sf = fopen(tmp_sh, "w");
+	if (sf) {
+		fputs("printf \"\\n\\033[1;36m%s\\033[0m\\n\" \"$(printf '═%.0s' $(seq 1 ${COLUMNS:-80}))\"\n", sf);
+		fputs("printf \"\\033[1;33m▶ [ $(date +%H:%M:%S) | $PWD ]\\033[0m\\n\"\n", sf);
+		fputs(script, sf);
+		fputs("\nrc=$?\nif [ $rc -ne 0 ]; then\n  printf \"\\n\\033[1;31m--- Error (exit: $rc). Press any key... ---\\033[0m\"\n  read -n 1 -s -r\nfi\n", sf);
+		fclose(sf);
+		char run_sh[160];
+		snprintf(run_sh, sizeof(run_sh), ". \"%s\"", tmp_sh);
+		if (was_term) printf("\r\n");
+		execute_system_command(run_sh);
+		unlink(tmp_sh);
+		load_directory(&left_panel);
+		load_directory(&right_panel);
+	}
+	if (!was_term) { draw_screen(); refresh(); }
+	else { print_term_prompt_ex(wcmd, 1); }
+}
+
 int main(int argc, char **argv) {
 	if (!isatty(STDIN_FILENO)) {
 		setenv("TERM", "xterm-256color", 1);
@@ -731,6 +756,10 @@ int main(int argc, char **argv) {
 	while (1) {
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;
+		if (ev.action == ACT_MOD_CHANGE) {
+			if (!terminal_mode) { draw_screen(); refresh(); }
+			continue;
+		}
 		if (ev.action >= ACT_MOUSE_LEFT && ev.action <= ACT_MOUSE_WHEEL_DOWN) {
 			ev.action = handle_mouse_event(ev);
 			if (ev.action == ACT_NONE) continue;
@@ -768,27 +797,20 @@ int main(int argc, char **argv) {
 					if (was_term) { reset_prog_mode(); refresh(); }
 					int ok = ui_multiline_paste(raw_clip);
 					if (was_term) { endwin(); input_enable_raw(); }
-					if (ok) {
-						char tmp_sh[128];
-						snprintf(tmp_sh, sizeof(tmp_sh), "/tmp/xc_paste_%d.sh", (int)getpid());
-						FILE *sf = fopen(tmp_sh, "w");
-						if (sf) {
-							fputs("printf \"\\n\\033[1;36m%s\\033[0m\\n\" \"$(printf '═%.0s' $(seq 1 ${COLUMNS:-80}))\"\n", sf);
-							fputs("printf \"\\033[1;33m▶ [ $(date +%H:%M:%S) | $PWD ]\\033[0m\\n\"\n", sf);
-							fputs(raw_clip, sf);
-							fputs("\nrc=$?\nif [ $rc -ne 0 ]; then\n  printf \"\\n\\033[1;31m--- Error (exit: $rc). Press any key... ---\\033[0m\"\n  read -n 1 -s -r\nfi\n", sf);
-							fclose(sf);
-							char run_sh[160];
-							snprintf(run_sh, sizeof(run_sh), ". \"%s\"", tmp_sh);
-							if (was_term) printf("\r\n");
-							execute_system_command(run_sh);
-							unlink(tmp_sh);
-							load_directory(&left_panel);
-							load_directory(&right_panel);
-						}
+					if (ok == 1) {
+						run_multiline_script(raw_clip, was_term, wcmd);
+					} else if (ok == 2) {
+						if (was_term) { reset_prog_mode(); refresh(); }
+						char picked[65536] = {0};
+						int h_ok = ui_multiline_history(picked, sizeof(picked));
+						if (was_term) { endwin(); input_enable_raw(); }
+						if (h_ok) run_multiline_script(picked, was_term, wcmd);
+						else if (!was_term) { draw_screen(); refresh(); }
+						else { print_term_prompt(wcmd); }
+					} else {
+						if (!was_term) { draw_screen(); refresh(); }
+						else { print_term_prompt(wcmd); }
 					}
-					if (!was_term) { draw_screen(); refresh(); }
-					else { print_term_prompt_ex(wcmd, 1); }
 				} else {
 					clipboard_paste_to_cmd(wcmd);
 					if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(wcmd); }
@@ -823,6 +845,17 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_INSERT_LEFT_PATH) { insert_panel_path_to_cmd(wcmd, &left_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd); continue; }
 		if (ev.action == ACT_INSERT_RIGHT_PATH) { insert_panel_path_to_cmd(wcmd, &right_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(wcmd); continue; }
+		if (ev.action == ACT_ALT_CHAR && (ev.ch == L'h' || ev.ch == L'H' || ev.ch == L'р' || ev.ch == L'Р')) {
+			int was_term = terminal_mode;
+			if (was_term) { reset_prog_mode(); refresh(); }
+			char picked[65536] = {0};
+			int h_ok = ui_multiline_history(picked, sizeof(picked));
+			if (was_term) { endwin(); input_enable_raw(); }
+			if (h_ok) run_multiline_script(picked, was_term, wcmd);
+			else if (!was_term) { draw_screen(); refresh(); }
+			else { print_term_prompt(wcmd); }
+			continue;
+		}
 		if (!terminal_mode && iswprint(ev.ch) &&
 		    (ev.action == ACT_ALT_CHAR || (quick_search_active && ev.action == ACT_CHAR))) {
 			if (quick_search_active && wsearch_len == 1 && towlower(wsearch[0]) == towlower(ev.ch)) {
@@ -933,7 +966,14 @@ int main(int argc, char **argv) {
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); ui_view_file(fp); }
 		} else if (ev.action == ACT_F4 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); edit_file(fp); load_directory(&left_panel); load_directory(&right_panel); }
+			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
+				char fp[MAX_PATH * 2];
+				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
+				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", cur->name);
+				ui_edit_file(fp);
+				load_directory(&left_panel);
+				load_directory(&right_panel);
+			}
 		} else if (ev.action == ACT_SHIFT_F4) { if (create_and_edit_file(active_panel) > 0) { load_directory(&left_panel); load_directory(&right_panel); } }
 		else if (ev.action == ACT_F5) { Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel; if (copy_items(active_panel, oth) > 0) { load_directory(&left_panel); load_directory(&right_panel); } }
 		else if (ev.action == ACT_F6) { Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel; int ps = active_panel->selected; if (move_items(active_panel, oth) > 0) { load_directory(&left_panel); load_directory(&right_panel); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; } }
@@ -945,6 +985,17 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_DOWN && active_panel->selected < active_panel->count - 1) active_panel->selected++;
 		else if (ev.action == ACT_LEFT || ev.action == ACT_PGUP) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 6; if (vis < 1) vis = 1; active_panel->selected -= vis; if (active_panel->selected < 0) active_panel->selected = 0; }
 		else if (ev.action == ACT_RIGHT || ev.action == ACT_PGDN) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 6; if (vis < 1) vis = 1; active_panel->selected += vis; if (active_panel->selected >= active_panel->count) active_panel->selected = (active_panel->count > 0) ? (active_panel->count - 1) : 0; }
+		else if (ev.action == ACT_SHIFT_ENTER && active_panel->count > 0) {
+			FileEntry *cur = &active_panel->files[active_panel->selected];
+			char target[MAX_PATH * 2];
+			if (strcmp(cur->name, "..") == 0) snprintf(target, sizeof(target), "%s", active_panel->current_path);
+			else if (strcmp(active_panel->current_path, "/") == 0) snprintf(target, sizeof(target), "/%s", cur->name);
+			else snprintf(target, sizeof(target), "%s/%s", active_panel->current_path, cur->name);
+			char ocmd[MAX_PATH * 2 + 64];
+			snprintf(ocmd, sizeof(ocmd), "nohup xdg-open \"%s\" >/dev/null 2>&1 &", target);
+			int rc = system(ocmd);
+			(void)rc;
+		}
 		else if (ev.action == ACT_ENTER && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
