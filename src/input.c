@@ -39,7 +39,7 @@ void input_enable_raw(void) {
 		tcsetattr(STDIN_FILENO, TCSANOW, &t);
 	}
 	g_mod_ctrl = 0; g_mod_alt = 0; g_mod_shift = 0;
-	const char *on = "\033[>11u\033[?1l\033>\033[?1000;1006h\033[?1004h";
+	const char *on = "\033[>27u\033[?1l\033>\033[?1000;1006h\033[?1004h";
 	ssize_t w = write(STDOUT_FILENO, on, strlen(on));
 	(void)w;
 }
@@ -154,13 +154,15 @@ static KeyAction parse_csi(const char *seq) {
 	}
 
 	if (seq[len - 1] == 'u') {
-		int code = 0, mod = 1, ev_type = 1;
-		char *semi = strchr(seq, ';');
+		int code = 0, mod = 1, ev_type = 1, assoc_ch = 0;
+		char *semi1 = strchr(seq, ';');
 		code = atoi(seq);
-		if (semi) {
-			mod = atoi(semi + 1);
-			char *colon = strchr(semi + 1, ':');
-			if (colon) ev_type = atoi(colon + 1);
+		if (semi1) {
+			mod = atoi(semi1 + 1);
+			char *colon = strchr(semi1 + 1, ':');
+			char *semi2 = strchr(semi1 + 1, ';');
+			if (colon && (!semi2 || colon < semi2)) ev_type = atoi(colon + 1);
+			if (semi2) assoc_ch = atoi(semi2 + 1);
 		} else {
 			char *colon = strchr(seq, ':');
 			if (colon) ev_type = atoi(colon + 1);
@@ -191,9 +193,11 @@ static KeyAction parse_csi(const char *seq) {
 			if (ma != ACT_NONE) return ma;
 		}
 		if (code >= 32 && code < 57344 && !g_mod_ctrl && !g_mod_alt) {
-			wchar_t wc = (wchar_t)code;
-			int caps = ((mod - 1) & 64) ? 1 : 0;
-			if (g_mod_shift ^ caps) wc = towupper(wc);
+			wchar_t wc = (assoc_ch >= 32 && assoc_ch < 57344) ? (wchar_t)assoc_ch : (wchar_t)code;
+			if (assoc_ch == 0) {
+				int caps = ((mod - 1) & 64) ? 1 : 0;
+				if (g_mod_shift ^ caps) wc = towupper(wc);
+			}
 			g_mod_ch = wc;
 			return ACT_CHAR;
 		}
