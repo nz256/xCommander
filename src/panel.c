@@ -1,4 +1,7 @@
 #define _GNU_SOURCE
+#include <fnmatch.h>
+#include <sys/inotify.h>
+#include <unistd.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,23 +10,85 @@
 #include <sys/stat.h>
 #include "panel.h"
 
+static SortMode current_sort_mode = SORT_NAME;
+static int current_sort_desc = 0;
+
 static int compare_entries(const void *a, const void *b) {
 	const FileEntry *fa = (const FileEntry *)a;
 	const FileEntry *fb = (const FileEntry *)b;
 
+	// Родительская директория ".." всегда выше всех
 	if (strcmp(fa->name, "..") == 0) return -1;
 	if (strcmp(fb->name, "..") == 0) return 1;
 
-	if (fa->is_dir != fb->is_dir) {
-		return fb->is_dir - fa->is_dir;
+	// Директории всегда сверху файлов
+	if (fa->is_dir && !fb->is_dir) return -1;
+	if (!fa->is_dir && fb->is_dir) return 1;
+
+	int res = 0;
+
+	switch (current_sort_mode) {
+		case SORT_NAME: {
+			res = strcasecmp(fa->name, fb->name);
+			if (res == 0) res = strcmp(fa->name, fb->name);
+			break;
+		}
+		case SORT_EXT: {
+			const char *ext_a = strrchr(fa->name, '.');
+			const char *ext_b = strrchr(fb->name, '.');
+			ext_a = ext_a ? ext_a + 1 : "";
+			ext_b = ext_b ? ext_b + 1 : "";
+			res = strcasecmp(ext_a, ext_b);
+			if (res == 0) {
+				res = strcasecmp(fa->name, fb->name);
+			}
+			break;
+		}
+		case SORT_SIZE: {
+			if (fa->size < fb->size) res = -1;
+			else if (fa->size > fb->size) res = 1;
+			else res = strcasecmp(fa->name, fb->name);
+			break;
+		}
+		case SORT_TIME: {
+			if (fa->mtime < fb->mtime) res = -1;
+			else if (fa->mtime > fb->mtime) res = 1;
+			else res = strcasecmp(fa->name, fb->name);
+			break;
+		}
+		case SORT_NONE:
+		default:
+			res = 0;
+			break;
 	}
 
-	int res = strcasecmp(fa->name, fb->name);
-	if (res != 0) return res;
-	return strcmp(fa->name, fb->name);
+	return current_sort_desc ? -res : res;
+}int g_inotify_fd = -1;
+
+static void panel_watch_update(Panel *p) {
+	if (!p) return;
+	if (g_inotify_fd < 0) {
+		g_inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	}
+	if (g_inotify_fd < 0) return;
+	if (p->watch_fd >= 0) {
+		inotify_rm_watch(g_inotify_fd, p->watch_fd);
+		p->watch_fd = -1;
+	}
+	uint32_t mask = IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO |
+	                IN_ATTRIB | IN_MODIFY | IN_DELETE_SELF | IN_MOVE_SELF;
+	p->watch_fd = inotify_add_watch(g_inotify_fd, p->current_path, mask);
 }
 
 void load_directory(Panel *p) {
+	char marked_names[MAX_FILES][MAX_FILENAME];
+	int marked_cnt = 0;
+	for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
+		if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
+			snprintf(marked_names[marked_cnt++], MAX_FILENAME, "%s", p->files[i].name);
+		}
+	}
+
 	char resolved_path[MAX_PATH];
 	if (realpath(p->current_path, resolved_path) != NULL) {
 		snprintf(p->current_path, MAX_PATH, "%s", resolved_path);
@@ -76,20 +141,41 @@ void load_directory(Panel *p) {
 	}
 	closedir(d);
 
+		current_sort_mode = p->sort_mode;
+	current_sort_desc = p->sort_desc;
 	qsort(p->files, p->count, sizeof(FileEntry), compare_entries);
 
+	int prev_sel = p->selected;
 	p->selected = 0;
 	p->top_line = 0;
 
 	if (p->parent_name[0] != '\0') {
+		int found = 0;
 		for (int i = 0; i < p->count; i++) {
 			if (strcmp(p->files[i].name, p->parent_name) == 0) {
 				p->selected = i;
+				found = 1;
 				break;
 			}
 		}
+		if (!found && p->count > 0) {
+			p->selected = (prev_sel < p->count) ? prev_sel : (p->count - 1);
+		}
 		p->parent_name[0] = '\0';
 	}
+
+	if (marked_cnt > 0) {
+		for (int i = 0; i < p->count; i++) {
+			for (int m = 0; m < marked_cnt; m++) {
+				if (strcmp(p->files[i].name, marked_names[m]) == 0) {
+					p->files[i].is_selected = 1;
+					break;
+				}
+			}
+		}
+	}
+
+	panel_watch_update(p);
 }
 
 void change_directory(Panel *p, const char *new_dir) {
@@ -138,4 +224,22 @@ void panel_toggle_mark(Panel *p, int index) {
 	if (!p || index < 0 || index >= p->count) return;
 	if (strcmp(p->files[index].name, "..") == 0) return;
 	p->files[index].is_selected = !p->files[index].is_selected;
+}
+
+void panel_select_mask(Panel *p, const char *mask, int select_mode) {
+	if (!p || !mask || !*mask) return;
+	for (int i = 0; i < p->count; i++) {
+		if (strcmp(p->files[i].name, "..") == 0) continue;
+		if (fnmatch(mask, p->files[i].name, FNM_CASEFOLD) == 0) {
+			p->files[i].is_selected = select_mode ? 1 : 0;
+		}
+	}
+}
+
+void panel_invert_selection(Panel *p) {
+	if (!p) return;
+	for (int i = 0; i < p->count; i++) {
+		if (strcmp(p->files[i].name, "..") == 0) continue;
+		p->files[i].is_selected = !p->files[i].is_selected;
+	}
 }

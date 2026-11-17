@@ -45,7 +45,7 @@ void input_enable_raw(void) {
 }
 
 void input_restore_sane(void) {
-	const char *off = "\033[?1004l\033[?1000;1006l\033[<99u\033[=0;1u\033[>4;0m";
+	const char *off = "\033[?1004l\033[?1000;1006l\033[?1l\033>\033[<99u\033[=0u\033[>4;0m";
 	ssize_t w = write(STDOUT_FILENO, off, strlen(off));
 	(void)w;
 	usleep(120000);
@@ -60,10 +60,14 @@ void input_restore_sane(void) {
 		}
 	}
 	if (g_has_orig_termios) {
-		g_orig_termios.c_iflag |= (ICRNL | IXON);
-		g_orig_termios.c_oflag |= (OPOST | ONLCR);
-		g_orig_termios.c_lflag |= (ICANON | ECHO | ISIG | IEXTEN);
-		tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_orig_termios);
+		struct termios sane = g_orig_termios;
+		sane.c_iflag |= (ICRNL | IXON);
+		sane.c_iflag &= ~(unsigned int)(INLCR | IGNCR | ISTRIP);
+		sane.c_oflag |= (OPOST | ONLCR);
+		sane.c_lflag |= (ICANON | ECHO | ECHOE | ECHOK | ISIG | IEXTEN);
+		sane.c_cc[VMIN] = 1;
+		sane.c_cc[VTIME] = 0;
+		tcsetattr(STDIN_FILENO, TCSANOW, &sane);
 	}
 }
 
@@ -127,6 +131,11 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'y' || code == 'Y') return ACT_CTRL_Y;
 		if (code == 'z' || code == 'Z') return ACT_CTRL_Z;
 	}
+	if (code == 14) {
+		if (has_ctrl) return ACT_CTRL_F4;
+		if (has_shift) return ACT_SHIFT_F4;
+		return ACT_F4;
+	}
 	if (has_alt && !has_ctrl && code >= 32) {
 		g_mod_ch = (wchar_t)code;
 		return ACT_ALT_CHAR;
@@ -186,6 +195,20 @@ static KeyAction parse_csi(const char *seq) {
 		if (code == 9) return ACT_TAB;
 		if (code == 13 || code == 10) { if (g_mod_ctrl || g_mod_alt) return ACT_INSERT_NAME; if (g_mod_shift) return ACT_SHIFT_ENTER; return ACT_ENTER; }
 		if (code == 27) return ACT_ESC;
+		if (code >= 57371 && code <= 57380) {
+			int f_idx = code - 57370;
+			if (f_idx == 1) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+			if (f_idx == 2) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
+			if (f_idx == 3) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
+			if (f_idx == 4) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
+			if (f_idx == 5) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
+			if (f_idx == 6) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
+			if (f_idx == 7) return ACT_F7;
+			if (f_idx == 8) return ACT_F8;
+			if (f_idx == 9) return ACT_F9;
+			if (f_idx == 10) return ACT_F10;
+		}
+		
 		if (code == 127 || code == 8) return ACT_BACKSPACE;
 
 		if (mod > 1) {
@@ -228,26 +251,26 @@ static KeyAction parse_csi(const char *seq) {
 		if (mod == 6 || mod == 4) return ACT_WORD_SEL_LEFT;
 		return ACT_LEFT;
 	}
-	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
-	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
+	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
+	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
 	if (final == 'P') return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
 	if (final == 'Q') return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 	if (final == 'R') return ACT_F3;
-	if (final == 'S') return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
+	if (final == 'S') return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 
 	if (final == '~') {
-		if (p1 == 1 || p1 == 7) { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
-		if (p1 == 4 || p1 == 8) { if (mod == 2) return ACT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
+		if (p1 == 1 || p1 == 7) { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
+		if (p1 == 4 || p1 == 8) { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
 		if (p1 == 2) return (mod == 2) ? ACT_SHIFT_INSERT : ACT_INSERT;
 		if (p1 == 3) return ACT_DELETE;
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;
 		if (p1 == 6) return (mod == 5) ? ACT_CTRL_PGDN : ACT_PGDN;
 		if (p1 == 11) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
 		if (p1 == 12) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
-		if (p1 == 13) return ACT_F3;
-		if (p1 == 14) return (mod == 2) ? ACT_SHIFT_F4 : ACT_F4;
-		if (p1 == 15) return ACT_F5;
-		if (p1 == 17) return ACT_F6;
+		if (p1 == 13) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
+		if (p1 == 14) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
+		if (p1 == 15) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
+		if (p1 == 17) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
 		if (p1 == 18) { if (mod == 2) return ACT_SHIFT_F7; if (mod == 5) return ACT_CTRL_F7; return ACT_F7; }
 		if (p1 == 19) return ACT_F8;
 		if (p1 == 20) return ACT_F9;
@@ -257,9 +280,58 @@ static KeyAction parse_csi(const char *seq) {
 	return ACT_NONE;
 }
 
+extern int g_inotify_fd;
+
+static int poll_stdin_or_inotify(void) {
+	while (1) {
+		if (g_resized) return 0;
+		fd_set fds;
+		FD_ZERO(&fds);
+		FD_SET(STDIN_FILENO, &fds);
+		int maxfd = STDIN_FILENO;
+		if (g_inotify_fd >= 0) {
+			FD_SET(g_inotify_fd, &fds);
+			if (g_inotify_fd > maxfd) maxfd = g_inotify_fd;
+		}
+		int r = select(maxfd + 1, &fds, NULL, NULL, NULL);
+		if (r < 0) {
+			if (errno == EINTR) return 0;
+			return 1;
+		}
+		if (FD_ISSET(STDIN_FILENO, &fds)) return 1;
+		if (g_inotify_fd >= 0 && FD_ISSET(g_inotify_fd, &fds)) {
+			char buf[4096];
+			while (read(g_inotify_fd, buf, sizeof(buf)) > 0) {}
+			for (int step = 0; step < 3; step++) {
+				fd_set dfds;
+				FD_ZERO(&dfds);
+				FD_SET(STDIN_FILENO, &dfds);
+				FD_SET(g_inotify_fd, &dfds);
+				struct timeval tv = {0, 100000};
+				int dr = select(maxfd + 1, &dfds, NULL, NULL, &tv);
+				if (dr <= 0) break;
+				if (FD_ISSET(STDIN_FILENO, &dfds)) return 1;
+				if (FD_ISSET(g_inotify_fd, &dfds)) {
+					while (read(g_inotify_fd, buf, sizeof(buf)) > 0) {}
+				}
+			}
+			return 2;
+		}
+	}
+}
+
 InputEvent input_read(void) {
 	InputEvent ev = {ACT_NONE, 0, -1, -1};
 	if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; return ev; }
+	int pr = poll_stdin_or_inotify();
+	if (pr == 0) {
+		if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; }
+		return ev;
+	}
+	if (pr == 2) {
+		ev.action = ACT_DIR_CHANGED;
+		return ev;
+	}
 	unsigned char b = 0;
 	if (!read_byte(&b)) {
 		if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; }

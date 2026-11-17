@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <regex.h>
 #include <ncurses.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,11 +67,17 @@ static const char * const KW_SH[] = {
 	"exit","echo","printf","read","cd","pwd","source","set","shift","trap", NULL
 };
 
+static const char * const KW_GEN[] = {
+	"TODO","FIXME","NOTE","ERROR","WARN","WARNING","INFO","DEBUG","OK","FAIL","FAILED",
+	"TRUE","FALSE","YES","NO","ON","OFF","NULL","NONE", NULL
+};
+
 static const SyntaxLang SYNTAX_LANGS[] = {
-	{ "C/C++", { ".c", ".h", ".cpp", ".hpp", ".cc", NULL }, "//", 1, 1, KW_C },
-	{ "Python", { ".py", ".pyw", NULL }, "#", 0, 0, KW_PY },
-	{ "Shell", { ".sh", ".bash", ".zsh", NULL }, "#", 0, 0, KW_SH },
-	{ "Config", { ".conf", ".ini", ".cfg", ".toml", ".yaml", ".yml", NULL }, "#", 0, 0, NULL }
+	{ "C/C++",   { ".c", ".h", ".cpp", ".hpp", ".cc", NULL }, "//", 1, 1, KW_C },
+	{ "Python",  { ".py", ".pyw", NULL }, "#", 0, 0, KW_PY },
+	{ "Shell",   { ".sh", ".bash", ".zsh", NULL }, "#", 0, 0, KW_SH },
+	{ "Config",  { ".conf", ".ini", ".cfg", ".toml", ".yaml", ".yml", ".env", NULL }, "#", 0, 0, KW_GEN },
+	{ "Generic", { NULL }, "#", 0, 0, KW_GEN }
 };
 
 static const SyntaxLang *ed_detect_syntax(const char *filepath) {
@@ -82,7 +89,7 @@ static const SyntaxLang *ed_detect_syntax(const char *filepath) {
 			if (strcasecmp(dot, SYNTAX_LANGS[i].exts[j]) == 0) return &SYNTAX_LANGS[i];
 		}
 	}
-	return NULL;
+	return &SYNTAX_LANGS[4];
 }
 
 static int ed_is_kw(const SyntaxLang *lang, const wchar_t *w, int len) {
@@ -204,6 +211,8 @@ typedef struct {
 	int sel_end_y, sel_end_x;
 	char search_query[128];
 	char replace_query[128];
+	int search_case_sens;
+	int search_use_regex;
 	EditorSnap undo_stack[MAX_UNDO];
 	int undo_count;
 	EditorSnap redo_stack[MAX_UNDO];
@@ -393,6 +402,11 @@ static void ed_load_file(EditorState *ed, const char *filepath) {
 	}
 	free(raw);
 	if (ed->line_count == 0) ed_insert_line(ed, 0, L"", 0);
+	if (ed->syntax == &SYNTAX_LANGS[4] && ed->line_count > 0 && ed->lines[0].len > 2 &&
+	    ed->lines[0].text[0] == L'#' && ed->lines[0].text[1] == L'!') {
+		if (wcsstr(ed->lines[0].text, L"python")) ed->syntax = &SYNTAX_LANGS[1];
+		else if (wcsstr(ed->lines[0].text, L"sh") || wcsstr(ed->lines[0].text, L"bash") || wcsstr(ed->lines[0].text, L"zsh")) ed->syntax = &SYNTAX_LANGS[2];
+	}
 }
 
 static int ed_save_file(EditorState *ed) {
@@ -682,6 +696,19 @@ static void ed_draw(EditorState *ed, int *out_scr_y, int *out_scr_x) {
 	}
 	if (cursor_vcol < ed->left_col) ed->left_col = cursor_vcol;
 	if (cursor_vcol >= ed->left_col + width) ed->left_col = cursor_vcol - width + 1;
+
+	if (ed->sel_active && ed->sel_start_y == ed->cur_y && ed->sel_end_y == ed->cur_y && ed->sel_end_x > ed->cur_x) {
+		const EditorLine *cln = &ed->lines[ed->cur_y];
+		int end_vcol = 0;
+		for (int i = 0; i < ed->sel_end_x && i < cln->len; i++) {
+			end_vcol += (cln->text[i] == L'\t') ? (4 - (end_vcol % 4)) : 1;
+		}
+		if (end_vcol + 2 > ed->left_col + width) {
+			int shift = (end_vcol + 2) - width;
+			if (shift > cursor_vcol) shift = cursor_vcol;
+			if (shift > ed->left_col) ed->left_col = shift;
+		}
+	}
 
 	int m_y1 = -1, m_x1 = -1, m_y2 = -1, m_x2 = -1, m_unmatched = 0;
 	ed_find_matching_pair(ed, &m_y1, &m_x1, &m_y2, &m_x2, &m_unmatched);
@@ -976,8 +1003,117 @@ static void ed_paste_clipboard(EditorState *ed) {
 	free(wbuf);
 }
 
+static void ed_unescape_tabs(const char *src, char *dst, size_t dst_sz) {
+	size_t j = 0;
+	for (size_t i = 0; src[i] != '\0' && j + 1 < dst_sz; i++) {
+		if (src[i] == '\\' && src[i + 1] == 't') {
+			dst[j++] = '\t';
+			i++;
+		} else {
+			dst[j++] = src[i];
+		}
+	}
+	dst[j] = '\0';
+}
+
+static int ed_line_to_utf8(const EditorLine *ln, char **out_utf, int **out_b2w) {
+	int wlen = ln->len;
+	size_t cap = (size_t)wlen * 4 + 8;
+	char *utf = malloc(cap);
+	int *b2w = malloc(cap * sizeof(int));
+	if (!utf || !b2w) { free(utf); free(b2w); return -1; }
+	size_t bpos = 0;
+	for (int i = 0; i < wlen; i++) {
+		char mb[8];
+		int bl = wctomb(mb, ln->text[i]);
+		if (bl <= 0) { mb[0] = '?'; bl = 1; }
+		for (int k = 0; k < bl; k++) {
+			utf[bpos] = mb[k];
+			b2w[bpos] = i;
+			bpos++;
+		}
+	}
+	utf[bpos] = '\0';
+	b2w[bpos] = wlen;
+	*out_utf = utf;
+	*out_b2w = b2w;
+	return (int)bpos;
+}
+
+static int ed_widx_to_byte(const int *b2w, int blen, int widx) {
+	for (int b = 0; b <= blen; b++) {
+		if (b2w[b] >= widx) return b;
+	}
+	return blen;
+}
+
+static void ed_build_regex_repl(const char *repl_tmpl, const char *line_utf, const regmatch_t *pm, int nmatch, char *out, size_t out_sz) {
+	size_t j = 0;
+	for (size_t i = 0; repl_tmpl[i] != '\0' && j + 1 < out_sz; i++) {
+		if (repl_tmpl[i] == '\\' && repl_tmpl[i + 1] != '\0') {
+			char nx = repl_tmpl[i + 1];
+			if (nx == 't') { out[j++] = '\t'; i++; continue; }
+			if (nx == 'n') { out[j++] = '\n'; i++; continue; }
+			if (nx == '\\') { out[j++] = '\\'; i++; continue; }
+			if (nx >= '0' && nx <= '9') {
+				int grp = nx - '0';
+				if (grp < nmatch && pm[grp].rm_so >= 0 && pm[grp].rm_eo >= pm[grp].rm_so) {
+					size_t gl = (size_t)(pm[grp].rm_eo - pm[grp].rm_so);
+					if (j + gl >= out_sz) gl = out_sz - 1 - j;
+					memcpy(out + j, line_utf + pm[grp].rm_so, gl);
+					j += gl;
+				}
+				i++;
+				continue;
+			}
+		}
+		out[j++] = repl_tmpl[i];
+	}
+	out[j] = '\0';
+}
+
 static int ed_find(EditorState *ed, int start_y, int start_x) {
 	if (ed->search_query[0] == '\0') return 0;
+
+	if (ed->search_use_regex) {
+		char pat[256];
+		ed_unescape_tabs(ed->search_query, pat, sizeof(pat));
+		regex_t re;
+		int cflags = REG_EXTENDED | (ed->search_case_sens ? 0 : REG_ICASE);
+		int rc = regcomp(&re, pat, cflags);
+		if (rc != 0) {
+			char err[128];
+			regerror(rc, &re, err, sizeof(err));
+			ui_message("RegExp Error", err);
+			return -1;
+		}
+		for (int y = start_y; y < ed->line_count; y++) {
+			const EditorLine *ln = &ed->lines[y];
+			int x0 = (y == start_y) ? start_x : 0;
+			if (x0 > ln->len) continue;
+			char *utf = NULL; int *b2w = NULL;
+			int blen = ed_line_to_utf8(ln, &utf, &b2w);
+			if (blen < 0) continue;
+			int boff = ed_widx_to_byte(b2w, blen, x0);
+			regmatch_t pm[1];
+			int eflags = (boff > 0) ? REG_NOTBOL : 0;
+			if (regexec(&re, utf + boff, 1, pm, eflags) == 0) {
+				int wx1 = b2w[boff + pm[0].rm_so];
+				int wx2 = b2w[boff + pm[0].rm_eo];
+				free(utf); free(b2w); regfree(&re);
+				ed->cur_y = y;
+				ed->cur_x = wx1;
+				ed->sel_active = 1;
+				ed->sel_start_y = y; ed->sel_start_x = wx1;
+				ed->sel_end_y = y;   ed->sel_end_x = wx2;
+				return 1;
+			}
+			free(utf); free(b2w);
+		}
+		regfree(&re);
+		return 0;
+	}
+
 	wchar_t wq[128];
 	size_t qlen = mbstowcs(wq, ed->search_query, 127);
 	if (qlen == (size_t)-1 || qlen == 0) return 0;
@@ -987,7 +1123,10 @@ static int ed_find(EditorState *ed, int start_y, int start_x) {
 		const EditorLine *ln = &ed->lines[y];
 		int x0 = (y == start_y) ? start_x : 0;
 		for (int x = x0; x + (int)qlen <= ln->len; x++) {
-			if (wcsncasecmp(ln->text + x, wq, qlen) == 0) {
+			int eq = ed->search_case_sens
+			         ? (wcsncmp(ln->text + x, wq, qlen) == 0)
+			         : (wcsncasecmp(ln->text + x, wq, qlen) == 0);
+			if (eq) {
 				ed->cur_y = y;
 				ed->cur_x = x;
 				ed->sel_active = 1;
@@ -1016,6 +1155,78 @@ static void ed_replace_match(EditorState *ed, int y, int x, int qlen, const wcha
 
 static int ed_interactive_replace(EditorState *ed) {
 	if (ed->search_query[0] == '\0') return 0;
+
+	if (ed->search_use_regex) {
+		char pat[256];
+		ed_unescape_tabs(ed->search_query, pat, sizeof(pat));
+		regex_t re;
+		int cflags = REG_EXTENDED | (ed->search_case_sens ? 0 : REG_ICASE);
+		int rc = regcomp(&re, pat, cflags);
+		if (rc != 0) {
+			char err[128];
+			regerror(rc, &re, err, sizeof(err));
+			ui_message("RegExp Error", err);
+			return 0;
+		}
+		int count = 0, replace_all = 0, saved_undo = 0;
+		int y = ed->cur_y, x = ed->cur_x;
+		while (y < ed->line_count) {
+			EditorLine *ln = &ed->lines[y];
+			if (x > ln->len) { y++; x = 0; continue; }
+			char *utf = NULL; int *b2w = NULL;
+			int blen = ed_line_to_utf8(ln, &utf, &b2w);
+			if (blen < 0) { y++; x = 0; continue; }
+			int boff = ed_widx_to_byte(b2w, blen, x);
+			regmatch_t pm[10];
+			int eflags = (boff > 0) ? REG_NOTBOL : 0;
+			if (regexec(&re, utf + boff, 10, pm, eflags) != 0) {
+				free(utf); free(b2w);
+				y++; x = 0;
+				continue;
+			}
+			for (int g = 0; g < 10; g++) {
+				if (pm[g].rm_so >= 0) { pm[g].rm_so += boff; pm[g].rm_eo += boff; }
+			}
+			int wx1 = b2w[pm[0].rm_so];
+			int wx2 = b2w[pm[0].rm_eo];
+			int mlen = wx2 - wx1;
+
+			char repl_utf[1024];
+			ed_build_regex_repl(ed->replace_query, utf, pm, 10, repl_utf, sizeof(repl_utf));
+			free(utf); free(b2w);
+
+			if (!replace_all) {
+				ed->cur_y = y; ed->cur_x = wx1;
+				ed->sel_active = 1;
+				ed->sel_start_y = y; ed->sel_start_x = wx1;
+				ed->sel_end_y = y;   ed->sel_end_x = wx2;
+				int sy = 1, sx = 0;
+				ed_draw(ed, &sy, &sx);
+				refresh();
+				int act = ui_replace_prompt(ed->search_query, repl_utf, sy);
+				ed_clear_sel(ed);
+				if (act == 0) break;
+				if (act == 3) { x = wx1 + (mlen > 0 ? 1 : 1); continue; }
+				if (act == 2) replace_all = 1;
+			}
+
+			wchar_t wr[1024];
+			size_t rlen = mbstowcs(wr, repl_utf, 1023);
+			if (rlen == (size_t)-1) rlen = 0;
+			wr[rlen] = L'\0';
+
+			if (!saved_undo) { ed_push_undo(ed); saved_undo = 1; }
+			ed_replace_match(ed, y, wx1, mlen, wr, (int)rlen);
+			count++;
+			if (mlen == 0 && rlen == 0) x = wx1 + 1;
+			else if (mlen == 0) { x = wx1 + (int)rlen + 1; }
+			else x = wx1 + (int)rlen;
+		}
+		regfree(&re);
+		ed_clear_sel(ed);
+		return count;
+	}
+
 	wchar_t wq[128], wr[128];
 	size_t qlen = mbstowcs(wq, ed->search_query, 127);
 	size_t rlen = mbstowcs(wr, ed->replace_query, 127);
@@ -1033,7 +1244,10 @@ static int ed_interactive_replace(EditorState *ed) {
 		EditorLine *ln = &ed->lines[y];
 		int found = 0;
 		while (x + (int)qlen <= ln->len) {
-			if (wcsncasecmp(ln->text + x, wq, qlen) == 0) {
+			int eq = ed->search_case_sens
+			         ? (wcsncmp(ln->text + x, wq, qlen) == 0)
+			         : (wcsncasecmp(ln->text + x, wq, qlen) == 0);
+			if (eq) {
 				found = 1;
 				break;
 			}
@@ -1058,8 +1272,8 @@ static int ed_interactive_replace(EditorState *ed) {
 
 			int act = ui_replace_prompt(ed->search_query, ed->replace_query, sy);
 			ed_clear_sel(ed);
-			if (act == 0) break; /* Cancel */
-			if (act == 3) {      /* Skip */
+			if (act == 0) break;
+			if (act == 3) {
 				x++;
 				continue;
 			}
@@ -1208,9 +1422,9 @@ void ui_edit_file(const char *filepath) {
 		if (ev.action == ACT_ESC || ev.action == ACT_F10 || ev.action == ACT_CTRL_Q) {
 			if (ed.modified) {
 				curs_set(0);
-				if (ui_confirm("Save changes", "File was modified. Save before exit?")) {
-					if (!ed_save_file(&ed)) continue;
-				}
+				int ans = ui_confirm_cancel("Save changes", "File was modified. Save before exit?");
+				if (ans < 0) continue;
+				if (ans == 1 && !ed_save_file(&ed)) continue;
 			}
 			break;
 		}
@@ -1235,7 +1449,7 @@ void ui_edit_file(const char *filepath) {
 			}
 		} else if (ev.action == ACT_CTRL_F7) {
 			curs_set(0);
-			if (ui_replace_dialog(ed.search_query, sizeof(ed.search_query), ed.replace_query, sizeof(ed.replace_query))) {
+			if (ui_replace_dialog(ed.search_query, sizeof(ed.search_query), ed.replace_query, sizeof(ed.replace_query), &ed.search_case_sens, &ed.search_use_regex)) {
 				int cnt = ed_interactive_replace(&ed);
 				(void)ed_replace_all;
 				char rmsg[64];
@@ -1257,13 +1471,16 @@ void ui_edit_file(const char *filepath) {
 			ed_paste_clipboard(&ed);
 		} else if (ev.action == ACT_F7) {
 			curs_set(0);
-			if (ui_input("Search (F7)", "Text to find:", ed.search_query, sizeof(ed.search_query))) {
-				if (!ed_find(&ed, ed.cur_y, ed.cur_x) && !ed_find(&ed, 0, 0)) {
+			if (ui_search_dialog(ed.search_query, sizeof(ed.search_query), &ed.search_case_sens, &ed.search_use_regex)) {
+				int fr = ed_find(&ed, ed.cur_y, ed.cur_x);
+				if (fr == 0) fr = ed_find(&ed, 0, 0);
+				if (fr == 0) {
 					ui_message("Search", "Text not found");
 				}
 			}
 		} else if (ev.action == ACT_SHIFT_F7 && ed.search_query[0] != '\0') {
-			if (!ed_find(&ed, ed.cur_y, ed.cur_x + 1)) {
+			int fr = ed_find(&ed, ed.cur_y, ed.cur_x + 1);
+			if (fr == 0) {
 				curs_set(0);
 				ui_message("Search", "No more matches found");
 			}

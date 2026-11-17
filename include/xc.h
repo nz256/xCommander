@@ -7,6 +7,14 @@
 #define MAX_PATH 4096
 #define MAX_CMD 1024
 
+typedef enum {
+	SORT_NAME = 0,
+	SORT_EXT,
+	SORT_SIZE,
+	SORT_TIME,
+	SORT_NONE
+} SortMode;
+
 typedef struct {
 	char name[MAX_FILENAME];
 	int is_dir;
@@ -24,6 +32,9 @@ typedef struct {
 	int top_line;
 	char current_path[MAX_PATH];
 	char parent_name[MAX_FILENAME];
+	SortMode sort_mode;
+	int sort_desc;
+	int watch_fd;
 } Panel;
 
 extern Panel left_panel;

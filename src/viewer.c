@@ -158,40 +158,44 @@ static void viewer_draw_text(const ViewerState *vs, int height, int width) {
 		while (pos < end && screen_y <= vis_rows) {
 			wchar_t wc = L'?';
 			int step = mbtowc(&wc, (const char *)(vs->data + pos), end - pos);
-			if (step <= 0) {
-				wc = (vs->data[pos] >= 32) ? (wchar_t)vs->data[pos] : L'.';
+			if (step <= 0 || (wc < 32 && wc != L'\t') || (wc >= 0x80 && wc <= 0x9F) || !iswprint(wc)) {
+				unsigned char b = vs->data[pos];
+				wc = (b >= 32 && b <= 126) ? (wchar_t)b : L'.';
 				step = 1;
 			}
-			int cw = (wc == L'\t') ? (4 - (col % 4)) : 1;
-			if (wc < 32 && wc != L'\t') wc = L'.';
+			int cw = (wc == L'\t') ? (4 - (col % 4)) : wcwidth(wc);
+			if (cw < 1) { wc = L'.'; cw = 1; step = 1; }
 
 			int is_match = (vs->match_len > 0 && pos >= vs->match_offset && pos < vs->match_offset + vs->match_len);
 			attrset(is_match ? COLOR_PAIR(2) : COLOR_PAIR(1));
 
-			for (int k = 0; k < cw; k++) {
-				if (vs->wrap_mode) {
-					if (col >= width) {
-						col = 0;
-						screen_y++;
-						if (screen_y > vis_rows) break;
+			if (vs->wrap_mode) {
+				if (col + cw > width) {
+					col = 0;
+					screen_y++;
+					if (screen_y > vis_rows) break;
+				}
+				if (wc == L'\t') {
+					for (int k = 0; k < cw && col < width; k++) mvaddch(screen_y, col++, ' ');
+				} else {
+					char mb[8] = {0};
+					int bl = wctomb(mb, wc);
+					if (bl > 0) mvaddstr(screen_y, col, mb);
+					col += cw;
+				}
+			} else {
+				if (wc == L'\t') {
+					for (int k = 0; k < cw; k++) {
+						if (col >= skip && (col - skip) < width) mvaddch(screen_y, col - skip, ' ');
+						col++;
 					}
-					if (wc == L'\t' || k > 0) mvaddch(screen_y, col, ' ');
-					else {
+				} else {
+					if (col >= skip && (col - skip + cw) <= width) {
 						char mb[8] = {0};
 						int bl = wctomb(mb, wc);
-						if (bl > 0) mvaddstr(screen_y, col, mb);
+						if (bl > 0) mvaddstr(screen_y, col - skip, mb);
 					}
-					col++;
-				} else {
-					if (col >= skip && (col - skip) < width) {
-						if (wc == L'\t' || k > 0) mvaddch(screen_y, col - skip, ' ');
-						else {
-							char mb[8] = {0};
-							int bl = wctomb(mb, wc);
-							if (bl > 0) mvaddstr(screen_y, col - skip, mb);
-						}
-					}
-					col++;
+					col += cw;
 				}
 			}
 			pos += (size_t)step;
@@ -347,5 +351,6 @@ void ui_view_file(const char *filepath) {
 
 	free(vs.line_offsets);
 	free(vs.data);
+	clearok(stdscr, TRUE);
 	touchwin(stdscr);
 }

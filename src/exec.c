@@ -23,7 +23,36 @@ static void build_full_path(char *out, size_t out_size, const char *dir, const c
 	}
 }
 
+static int g_overwrite_all = 0;
+
+static int check_overwrite(const char *src_path, const char *dst_path) {
+	struct stat dst_st;
+	if (lstat(dst_path, &dst_st) != 0) return 1;
+	if (S_ISDIR(dst_st.st_mode)) return 1;
+	if (g_overwrite_all) return 1;
+
+	struct stat src_st;
+	memset(&src_st, 0, sizeof(src_st));
+	lstat(src_path, &src_st);
+
+	const char *base = strrchr(dst_path, '/');
+	base = base ? (base + 1) : dst_path;
+
+	int act = ui_overwrite_prompt(base, src_st.st_size, src_st.st_mtime, dst_st.st_size, dst_st.st_mtime);
+	if (act == 2) {
+		g_overwrite_all = 1;
+		return 1;
+	}
+	if (act == 1) return 1;
+	if (act == 3) return 0;
+	return -1;
+}
+
 static int copy_single_file(const char *src_path, const char *dst_path, mode_t mode) {
+	int ovr = check_overwrite(src_path, dst_path);
+	if (ovr == 0) return 0;
+	if (ovr < 0) return -2;
+
 	FILE *in = fopen(src_path, "rb");
 	if (!in) return -1;
 
@@ -122,6 +151,13 @@ static int delete_recursive(const char *target_path) {
 static int move_single_path(const char *src_full, const char *dst_full) {
 	if (strcmp(src_full, dst_full) == 0) return 0;
 
+	struct stat st_src;
+	if (lstat(src_full, &st_src) == 0 && !S_ISDIR(st_src.st_mode)) {
+		int ovr = check_overwrite(src_full, dst_full);
+		if (ovr == 0) return 0;
+		if (ovr < 0) return -2;
+	}
+
 	if (rename(src_full, dst_full) != 0) {
 		if (errno == EXDEV) {
 			if (copy_recursive(src_full, dst_full) != 0 || delete_recursive(src_full) != 0) {
@@ -170,46 +206,78 @@ int copy_items(const Panel *src_panel, const Panel *dst_panel) {
 		const FileEntry *item = &src_panel->files[src_panel->selected];
 		if (strcmp(item->name, "..") == 0) return 0;
 
+		char dest_input[MAX_PATH * 2];
 		if (strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
+			snprintf(dest_input, sizeof(dest_input), "%s", item->name);
+		} else {
+			build_full_path(dest_input, sizeof(dest_input), dst_panel->current_path, item->name);
+		}
+
+		char prompt[MAX_FILENAME + 64];
+		snprintf(prompt, sizeof(prompt), "Copy \"%s\" to:", item->name);
+
+		if (!ui_input("Copy (F5)", prompt, dest_input, sizeof(dest_input))) return 0;
+		if (strlen(dest_input) == 0) return 0;
+
+		char src_full[MAX_PATH * 2];
+		char dst_full[MAX_PATH * 5];
+		build_full_path(src_full, sizeof(src_full), src_panel->current_path, item->name);
+
+		if (dest_input[0] == '/') {
+			snprintf(dst_full, sizeof(dst_full), "%s", dest_input);
+		} else {
+			build_full_path(dst_full, sizeof(dst_full), src_panel->current_path, dest_input);
+		}
+
+		struct stat st;
+		if (stat(dst_full, &st) == 0 && S_ISDIR(st.st_mode)) {
+			char tmp[MAX_PATH * 5 + MAX_FILENAME + 2];
+			build_full_path(tmp, sizeof(tmp), dst_full, item->name);
+			size_t tlen = strlen(tmp);
+			if (tlen < sizeof(dst_full)) {
+				memcpy(dst_full, tmp, tlen + 1);
+			}
+		}
+
+		if (strcmp(src_full, dst_full) == 0) {
 			ui_message("Error", "Cannot copy item onto itself");
 			return -1;
 		}
 
-		char prompt[MAX_PATH + 64];
-		snprintf(prompt, sizeof(prompt), "Copy \"%s\" to %s?", item->name, dst_panel->current_path);
-		if (!ui_confirm("Copy (F5)", prompt)) return 0;
-
-		char src_full[MAX_PATH * 2];
-		char dst_full[MAX_PATH * 2];
-		build_full_path(src_full, sizeof(src_full), src_panel->current_path, item->name);
-		build_full_path(dst_full, sizeof(dst_full), dst_panel->current_path, item->name);
-
-		if (copy_recursive(src_full, dst_full) != 0) {
+		g_overwrite_all = 0;
+		int cr = copy_recursive(src_full, dst_full);
+		if (cr == -2) return 0;
+		if (cr != 0) {
 			ui_message("Error", "Failed to copy item");
 			return -1;
 		}
 		return 1;
 	}
 
-	if (strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
-		ui_message("Error", "Cannot copy items to the same folder");
-		return -1;
-	}
+	char dest_dir[MAX_PATH * 2];
+	snprintf(dest_dir, sizeof(dest_dir), "%s", dst_panel->current_path);
 
-	char prompt[MAX_PATH + 64];
-	snprintf(prompt, sizeof(prompt), "Copy selected (%d items) to %s?", marked, dst_panel->current_path);
-	if (!ui_confirm("Copy Group (F5)", prompt)) return 0;
+	char prompt[64];
+	snprintf(prompt, sizeof(prompt), "Copy selected (%d items) to:", marked);
 
+	if (!ui_input("Copy Group (F5)", prompt, dest_dir, sizeof(dest_dir))) return 0;
+	if (strlen(dest_dir) == 0) return 0;
+
+	g_overwrite_all = 0;
 	for (int i = 0; i < src_panel->count; i++) {
 		if (!src_panel->files[i].is_selected) continue;
 		if (strcmp(src_panel->files[i].name, "..") == 0) continue;
 
 		char src_full[MAX_PATH * 2];
-		char dst_full[MAX_PATH * 2];
+		char dst_full[MAX_PATH * 3];
 		build_full_path(src_full, sizeof(src_full), src_panel->current_path, src_panel->files[i].name);
-		build_full_path(dst_full, sizeof(dst_full), dst_panel->current_path, src_panel->files[i].name);
+		build_full_path(dst_full, sizeof(dst_full), dest_dir, src_panel->files[i].name);
 
-		if (copy_recursive(src_full, dst_full) != 0) {
+		if (strcmp(src_full, dst_full) == 0) continue;
+
+		int cr = copy_recursive(src_full, dst_full);
+		if (cr == -2) return 1;
+		if (cr != 0) {
 			ui_message("Error", "Error copying file group");
 			return -1;
 		}
@@ -258,7 +326,10 @@ int move_items(const Panel *src_panel, const Panel *dst_panel) {
 			}
 		}
 
-		if (move_single_path(src_full, dst_full) != 0) {
+		g_overwrite_all = 0;
+		int mr = move_single_path(src_full, dst_full);
+		if (mr == -2) return 0;
+		if (mr != 0) {
 			ui_message("Error", "Failed to move or rename item");
 			return -1;
 		}
@@ -283,7 +354,9 @@ int move_items(const Panel *src_panel, const Panel *dst_panel) {
 		build_full_path(src_full, sizeof(src_full), src_panel->current_path, src_panel->files[i].name);
 		build_full_path(dst_full, sizeof(dst_full), dest_dir, src_panel->files[i].name);
 
-		if (move_single_path(src_full, dst_full) != 0) {
+		int mr = move_single_path(src_full, dst_full);
+		if (mr == -2) return 1;
+		if (mr != 0) {
 			ui_message("Error", "Error moving file group");
 			return -1;
 		}
@@ -359,14 +432,65 @@ int delete_items(const Panel *panel) {
 	return 1;
 }
 
+static int build_run_script(char *out_path, size_t out_size, const char *workdir) {
+	snprintf(out_path, out_size, "/tmp/xc_run_%d.sh", (int)getpid());
+	FILE *out = fopen(out_path, "w");
+	if (!out) { out_path[0] = '\0'; return 0; }
+
+	fputs("shopt -s expand_aliases 2>/dev/null\n", out);
+	fputs("PS1='$ '\n", out);
+	fputs("bind() { :; }\n", out);
+
+	const char *home = getenv("HOME");
+	if (home && *home) {
+		char src_rc[MAX_PATH];
+		snprintf(src_rc, sizeof(src_rc), "%s/.bashrc", home);
+		FILE *in = fopen(src_rc, "r");
+		if (in) {
+			char line[4096];
+			int in_case_i = 0;
+			while (fgets(line, sizeof(line), in)) {
+				if (strstr(line, "case") && strstr(line, "$-")) {
+					in_case_i = 1;
+					continue;
+				}
+				if (in_case_i) {
+					if (strstr(line, "esac")) in_case_i = 0;
+					continue;
+				}
+				if ((strstr(line, "$-") || strstr(line, "PS1")) && strstr(line, "return")) {
+					continue;
+				}
+				fputs(line, out);
+			}
+			fclose(in);
+		}
+	}
+
+	fprintf(out, "\ncd \"%s\" || exit 1\n", workdir);
+	fclose(out);
+	return 1;
+}
+
 void execute_system_command(const char *cmd) {
 	if (strlen(cmd) == 0) return;
 
+	input_restore_sane();
 	if (!terminal_mode) {
 		def_prog_mode();
+		nl();
 		endwin();
+		input_restore_sane();
 	}
-	input_restore_sane();
+	if (!terminal_mode) {
+		char saved_cmd[MAX_CMD];
+		snprintf(saved_cmd, sizeof(saved_cmd), "%s", cmd_buffer);
+		snprintf(cmd_buffer, sizeof(cmd_buffer), "%s", cmd);
+		print_term_prompt_ex(NULL, 1);
+		snprintf(cmd_buffer, sizeof(cmd_buffer), "%s", saved_cmd);
+		printf("\r\n");
+		fflush(stdout);
+	}
 
 	char pwd_file[128];
 	char other_pwd_file[128];
@@ -375,16 +499,24 @@ void execute_system_command(const char *cmd) {
 	unlink(pwd_file);
 	unlink(other_pwd_file);
 
-	char full_cmd[MAX_CMD + MAX_PATH + 128];
+	char full_cmd[MAX_CMD + MAX_PATH + 256];
 	const char *shell = getenv("SHELL");
 	if (!shell) shell = "/bin/bash";
 
 	setenv("XC_PWD_FILE", pwd_file, 1);
 	setenv("XC_OTHER_PWD_FILE", other_pwd_file, 1);
-	snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
+	char clean_rc[128] = "";
+	setenv("XC_USER_CMD", cmd, 1);
+	if (build_run_script(clean_rc, sizeof(clean_rc), active_panel->current_path)) {
+		snprintf(full_cmd, sizeof(full_cmd), "%s -c '. \"%s\"; eval \"$XC_USER_CMD\"\nxc_rc=$?; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"; exit $xc_rc' bash", shell, clean_rc);
+	} else {
+		snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
+	}
 	system(full_cmd);
+	if (clean_rc[0] != '\0') unlink(clean_rc);
 	unsetenv("XC_PWD_FILE");
 	unsetenv("XC_OTHER_PWD_FILE");
+	unsetenv("XC_USER_CMD");
 
 	FILE *pf = fopen(pwd_file, "r");
 	if (pf) {
@@ -422,7 +554,10 @@ void execute_system_command(const char *cmd) {
 	unlink(other_pwd_file);
 
 	if (!terminal_mode) {
+		printf("\r\n");
+		fflush(stdout);
 		reset_prog_mode();
+		nonl();
 		clearok(stdscr, TRUE);
 		refresh();
 	}
@@ -565,6 +700,7 @@ int clipboard_paste_files(Panel *dst_panel) {
 	if (!ui_confirm(clip_is_cut ? "Move (Ctrl+V)" : "Paste (Ctrl+V)", prompt)) return 0;
 
 	int ok_count = 0;
+	g_overwrite_all = 0;
 	for (int i = 0; i < clip_count; i++) {
 		const char *base = strrchr(clip_paths[i], '/');
 		base = base ? (base + 1) : clip_paths[i];
@@ -574,6 +710,7 @@ int clipboard_paste_files(Panel *dst_panel) {
 		if (strcmp(clip_paths[i], dst_full) == 0) continue;
 
 		int res = clip_is_cut ? move_single_path(clip_paths[i], dst_full) : copy_recursive(clip_paths[i], dst_full);
+		if (res == -2) break;
 		if (res != 0) {
 			ui_message("Error", clip_is_cut ? "Failed to move item" : "Failed to paste item");
 			return -1;

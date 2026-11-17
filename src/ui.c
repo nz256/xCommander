@@ -1,4 +1,7 @@
 #define _GNU_SOURCE
+#include <sys/ioctl.h>
+#include "cmdline.h"
+#include <unistd.h>
 #include <sys/statvfs.h>
 #include <ctype.h>
 #include <time.h>
@@ -12,6 +15,7 @@
 #include "exec.h"
 #include "panel.h"
 #include "input.h"
+#include "editor.h"
 
 static int build_cmd_prompt(char *out, int out_size, int max_cols) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
@@ -135,10 +139,12 @@ void ui_init(void) {
 		init_pair(10, 46, 37);   /* Исполняемые файлы под курсором */
 		init_pair(11, 51, 37);   /* Обычные файлы под курсором (ярко-голубой на бирюзовом) */
 		init_pair(13, 231, 18);  /* Синтаксис: ключевые слова (ярко-белый) */
-		init_pair(14, 120, 18);  /* Синтаксис: строки (мягкий зелёный) */
-		init_pair(15, 228, 18);  /* Синтаксис: числа и директивы (светло-жёлтый) */
-		init_pair(16, 103, 18);  /* Синтаксис: комментарии (серо-синий) */
+		init_pair(14, 226, 18);  /* Синтаксис: строки в кавычках (ярко-жёлтый) */
+		init_pair(15, 214, 18);  /* Синтаксис: числа (ярко-оранжевый) */
+		init_pair(16, 117, 18);  /* Синтаксис: комментарии (яркий небесно-голубой) */
 		init_pair(17, 231, 160); /* Непарная скобка (белый на красном) */
+		init_pair(18, 213, 18);  /* Синтаксис: директивы и константы (ярко-пурпурный) */
+		init_pair(19, 118, 18);  /* Синтаксис: операторы и скобки (ярко-салатовый) */
 	} else {
 		init_pair(12, COLOR_BLUE, COLOR_WHITE);
 		init_pair(1, COLOR_CYAN, COLOR_BLUE);
@@ -157,6 +163,8 @@ void ui_init(void) {
 		init_pair(15, COLOR_YELLOW, COLOR_BLUE);
 		init_pair(16, COLOR_CYAN, COLOR_BLUE);
 		init_pair(17, COLOR_WHITE, COLOR_RED);
+		init_pair(18, COLOR_MAGENTA, COLOR_BLUE);
+		init_pair(19, COLOR_GREEN, COLOR_BLUE);
 		init_pair(12, COLOR_YELLOW, COLOR_WHITE);
 	}
 
@@ -267,10 +275,20 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	mvaddstr(start_y + height - 1, start_x + width - 1, "┘");
 
 	/* Заголовок пути в верхней рамке */
-	int max_path_len = width - 6;
+	// Определяем суффикс сортировки
+	const char *s_name = "Name";
+	if (p->sort_mode == SORT_EXT) s_name = "Ext";
+	else if (p->sort_mode == SORT_SIZE) s_name = "Size";
+	else if (p->sort_mode == SORT_TIME) s_name = "Time";
+	else if (p->sort_mode == SORT_NONE) s_name = "None";
+
+	char sort_info[32];
+	snprintf(sort_info, sizeof(sort_info), " [%s%s] ", s_name, p->sort_desc ? "↓" : "↑");
+
+	int max_path_len = width - 6 - (int)strlen(sort_info);
 	if (max_path_len < 1) max_path_len = 1;
 	char short_path[MAX_PATH];
-	snprintf(short_path, (size_t)max_path_len + 1, "%s", p->current_path);
+	snprintf(short_path, (size_t)max_path_len + 1, "%s%s", p->current_path, sort_info);
 
 	int path_len = (int)mbstowcs(NULL, short_path, 0);
 	if (path_len < 0) path_len = (int)strlen(short_path);
@@ -363,7 +381,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 		else format_size(cur->size, sz, sizeof(sz));
 		format_perms(cur->mode, perms);
 		struct tm *tm_info = localtime(&cur->mtime);
-		if (tm_info) strftime(tbuf, sizeof(tbuf), "%d %b %H:%M", tm_info);
+		if (tm_info) strftime(tbuf, sizeof(tbuf), "%d.%m.%Y %H:%M", tm_info);
 		snprintf(meta, sizeof(meta), "%s  %s  %s", sz, perms, tbuf);
 
 		int meta_len = (int)strlen(meta);
@@ -395,29 +413,34 @@ void draw_screen(void) {
 
 	char prompt[MAX_PATH + 16];
 	int prompt_cols = build_cmd_prompt(prompt, sizeof(prompt), width);
+	int avail = width - prompt_cols;
+	if (avail < 4) avail = 4;
+
+	if (cmd_pos < cmd_scroll) cmd_scroll = cmd_pos;
+	if (cmd_pos >= cmd_scroll + avail) cmd_scroll = cmd_pos - avail + 1;
+	if (cmd_scroll < 0) cmd_scroll = 0;
 
 	attrset(COLOR_PAIR(6));
 	mvhline(height - 2, 0, ' ', width);
-	mvprintw(height - 2, 0, "%s%s", prompt, cmd_buffer);
-	attrset(A_NORMAL);
+	mvprintw(height - 2, 0, "%s", prompt);
+	if (cmd_len > cmd_scroll) {
+		mvaddnwstr(height - 2, prompt_cols, cmd_wbuf + cmd_scroll, avail);
+	}
 
 	if (cmd_sel_start >= 0 && cmd_sel_end > cmd_sel_start) {
-		wchar_t wtmp[MAX_CMD];
-		size_t wl = mbstowcs(wtmp, cmd_buffer, MAX_CMD - 1);
-		if (wl != (size_t)-1 && cmd_sel_end <= (int)wl) {
-			wtmp[cmd_sel_end] = L'\0';
-			char sub_utf[MAX_CMD];
-			if (wcstombs(sub_utf, wtmp + cmd_sel_start, sizeof(sub_utf)) != (size_t)-1) {
-				attron(COLOR_PAIR(6) | A_REVERSE);
-				mvprintw(height - 2, prompt_cols + cmd_sel_start, "%s", sub_utf);
-				attroff(COLOR_PAIR(6) | A_REVERSE);
-			}
+		int s1 = (cmd_sel_start < cmd_scroll) ? cmd_scroll : cmd_sel_start;
+		int s2 = (cmd_sel_end > cmd_scroll + avail) ? (cmd_scroll + avail) : cmd_sel_end;
+		if (s2 > s1) {
+			attron(A_REVERSE);
+			mvaddnwstr(height - 2, prompt_cols + (s1 - cmd_scroll), cmd_wbuf + s1, s2 - s1);
+			attroff(A_REVERSE);
 		}
 	}
+	attrset(A_NORMAL);
 
 	draw_fkey_bar(height - 1, width);
 
-	int cursor_x = prompt_cols + cmd_pos;
+	int cursor_x = prompt_cols + (cmd_pos - cmd_scroll);
 	if (cursor_x >= width) cursor_x = width - 1;
 	move(height - 2, cursor_x);
 	curs_set(1);
@@ -573,7 +596,7 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 	int len = (conv == (size_t)-1) ? 0 : (int)conv;
 	wbuf[len] = L'\0';
 	int pos = len;
-	int sel_anchor = -1;
+	int sel_anchor = (len > 0) ? 0 : -1;
 
 	int field_w = box_w - 6;
 	int res = 0;
@@ -631,6 +654,34 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y;
+			int wx = ev.mouse_x - start_x;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) {
+				res = 0;
+				break;
+			}
+			if (wy == 2 && wx >= 3 && wx < 3 + field_w) {
+				focus = 0;
+				sel_anchor = -1;
+				int new_pos = offset + (wx - 3);
+				pos = (new_pos > len) ? len : new_pos;
+				continue;
+			}
+			if (wy == 4) {
+				if (wx >= btn_x && wx < btn_x + 6) {
+					wcstombs(buf, wbuf, (size_t)max_len);
+					buf[max_len - 1] = '\0';
+					res = 1;
+					break;
+				}
+				if (wx >= btn_x + 10 && wx < btn_x + 20) {
+					res = 0;
+					break;
+				}
+			}
+			continue;
+		}
 		if (ev.action == ACT_DOWN) focus = (focus == 0) ? 1 : 0;
 		else if (ev.action == ACT_UP) focus = 0;
 		else if (ev.action == ACT_WORD_SEL_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_left(wbuf, pos); }
@@ -780,14 +831,20 @@ void ui_help(void) {
 	const char *lines[] = {
 		"=== 1. NAVIGATION & PANELS ===",
 		"  Tab                Switch active panel (Left / Right)",
-		"  Arrows / PgUp/Dn   Move cursor / page scroll in panel",
+		"  Arrows / Home/End  Move cursor / jump to first or last item",
+		"  PgUp / PgDn        Scroll one page up / down",
 		"  Enter              Open directory or run executable",
 		"  Shift+Enter        Open folder or file in system file manager",
 		"  Ctrl+PgUp / PgDn   Go to parent (..) / enter directory",
 		"  Ctrl+U             Swap left and right panels with cursor",
-		"  Alt+F1 / Alt+F2    Change drive / mount point (Left / Right)",
-		"                       F8 / Delete in drive menu: Safe USB unmount",
-		"  Insert / Shift+Arr Mark or unmark files and directories",
+		"  Ctrl+R             Force reload both panels (auto-updates via inotify)",
+		"  Ctrl+F3..F6        Sort active panel: Name, Ext, Time, Size (repeat: rev)",
+		"  Alt+F1 / Alt+F2    Change drive / bookmarks menu (Left / Right)",
+		"                       Ins / + : Bookmark current dir with custom hotkey",
+		"                       F8 / Del: Remove bookmark or safe-unmount USB",
+		"  Insert / Shift+Arr Mark or unmark individual files and directories",
+		"  Alt+Shift+Home/End Select range from cursor to start / end of panel",
+		"  + / - / *          Select by mask / Deselect by mask / Invert selection",
 		"  Alt+<char>         Quick search by prefix (auto EN/RU layout)",
 		"                     Continue typing without Alt; Esc to cancel",
 		"",
@@ -797,31 +854,38 @@ void ui_help(void) {
 		"  F3                 Built-in Text / Hex viewer (F2:Wrap F4:Hex F7:Find)",
 		"  F4                 Built-in TUI Editor (F1 inside editor for keys)",
 		"  Shift+F4           Create new file and open in built-in Editor",
-		"  F5 / F6            Copy / Move or rename selected items",
+		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  F7 / F8            Create directory / Delete selected items",
 		"",
 		"=== 3. COMMAND LINE & SMART CLIPBOARD ===",
 		"  Alt+[ / Alt+]      Insert Left / Right panel path into cmd",
-		"  Alt+Enter          Insert current filename into cmd",
+		"  Alt+Enter / Ctrl+J Insert current filename into cmd",
 		"  Ctrl+C / Ctrl+X    Copy / Cut file (URI-list) or selected text",
 		"  Ctrl+V / Shift+Ins Paste file, text, or multiline script dialog",
+		"  Home / End / Ctrl+A Jump to start / end of command line",
+		"  Ctrl+Left / Right  Jump cursor by words in command line",
 		"  Shift+Arrows       Select characters in command line",
 		"  Alt+Shift+Arrows   Select whole words (also Ctrl+Shift+Arrows)",
-		"  Ctrl+Left / Right  Jump cursor by words",
-		"  Alt+H              Open Multiline Command History (or via Ctrl+V)",
+		"  Alt+H              Multiline History (Enter:Run F4:Edit F8:Delete)",
 		"  Ctrl+E / Ctrl+X    Browse persistent command history",
 		"  Ctrl+U / Esc       Clear command line (when text is entered)",
 		"",
-		"=== 4. MOUSE & TERMINAL MODE ===",
+		"=== 4. MOUSE, CLI & TERMINAL MODE ===",
 		"  Mouse Left / Dbl   Focus panel & move cursor / Open folder or run",
 		"  Mouse Right        Toggle file selection mark (like Insert)",
 		"  Mouse Wheel        Scroll panels, menus, viewer, editor & help",
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
-		"  Ctrl+O             Toggle full terminal mode / panels",
+		"  Ctrl+O             Toggle full terminal mode / panels (.bashrc aware)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
-		"  Configs: ~/.config/xcommander/{menu,prompt,bookmarks}"
+		"  CLI Options        xc -e FILE (edit & exit) | -v (version) | -h (help)",
+		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"
 	};
-	ui_show_help_lines("xCommander Help (F1)", lines, (int)(sizeof(lines) / sizeof(lines[0])));
+#ifndef XC_BUILD
+#define XC_BUILD 0
+#endif
+	char help_title[64];
+	snprintf(help_title, sizeof(help_title), "xCommander Help (F1) [%06d]", XC_BUILD);
+	ui_show_help_lines(help_title, lines, (int)(sizeof(lines) / sizeof(lines[0])));
 }
 
 void ui_editor_help(void) {
@@ -836,7 +900,7 @@ void ui_editor_help(void) {
 		"  Mouse Click        Place cursor at clicked line and column",
 		"  Mouse Wheel        Scroll text up / down",
 		"",
-		"=== 2. BLOCK SELECTION & CLIPBOARD ===",
+		"=== 2. BLOCK SELECTION & VIEW OPTIONS ===",
 		"  Shift+Arrows       Select characters / lines",
 		"  Shift+Home / End   Select from cursor to start / end of line",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
@@ -844,11 +908,11 @@ void ui_editor_help(void) {
 		"  Alt+Shift+]        Select entire block between matching pair",
 		"  Ctrl+A             Select entire file",
 		"  Ctrl+C             Copy selected block to system clipboard",
-		"  F4                 Toggle syntax highlighting on/off",
-		"  F5                 Toggle visible whitespace (spaces, tabs, EOL)",
 		"  F6 / Ctrl+X        Cut selected block to system clipboard",
 		"  Ctrl+V / Shift+Ins Paste text (supports multiline paste)",
-		"  F8                 Delete selected block (or char under cursor)",
+		"  F8 / Del / BkSp    Delete selected block (or char)",
+		"  F4                 Toggle syntax highlighting on/off",
+		"  F5                 Toggle visible whitespace (spaces, tabs, EOL)",
 		"",
 		"=== 3. EDITING, SEARCH & FILE CONTROL ===",
 		"  Enter              Split line (with auto-indent if enabled)",
@@ -857,12 +921,12 @@ void ui_editor_help(void) {
 		"  Ctrl+Z / Ctrl+R    Undo / Redo changes (up to 64 steps)",
 		"  Ctrl+Y             Delete entire current line",
 		"  F2                 Save file to disk",
-		"  F7                 Find text (case-insensitive)",
+		"  F7                 Find text (Case sensitive & RegExp options)",
 		"  Shift+F7           Find next match",
-		"  Ctrl+F7            Search and replace all occurrences",
+		"  Ctrl+F7            Interactive Replace (Case sensitive, RegExp, \\t, \\1..\\9)",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
 		"  F1                 Open this Editor Help",
-		"  Esc / F10 / Ctrl+Q Exit editor (prompts to save if modified)"
+		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"
 	};
 	ui_show_help_lines("Built-in Editor Help (F1)", lines, (int)(sizeof(lines) / sizeof(lines[0])));
 }
@@ -1152,7 +1216,7 @@ void ui_user_menu(void) {
 			btn_focus = 0;
 			sel = (sel + 1) % total_items;
 		} else if (ev.action == ACT_F4 || (ev.action == ACT_ENTER && btn_focus == 1)) {
-			edit_file(menu_path);
+			ui_edit_file(menu_path);
 			clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
 			free_user_menu_tree(root);
 			root = load_user_menu_tree(menu_path);
@@ -1298,6 +1362,70 @@ int ui_multiline_paste(const char *text) {
 	return res;
 }
 
+static void get_bookmarks_path(char *out, size_t out_size) {
+	const char *home = getenv("HOME");
+	if (!home || !*home) home = "/tmp";
+	char d1[MAX_PATH];
+	snprintf(d1, sizeof(d1), "%s/.config", home); mkdir(d1, 0755);
+	snprintf(d1, sizeof(d1), "%s/.config/xcommander", home); mkdir(d1, 0755);
+	snprintf(out, out_size, "%s/.config/xcommander/bookmarks", home);
+}
+
+static void bookmark_add_entry(char hk, const char *dir_path) {
+	if (!dir_path || !*dir_path) return;
+	char bpath[MAX_PATH + 64];
+	get_bookmarks_path(bpath, sizeof(bpath));
+
+	char lines[64][MAX_PATH + 8];
+	int cnt = 0;
+	FILE *rf = fopen(bpath, "r");
+	if (rf) {
+		char buf[MAX_PATH + 8];
+		while (fgets(buf, sizeof(buf), rf) && cnt < 63) {
+			size_t l = strlen(buf);
+			while (l > 0 && (buf[l - 1] == '\n' || buf[l - 1] == '\r')) buf[--l] = '\0';
+			if (l == 0) continue;
+			const char *p = (buf[0] != '\0' && buf[1] == ':' && buf[2] == '/') ? (buf + 2) : buf;
+			if (strcmp(p, dir_path) == 0) continue;
+			snprintf(lines[cnt++], sizeof(lines[0]), "%s", buf);
+		}
+		fclose(rf);
+	}
+
+	FILE *wf = fopen(bpath, "w");
+	if (!wf) return;
+	for (int i = 0; i < cnt; i++) fprintf(wf, "%s\n", lines[i]);
+	if (hk) fprintf(wf, "%c:%s\n", hk, dir_path);
+	else fprintf(wf, "%s\n", dir_path);
+	fclose(wf);
+}
+
+static void bookmark_remove_entry(const char *dir_path) {
+	if (!dir_path || !*dir_path) return;
+	char bpath[MAX_PATH + 64];
+	get_bookmarks_path(bpath, sizeof(bpath));
+
+	char lines[64][MAX_PATH + 8];
+	int cnt = 0;
+	FILE *rf = fopen(bpath, "r");
+	if (!rf) return;
+	char buf[MAX_PATH + 8];
+	while (fgets(buf, sizeof(buf), rf) && cnt < 63) {
+		size_t l = strlen(buf);
+		while (l > 0 && (buf[l - 1] == '\n' || buf[l - 1] == '\r')) buf[--l] = '\0';
+		if (l == 0) continue;
+		const char *p = (buf[0] != '\0' && buf[1] == ':' && buf[2] == '/') ? (buf + 2) : buf;
+		if (strcmp(p, dir_path) == 0) continue;
+		snprintf(lines[cnt++], sizeof(lines[0]), "%s", buf);
+	}
+	fclose(rf);
+
+	FILE *wf = fopen(bpath, "w");
+	if (!wf) return;
+	for (int i = 0; i < cnt; i++) fprintf(wf, "%s\n", lines[i]);
+	fclose(wf);
+}
+
 void ui_drive_menu(Panel *target_panel, int is_right) {
 	if (!target_panel) return;
 
@@ -1305,46 +1433,53 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 		char paths[48][MAX_PATH];
 		char devs[48][256];
 		char labels[48][128];
-		int can_unmount[48];
+		char custom_hk[48];
+		int item_type[48];
 		int count = 0;
 
+		Panel *other_p = is_right ? &left_panel : &right_panel;
+		if (other_p && *other_p->current_path && count < 48) {
+			snprintf(paths[count], MAX_PATH, "%s", other_p->current_path);
+			devs[count][0] = '\0';
+			custom_hk[count] = '-';
+			item_type[count] = 3;
+			const char *ob = strrchr(other_p->current_path, '/');
+			ob = (ob && *(ob + 1)) ? (ob + 1) : other_p->current_path;
+			snprintf(labels[count], sizeof(labels[0]), "%s (Other)", ob);
+			count++;
+		}
 		const char *home = getenv("HOME");
 		if (home && *home) {
 			snprintf(paths[count], MAX_PATH, "%s", home);
 			devs[count][0] = '\0';
-			can_unmount[count] = 0;
+			custom_hk[count] = '~';
+			item_type[count] = 0;
 			snprintf(labels[count], sizeof(labels[0]), "~ (Home)");
 			count++;
 		}
 
 		snprintf(paths[count], MAX_PATH, "/");
 		devs[count][0] = '\0';
-		can_unmount[count] = 0;
+		custom_hk[count] = '\0';
+		item_type[count] = 0;
 		snprintf(labels[count], sizeof(labels[0]), "/ (Root)");
 		count++;
 
 		FILE *mf = fopen("/proc/mounts", "r");
 		if (mf) {
 			char dev[256], mnt[MAX_PATH], fstype[64];
-			while (fscanf(mf, "%255s %4095s %63s %*[^\n]\n", dev, mnt, fstype) == 3 && count < 40) {
+			while (fscanf(mf, "%255s %4095s %63s %*[^\n]\n", dev, mnt, fstype) == 3 && count < 36) {
 				if (strcmp(mnt, "/") == 0) continue;
 				int is_media = (strncmp(mnt, "/media/", 7) == 0 || strncmp(mnt, "/mnt/", 5) == 0 || strncmp(mnt, "/run/media/", 11) == 0);
-				if (strncmp(dev, "/dev/", 5) != 0 &&
-				    strcmp(fstype, "ntfs3") != 0 &&
-				    strcmp(fstype, "nfs") != 0 &&
-				    strcmp(fstype, "cifs") != 0 &&
-				    !(is_media && strncmp(fstype, "fuse", 4) == 0)) continue;
+				if (strncmp(dev, "/dev/", 5) != 0 && strcmp(fstype, "ntfs3") != 0 && strcmp(fstype, "nfs") != 0 && strcmp(fstype, "cifs") != 0 && !(is_media && strncmp(fstype, "fuse", 4) == 0)) continue;
 				if (strncmp(mnt, "/boot", 5) == 0 || strcmp(mnt, "/efi") == 0 || strncmp(mnt, "/snap", 5) == 0) continue;
-
 				int dup = 0;
-				for (int i = 0; i < count; i++) {
-					if (strcmp(paths[i], mnt) == 0) { dup = 1; break; }
-				}
+				for (int i = 0; i < count; i++) { if (strcmp(paths[i], mnt) == 0) { dup = 1; break; } }
 				if (dup) continue;
-
 				snprintf(paths[count], MAX_PATH, "%s", mnt);
 				snprintf(devs[count], sizeof(devs[0]), "%s", dev);
-				can_unmount[count] = (is_media && strncmp(dev, "/dev/", 5) == 0) ? 1 : 0;
+				custom_hk[count] = '\0';
+				item_type[count] = (is_media && strncmp(dev, "/dev/", 5) == 0) ? 1 : 0;
 				const char *bname = strrchr(mnt, '/');
 				bname = (bname && *(bname + 1)) ? (bname + 1) : mnt;
 				snprintf(labels[count], sizeof(labels[0]), "%s (%s)", bname, fstype);
@@ -1353,30 +1488,43 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 			fclose(mf);
 		}
 
-		if (home && *home) {
-			char bpath[MAX_PATH + 64];
-			snprintf(bpath, sizeof(bpath), "%s/.config/xcommander/bookmarks", home);
-			FILE *bf = fopen(bpath, "r");
-			if (bf) {
-				char line[MAX_PATH];
-				while (fgets(line, sizeof(line), bf) && count < 48) {
-					size_t l = strlen(line);
-					while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = '\0';
-					if (line[0] == '\0' || line[0] == '#') continue;
-					int dup = 0;
-					for (int i = 0; i < count; i++) {
-						if (strcmp(paths[i], line) == 0) { dup = 1; break; }
-					}
-					if (dup) continue;
-					snprintf(paths[count], MAX_PATH, "%s", line);
-					devs[count][0] = '\0';
-					can_unmount[count] = 0;
-					const char *bname = strrchr(line, '/');
-					bname = (bname && *(bname + 1)) ? (bname + 1) : line;
-					snprintf(labels[count], sizeof(labels[0]), "* %s", bname);
-					count++;
-				}
-				fclose(bf);
+		char bpath[MAX_PATH + 64];
+		get_bookmarks_path(bpath, sizeof(bpath));
+		FILE *bf = fopen(bpath, "r");
+		if (bf) {
+			char line[MAX_PATH + 8];
+			while (fgets(line, sizeof(line), bf) && count < 47) {
+				size_t l = strlen(line);
+				while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ')) line[--l] = '\0';
+				if (line[0] == '\0' || line[0] == '#') continue;
+				char hk = '\0';
+				const char *p = line;
+				if (line[0] != '\0' && line[1] == ':' && line[2] == '/') { hk = line[0]; p = line + 2; }
+				int dup = 0;
+				for (int i = 0; i < count; i++) { if (item_type[i] != 3 && strcmp(paths[i], p) == 0) { if (hk && !custom_hk[i]) custom_hk[i] = hk; dup = 1; break; } }
+				if (dup) continue;
+				snprintf(paths[count], MAX_PATH, "%s", p);
+				devs[count][0] = '\0';
+				custom_hk[count] = hk;
+				item_type[count] = 2;
+				const char *bname = strrchr(p, '/');
+				bname = (bname && *(bname + 1)) ? (bname + 1) : p;
+				snprintf(labels[count], sizeof(labels[0]), "* %s", bname);
+				count++;
+			}
+			fclose(bf);
+		}
+
+		const char *auto_pool = "0123456789abcdefghijklmnopqrstuvwxyz";
+		char item_hk[48];
+		for (int i = 0; i < count; i++) item_hk[i] = custom_hk[i];
+		for (int i = 0; i < count; i++) {
+			if (item_hk[i] != '\0') continue;
+			for (int k = 0; auto_pool[k] != '\0'; k++) {
+				char cand = auto_pool[k];
+				int used = 0;
+				for (int j = 0; j < count; j++) { if (tolower((unsigned char)item_hk[j]) == cand) { used = 1; break; } }
+				if (!used) { item_hk[i] = cand; break; }
 			}
 		}
 
@@ -1389,25 +1537,23 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 				char sz[32];
 				format_size(avail, sz, sizeof(sz));
 				snprintf(free_info[i], sizeof(free_info[0]), "%s", sz);
-			} else {
-				free_info[i][0] = '\0';
-			}
-			if (strcmp(paths[i], target_panel->current_path) == 0) sel = i;
+			} else free_info[i][0] = '\0';
+			if (item_type[i] != 3 && strcmp(paths[i], target_panel->current_path) == 0) sel = i;
 		}
 
 		int height, width;
 		getmaxyx(stdscr, height, width);
-
 		int panel_w = width / 2;
 		int box_w = panel_w - 4;
 		if (box_w > 56) box_w = 56;
 		if (box_w < 42) box_w = 42;
 		if (box_w > width - 2) box_w = width - 2;
-
-		int box_h = count + 5;
+		int sep_idx = -1;
+		for (int i = 0; i < count; i++) { if (item_type[i] == 2) { sep_idx = i; break; } }
+		int disp_total = count + (sep_idx >= 0 ? 1 : 0);
+		int box_h = disp_total + 2;
 		if (box_h > height - 4) box_h = height - 4;
-		if (box_h < 7) box_h = 7;
-
+		if (box_h < 5) box_h = 5;
 		int panel_x = is_right ? panel_w : 0;
 		int start_x = panel_x + (panel_w - box_w) / 2;
 		if (start_x < 1) start_x = 1;
@@ -1418,95 +1564,70 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 		curs_set(0);
 		WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 		wbkgd(win, COLOR_PAIR(5));
-
-		const char *keys = "0123456789abcdefghijklmnopqrstuvwxyz";
-		int chosen = -1;
-		int do_unmount = 0;
-		int btn_focus = 0;
+		int chosen = -1, action_mode = 0;
 
 		while (1) {
-			int vis = box_h - 4;
+			int vis = box_h - 2;
 			if (vis < 1) vis = 1;
-			int top = 0;
-			if (sel >= vis) top = sel - vis + 1;
-
+			int sel_disp = sel + (sep_idx >= 0 && sel >= sep_idx ? 1 : 0);
+			int top = (sel_disp >= vis) ? (sel_disp - vis + 1) : 0;
 			werase(win);
 			draw_win_box(win);
 			mvwprintw(win, 0, (box_w - 16) / 2, is_right ? " Change Right " : " Change Left ");
 
-			for (int i = 0; i < vis && (top + i) < count; i++) {
-				int idx = top + i;
-				char kch = (idx < 36) ? keys[idx] : ' ';
+			for (int i = 0; i < vis && (top + i) < disp_total; i++) {
+				int dpos = top + i;
+				if (sep_idx >= 0 && dpos == sep_idx) {
+					wattron(win, COLOR_PAIR(5));
+					mvwaddstr(win, 1 + i, 0, "├");
+					for (int x = 1; x < box_w - 1; x++) mvwaddstr(win, 1 + i, x, "─");
+					mvwaddstr(win, 1 + i, box_w - 1, "┤");
+					wattroff(win, COLOR_PAIR(5));
+					continue;
+				}
+				int idx = (sep_idx >= 0 && dpos > sep_idx) ? (dpos - 1) : dpos;
+				char kch = item_hk[idx] ? item_hk[idx] : ' ';
 				int flen = (int)strlen(free_info[idx]);
 				int left_w = box_w - 6 - flen;
 				if (left_w < 8) left_w = 8;
-
 				char left_str[160];
 				snprintf(left_str, sizeof(left_str), "%c. %s", kch, labels[idx]);
-
 				wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 				mvwhline(win, 1 + i, 1, ' ', box_w - 2);
 				mvwprint_utf8(win, 1 + i, 2, left_w, left_str);
-				if (flen > 0 && box_w - 3 - flen > 4) {
-					mvwprintw(win, 1 + i, box_w - 2 - flen, "%s", free_info[idx]);
-				}
+				if (flen > 0 && box_w - 3 - flen > 4) mvwprintw(win, 1 + i, box_w - 2 - flen, "%s", free_info[idx]);
 				wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			}
-
-			const char *b_sel = "[ Select ]";
-			const char *b_unm = "[ Unmount (F8) ]";
-			const char *b_can = "[ Cancel ]";
-			int total_bw = 10 + 2 + 16 + 2 + 10;
-			int bx = (box_w - total_bw) / 2;
-			if (bx < 2) bx = 2;
-
-			wattron(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, box_h - 2, bx, "%s", b_sel);
-			wattroff(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-			wattron(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, box_h - 2, bx + 12, "%s", b_unm);
-			wattroff(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-			wattron(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, box_h - 2, bx + 30, "%s", b_can);
-			wattroff(win, btn_focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			wrefresh(win);
 
 			InputEvent ev = input_read();
 			if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
-			if (ev.action == ACT_TAB || ev.action == ACT_RIGHT) { btn_focus = (btn_focus + 1) % 3; continue; }
-			if (ev.action == ACT_LEFT) { btn_focus = (btn_focus + 2) % 3; continue; }
-			if (ev.action == ACT_MOUSE_WHEEL_UP) { btn_focus = 0; if (sel > 0) sel--; continue; }
-			if (ev.action == ACT_MOUSE_WHEEL_DOWN) { btn_focus = 0; if (sel + 1 < count) sel++; continue; }
+			if (ev.action == ACT_MOUSE_WHEEL_UP) { if (sel > 0) sel--; continue; }
+			if (ev.action == ACT_MOUSE_WHEEL_DOWN) { if (sel + 1 < count) sel++; continue; }
 			if (ev.action == ACT_MOUSE_LEFT) {
 				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
 				if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) break;
-				if (wy == box_h - 2) {
-					if (wx >= bx && wx < bx + 10 && count > 0) { chosen = sel; break; }
-					if (wx >= bx + 12 && wx < bx + 28 && count > 0) { do_unmount = 1; break; }
-					if (wx >= bx + 30 && wx < bx + 40) break;
-					continue;
-				}
-				if (wy >= 1 && wy < 1 + vis && (top + wy - 1) < count) {
-					chosen = top + (wy - 1);
+				if (wy >= 1 && wy < 1 + vis && (top + wy - 1) < disp_total) {
+					int dpos = top + (wy - 1);
+					if (sep_idx >= 0 && dpos == sep_idx) continue;
+					chosen = (sep_idx >= 0 && dpos > sep_idx) ? (dpos - 1) : dpos;
 					break;
 				}
 				continue;
 			}
-			if (ev.action == ACT_F8 || ev.action == ACT_DELETE) {
-				if (count > 0) { do_unmount = 1; break; }
-			}
-			if (ev.action == ACT_UP && sel > 0) { btn_focus = 0; sel--; }
-			else if (ev.action == ACT_DOWN && sel + 1 < count) { btn_focus = 0; sel++; }
-			else if (ev.action == ACT_ENTER) {
-				if (btn_focus == 2) break;
-				if (btn_focus == 1 && count > 0) { do_unmount = 1; break; }
-				if (count > 0) { chosen = sel; break; }
-			} else if (ev.action == ACT_CHAR) {
+			if (ev.action == ACT_INSERT || (ev.action == ACT_CHAR && (ev.ch == L'+' || ev.ch == L'='))) { action_mode = 2; break; }
+			if (ev.action == ACT_F8 || ev.action == ACT_DELETE) { if (count > 0) { action_mode = 1; break; } }
+			if (ev.action == ACT_UP && sel > 0) sel--;
+			else if (ev.action == ACT_DOWN && sel + 1 < count) sel++;
+			else if (ev.action == ACT_ENTER && count > 0) { chosen = sel; break; }
+			else if (ev.action == ACT_CHAR) {
 				wchar_t ch = towlower(ev.ch);
-				for (int i = 0; i < count && i < 36; i++) {
-					if ((wchar_t)keys[i] == ch) { chosen = i; break; }
+				if (ch == L'ё') ch = L'~';
+				const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбю";
+				const char    *en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.";
+				for (int k = 0; ru[k] != L'\0'; k++) { if (ch == ru[k]) { ch = (wchar_t)en[k]; break; } }
+				for (int i = 0; i < count; i++) {
+					if (item_hk[i] && (wchar_t)tolower((unsigned char)item_hk[i]) == ch) { chosen = i; break; }
 				}
 				if (chosen >= 0) break;
 			}
@@ -1515,10 +1636,41 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 		delwin(win);
 		touchwin(stdscr);
 
-		if (do_unmount && sel >= 0 && sel < count) {
-			if (!can_unmount[sel] || devs[sel][0] == '\0') {
+		if (action_mode == 2) {
+			char hk_buf[16] = "";
+			char prompt[MAX_PATH + 64];
+			snprintf(prompt, sizeof(prompt), "Hotkey (1 char, empty=auto) for %s:", target_panel->current_path);
+			draw_screen(); refresh();
+			if (ui_input("Add Bookmark (Ins)", prompt, hk_buf, sizeof(hk_buf))) {
+				char chosen_hk = '\0';
+				if (hk_buf[0] != '\0') {
+					wchar_t whk = 0;
+					if (mbtowc(&whk, hk_buf, strlen(hk_buf)) > 0) {
+						whk = towlower(whk);
+						const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбю";
+						const char    *en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.";
+						for (int k = 0; ru[k] != L'\0'; k++) { if (whk == ru[k]) { whk = (wchar_t)en[k]; break; } }
+						if (whk >= 33 && whk < 127 && whk != L':' && whk != L'-' && whk != L'~') chosen_hk = (char)whk;
+					}
+				}
+				bookmark_add_entry(chosen_hk, target_panel->current_path);
+			}
+			draw_screen(); refresh();
+			continue;
+		}
+
+		if (action_mode == 1 && sel >= 0 && sel < count) {
+			if (item_type[sel] == 2) {
+				char qmsg[160];
+				snprintf(qmsg, sizeof(qmsg), "Remove bookmark %s?", labels[sel]);
 				draw_screen(); refresh();
-				ui_message("Unmount", "Only removable / media drives can be unmounted");
+				if (ui_confirm("Remove Bookmark (F8)", qmsg)) bookmark_remove_entry(paths[sel]);
+				draw_screen(); refresh();
+				continue;
+			}
+			if (item_type[sel] != 1 || devs[sel][0] == '\0') {
+				draw_screen(); refresh();
+				ui_message("Unmount", "Only removable drives or * bookmarks can be removed/unmounted");
 				draw_screen(); refresh();
 				continue;
 			}
@@ -1530,13 +1682,11 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 			if (!ok_unm) continue;
 			const char *fallback = (home && *home) ? home : "/";
 			size_t mlen = strlen(paths[sel]);
-			if (strncmp(left_panel.current_path, paths[sel], mlen) == 0 &&
-			    (left_panel.current_path[mlen] == '/' || left_panel.current_path[mlen] == '\0')) {
+			if (strncmp(left_panel.current_path, paths[sel], mlen) == 0 && (left_panel.current_path[mlen] == '/' || left_panel.current_path[mlen] == '\0')) {
 				snprintf(left_panel.current_path, MAX_PATH, "%s", fallback);
 				load_directory(&left_panel);
 			}
-			if (strncmp(right_panel.current_path, paths[sel], mlen) == 0 &&
-			    (right_panel.current_path[mlen] == '/' || right_panel.current_path[mlen] == '\0')) {
+			if (strncmp(right_panel.current_path, paths[sel], mlen) == 0 && (right_panel.current_path[mlen] == '/' || right_panel.current_path[mlen] == '\0')) {
 				snprintf(right_panel.current_path, MAX_PATH, "%s", fallback);
 				load_directory(&right_panel);
 			}
@@ -1572,507 +1722,857 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 	}
 }
 
-int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max) {
-	int height, width;
-	getmaxyx(stdscr, height, width);
-
-	int box_w = width - 10;
-	if (box_w > 70) box_w = 70;
-	if (box_w < 38) box_w = 38;
-	int box_h = 9;
-
-	int start_y = (height - box_h) / 2;
-	int start_x = (width - box_w) / 2;
-
-	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	keypad(win, TRUE);
-	wbkgd(win, COLOR_PAIR(5));
-
-	wchar_t wbuf[2][MAX_PATH];
-	int len[2] = {0, 0};
-	int pos[2] = {0, 0};
-	int anchor[2] = {-1, -1};
-
-	for (int f = 0; f < 2; f++) {
-		const char *src = (f == 0) ? search_buf : replace_buf;
-		size_t c = mbstowcs(wbuf[f], src, MAX_PATH - 1);
-		len[f] = (c == (size_t)-1) ? 0 : (int)c;
-		wbuf[f][len[f]] = L'\0';
-		pos[f] = len[f];
-	}
-
-	int field_w = box_w - 6;
-	int focus = 0; /* 0 = Search, 1 = Replace, 2 = [Replace], 3 = [Cancel] */
-	int res = 0;
-
-	const char *btn_ok  = "[ Replace ]";
-	const char *btn_can = "[ Cancel ]";
-	int total_btn_w = 11 + 4 + 10;
-	int btn_x = (box_w - total_btn_w) / 2;
-	if (btn_x < 2) btn_x = 2;
-
+int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex) {
+	int h, w; getmaxyx(stdscr, h, w);
+	int bw = (w - 10 > 70) ? 70 : ((w - 10 < 44) ? 44 : w - 10), bh = 8;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, COLOR_PAIR(5));
+	wchar_t wb[MAX_PATH];
+	size_t n = mbstowcs(wb, search_buf, MAX_PATH - 1);
+	int ln = (n == (size_t)-1) ? 0 : (int)n;
+	wb[ln] = 0;
+	int ps = ln, sel_all = (ln > 0) ? 1 : 0;
+	int cs = (case_sens && *case_sens) ? 1 : 0;
+	int rx = (use_regex && *use_regex) ? 1 : 0;
+	int fw = bw - 6, foc = 0, res = 0, bx = (bw - 24) / 2;
+	int cx1 = 3, cx2 = 24;
 	while (1) {
-		werase(win);
-		draw_win_box(win);
-		mvwprintw(win, 0, 2, " Replace (Ctrl+F7) ");
-		mvwprint_utf8(win, 1, 3, field_w, "Search for:");
-		mvwprint_utf8(win, 4, 3, field_w, "Replace with:");
-
-		int offsets[2] = {0, 0};
-		for (int f = 0; f < 2; f++) {
-			int fy = (f == 0) ? 2 : 5;
-			wattron(win, focus == f ? COLOR_PAIR(2) : COLOR_PAIR(6));
-			mvwhline(win, fy, 3, ' ', field_w);
-			if (pos[f] >= field_w) offsets[f] = pos[f] - field_w + 1;
-			mvwaddnwstr(win, fy, 3, wbuf[f] + offsets[f], field_w);
-			wattroff(win, focus == f ? COLOR_PAIR(2) : COLOR_PAIR(6));
-
-			if (focus == f && anchor[f] != -1 && anchor[f] != pos[f]) {
-				int s1 = (anchor[f] < pos[f]) ? anchor[f] : pos[f];
-				int s2 = (anchor[f] > pos[f]) ? anchor[f] : pos[f];
-				if (s1 < offsets[f]) s1 = offsets[f];
-				if (s2 > offsets[f] + field_w) s2 = offsets[f] + field_w;
-				if (s2 > s1) {
-					wattron(win, COLOR_PAIR(5));
-					mvwaddnwstr(win, fy, 3 + (s1 - offsets[f]), wbuf[f] + s1, s2 - s1);
-					wattroff(win, COLOR_PAIR(5));
-				}
+		werase(win); draw_win_box(win); mvwprintw(win, 0, 2, " Search (F7) ");
+		mvwprint_utf8(win, 1, 3, fw, "Search for:");
+		int off = ps >= fw ? ps - fw + 1 : 0;
+		wattron(win, foc == 0 ? COLOR_PAIR(2) : COLOR_PAIR(6)); mvwhline(win, 2, 3, 32, fw);
+		mvwaddnwstr(win, 2, 3, wb + off, fw); wattroff(win, foc == 0 ? COLOR_PAIR(2) : COLOR_PAIR(6));
+		if (foc == 0 && sel_all && ln > 0) {
+			int vis_n = (ln - off > fw) ? fw : (ln - off);
+			if (vis_n > 0) {
+				wattron(win, COLOR_PAIR(6));
+				mvwaddnwstr(win, 2, 3, wb + off, vis_n);
+				wattroff(win, COLOR_PAIR(6));
 			}
 		}
+		wattron(win, foc == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 4, cx1, "[%c] Case sensitive", cs ? 'x' : ' ');
+		wattroff(win, foc == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		wattron(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 4, cx2, "[%c] RegExp", rx ? 'x' : ' ');
+		wattroff(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 
-		wattron(win, focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 7, btn_x, "%s", btn_ok);
-		wattroff(win, focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		wattron(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, bx, "[ Search ]"); wattroff(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		wattron(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, bx + 14, "[ Cancel ]"); wattroff(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 
-		wattron(win, focus == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 7, btn_x + 15, "%s", btn_can);
-		wattroff(win, focus == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-		if (focus == 0 || focus == 1) {
-			curs_set(1);
-			int fy = (focus == 0) ? 2 : 5;
-			wmove(win, fy, 3 + (pos[focus] - offsets[focus]));
-		} else {
-			curs_set(0);
-		}
-		wrefresh(win);
-
-		InputEvent ev = input_read();
-		if (ev.action == ACT_NONE || ev.action == ACT_MOD_CHANGE) continue;
-
+		if (foc == 0) { curs_set(1); wmove(win, 2, 3 + ps - off); } else curs_set(0);
+		wrefresh(win); InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
-			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
-			if (wy == 2) { focus = 0; anchor[0] = -1; int np = offsets[0] + (wx - 3); if (np < 0) np = 0; if (np > len[0]) np = len[0]; pos[0] = np; continue; }
-			if (wy == 5) { focus = 1; anchor[1] = -1; int np = offsets[1] + (wx - 3); if (np < 0) np = 0; if (np > len[1]) np = len[1]; pos[1] = np; continue; }
-			if (wy == 7) {
-				if (wx >= btn_x && wx < btn_x + 11) { ev.action = ACT_ENTER; focus = 2; }
-				else if (wx >= btn_x + 15 && wx < btn_x + 25) { res = 0; break; }
-				else continue;
-			} else continue;
-		}
-
-		if (ev.action == ACT_ESC || ev.action == ACT_F10) { res = 0; break; }
-		if (ev.action == ACT_TAB) { focus = (focus + 1) % 4; continue; }
-		if (ev.action == ACT_DOWN) { if (focus < 2) focus++; continue; }
-		if (ev.action == ACT_UP) { if (focus > 0) focus = (focus == 3) ? 1 : (focus - 1); continue; }
-		if (ev.action == ACT_ENTER) {
-			if (focus == 3) { res = 0; break; }
-			wcstombs(search_buf, wbuf[0], (size_t)s_max); search_buf[s_max - 1] = '\0';
-			wcstombs(replace_buf, wbuf[1], (size_t)r_max); replace_buf[r_max - 1] = '\0';
-			res = 1;
-			break;
-		}
-
-		if (focus == 2 || focus == 3) {
-			if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) focus = (focus == 2) ? 3 : 2;
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy == 2 && wx >= 3 && wx < 3 + fw) {
+				int np = off + (wx - 3);
+				foc = 0; sel_all = 0; ps = (np > ln) ? ln : np;
+				continue;
+			}
+			if (wy == 4) {
+				if (wx >= cx1 && wx < cx1 + 18) { foc = 1; cs = !cs; continue; }
+				if (wx >= cx2 && wx < cx2 + 10) { foc = 2; rx = !rx; continue; }
+			}
+			if (wy == 6) {
+				if (wx >= bx && wx < bx + 10) {
+					wcstombs(search_buf, wb, s_max);
+					if (case_sens) *case_sens = cs;
+					if (use_regex) *use_regex = rx;
+					res = 1; break;
+				}
+				if (wx >= bx + 14 && wx < bx + 24) break;
+			}
 			continue;
 		}
-
-		int f = focus;
-		if (ev.action == ACT_WORD_SEL_LEFT) { if (anchor[f] == -1) anchor[f] = pos[f]; pos[f] = ui_word_left(wbuf[f], pos[f]); }
-		else if (ev.action == ACT_WORD_SEL_RIGHT) { if (anchor[f] == -1) anchor[f] = pos[f]; pos[f] = ui_word_right(wbuf[f], pos[f], len[f]); }
-		else if (ev.action == ACT_SHIFT_LEFT) { if (anchor[f] == -1) anchor[f] = pos[f]; if (pos[f] > 0) pos[f]--; }
-		else if (ev.action == ACT_SHIFT_RIGHT) { if (anchor[f] == -1) anchor[f] = pos[f]; if (pos[f] < len[f]) pos[f]++; }
-		else if (ev.action == ACT_CTRL_LEFT) { anchor[f] = -1; pos[f] = ui_word_left(wbuf[f], pos[f]); }
-		else if (ev.action == ACT_CTRL_RIGHT) { anchor[f] = -1; pos[f] = ui_word_right(wbuf[f], pos[f], len[f]); }
-		else if (ev.action == ACT_LEFT) { anchor[f] = -1; if (pos[f] > 0) pos[f]--; }
-		else if (ev.action == ACT_RIGHT) { anchor[f] = -1; if (pos[f] < len[f]) pos[f]++; }
-		else if (ev.action == ACT_HOME || ev.action == ACT_CTRL_A) { anchor[f] = -1; pos[f] = 0; }
-		else if (ev.action == ACT_END) { anchor[f] = -1; pos[f] = len[f]; }
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+		if (ev.action == ACT_TAB) { foc = (foc + 1) % 5; sel_all = 0; continue; }
+		if (ev.action == ACT_DOWN) {
+			sel_all = 0;
+			if (foc == 0) foc = 1;
+			else if (foc == 1) foc = 3;
+			else if (foc == 2) foc = 4;
+			continue;
+		}
+		if (ev.action == ACT_UP) {
+			sel_all = 0;
+			if (foc == 1 || foc == 2) foc = 0;
+			else if (foc == 3) foc = 1;
+			else if (foc == 4) foc = 2;
+			continue;
+		}
+		if ((foc == 1 || foc == 2) && ev.action == ACT_CHAR && ev.ch == L' ') {
+			if (foc == 1) cs = !cs; else rx = !rx;
+			continue;
+		}
+		if (ev.action == ACT_ENTER) {
+			if (foc == 4) break;
+			wcstombs(search_buf, wb, s_max);
+			if (case_sens) *case_sens = cs;
+			if (use_regex) *use_regex = rx;
+			res = 1; break;
+		}
+		if (foc == 1 || foc == 2) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 3 - foc; continue; }
+		if (foc >= 3) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 7 - foc; continue; }
+		if (ev.action == ACT_LEFT) { sel_all = 0; if (ps > 0) ps--; }
+		else if (ev.action == ACT_RIGHT) { sel_all = 0; if (ps < ln) ps++; }
+		else if (ev.action == ACT_HOME) { sel_all = 0; ps = 0; }
+		else if (ev.action == ACT_END) { sel_all = 0; ps = ln; }
+		else if (ev.action == ACT_CTRL_U) { sel_all = 0; ln = ps = 0; wb[0] = 0; }
 		else if (ev.action == ACT_BACKSPACE) {
-			if (anchor[f] != -1 && anchor[f] != pos[f]) {
-				int s1 = (anchor[f] < pos[f]) ? anchor[f] : pos[f], s2 = (anchor[f] > pos[f]) ? anchor[f] : pos[f];
-				wmemmove(wbuf[f] + s1, wbuf[f] + s2, (size_t)(len[f] - s2 + 1)); len[f] -= (s2 - s1); pos[f] = s1; anchor[f] = -1;
-			} else if (pos[f] > 0) { wmemmove(wbuf[f] + pos[f] - 1, wbuf[f] + pos[f], (size_t)(len[f] - pos[f] + 1)); pos[f]--; len[f]--; }
+			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
+			else if (ps > 0) { wmemmove(wb + ps - 1, wb + ps, ln - ps + 1); ps--; ln--; }
 		} else if (ev.action == ACT_DELETE) {
-			if (anchor[f] != -1 && anchor[f] != pos[f]) {
-				int s1 = (anchor[f] < pos[f]) ? anchor[f] : pos[f], s2 = (anchor[f] > pos[f]) ? anchor[f] : pos[f];
-				wmemmove(wbuf[f] + s1, wbuf[f] + s2, (size_t)(len[f] - s2 + 1)); len[f] -= (s2 - s1); pos[f] = s1; anchor[f] = -1;
-			} else if (pos[f] < len[f]) { wmemmove(wbuf[f] + pos[f], wbuf[f] + pos[f] + 1, (size_t)(len[f] - pos[f])); len[f]--; }
-		} else if (ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_Y || ev.action == ACT_CTRL_X) {
-			int s1 = (anchor[f] != -1 && anchor[f] != pos[f]) ? ((anchor[f] < pos[f]) ? anchor[f] : pos[f]) : 0;
-			int s2 = (anchor[f] != -1 && anchor[f] != pos[f]) ? ((anchor[f] > pos[f]) ? anchor[f] : pos[f]) : len[f];
-			if (s2 > s1) {
-				wchar_t wsub[MAX_PATH]; wmemcpy(wsub, wbuf[f] + s1, (size_t)(s2 - s1)); wsub[s2 - s1] = L'\0';
-				char utf_sub[MAX_PATH];
-				if (wcstombs(utf_sub, wsub, sizeof(utf_sub)) != (size_t)-1) { utf_sub[sizeof(utf_sub) - 1] = '\0'; clipboard_copy(utf_sub); }
-				if (ev.action == ACT_CTRL_X && anchor[f] != -1 && anchor[f] != pos[f]) {
-					wmemmove(wbuf[f] + s1, wbuf[f] + s2, (size_t)(len[f] - s2 + 1)); len[f] -= (s2 - s1); pos[f] = s1; anchor[f] = -1;
-				}
-			}
-		} else if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
-			if (anchor[f] != -1 && anchor[f] != pos[f]) {
-				int s1 = (anchor[f] < pos[f]) ? anchor[f] : pos[f], s2 = (anchor[f] > pos[f]) ? anchor[f] : pos[f];
-				wmemmove(wbuf[f] + s1, wbuf[f] + s2, (size_t)(len[f] - s2 + 1)); len[f] -= (s2 - s1); pos[f] = s1; anchor[f] = -1;
-			}
-			char raw[MAX_PATH] = {0};
-			if (clipboard_paste(raw, sizeof(raw)) > 0) {
-				wchar_t wadd[MAX_PATH]; size_t alen = mbstowcs(wadd, raw, MAX_PATH - 1);
-				if (alen != (size_t)-1 && alen > 0) {
-					if (len[f] + (int)alen >= MAX_PATH - 2) alen = (size_t)(MAX_PATH - 2 - len[f]);
-					wmemmove(wbuf[f] + pos[f] + alen, wbuf[f] + pos[f], (size_t)(len[f] - pos[f] + 1));
-					wmemcpy(wbuf[f] + pos[f], wadd, alen); pos[f] += (int)alen; len[f] += (int)alen;
-				}
-			}
-		} else if (ev.action == ACT_CTRL_U) {
-			len[f] = 0; pos[f] = 0; anchor[f] = -1; wbuf[f][0] = L'\0';
-		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && len[f] < MAX_PATH - 2) {
-			if (anchor[f] != -1 && anchor[f] != pos[f]) {
-				int s1 = (anchor[f] < pos[f]) ? anchor[f] : pos[f], s2 = (anchor[f] > pos[f]) ? anchor[f] : pos[f];
-				wmemmove(wbuf[f] + s1, wbuf[f] + s2, (size_t)(len[f] - s2 + 1)); len[f] -= (s2 - s1); pos[f] = s1; anchor[f] = -1;
-			}
-			wmemmove(wbuf[f] + pos[f] + 1, wbuf[f] + pos[f], (size_t)(len[f] - pos[f] + 1)); wbuf[f][pos[f]++] = ev.ch; len[f]++;
+			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
+			else if (ps < ln) { wmemmove(wb + ps, wb + ps + 1, ln - ps); ln--; }
+		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && ln < MAX_PATH - 2) {
+			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
+			wmemmove(wb + ps + 1, wb + ps, ln - ps + 1); wb[ps++] = ev.ch; ln++;
 		}
 	}
-
-	curs_set(0);
-	delwin(win);
-	touchwin(stdscr);
-	return res;
+	curs_set(0); delwin(win); touchwin(stdscr); return res;
 }
 
-/* Возвращает: 1 = Replace, 2 = All, 3 = Skip, 0 = Cancel */
-int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid_y) {
-	int height, width;
-	getmaxyx(stdscr, height, width);
-
-	int box_w = 50;
-	if (box_w > width - 2) box_w = width - 2;
-	int box_h = 8;
-
-	int start_x = (width - box_w) / 2;
-	int start_y = height - box_h - 2;
-	if (avoid_y >= start_y - 1 && avoid_y <= start_y + box_h) {
-		start_y = 2;
+int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max, int *case_sens, int *use_regex) {
+	int h, w; getmaxyx(stdscr, h, w);
+	int bw = (w - 10 > 70) ? 70 : ((w - 10 < 44) ? 44 : w - 10), bh = 11;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, COLOR_PAIR(5));
+	wchar_t wb[2][MAX_PATH]; int ln[2] = {0, 0}, ps[2] = {0, 0};
+	for (int f = 0; f < 2; f++) {
+		size_t n = mbstowcs(wb[f], f == 0 ? search_buf : replace_buf, MAX_PATH - 1);
+		ln[f] = (n == (size_t)-1) ? 0 : (int)n; wb[f][ln[f]] = 0; ps[f] = ln[f];
 	}
-	if (start_y < 1) start_y = 1;
+	int cs = (case_sens && *case_sens) ? 1 : 0;
+	int rx = (use_regex && *use_regex) ? 1 : 0;
+	int fw = bw - 6, foc = 0, res = 0, bx = (bw - 25) / 2;
+	int cx1 = 3, cx2 = 24;
+	while (1) {
+		werase(win); draw_win_box(win); mvwprintw(win, 0, 2, " Replace (Ctrl+F7) ");
+		mvwprint_utf8(win, 1, 3, fw, "Search for:"); mvwprint_utf8(win, 4, 3, fw, "Replace with:");
+		for (int f = 0; f < 2; f++) {
+			int fy = f == 0 ? 2 : 5, off = ps[f] >= fw ? ps[f] - fw + 1 : 0;
+			wattron(win, foc == f ? COLOR_PAIR(2) : COLOR_PAIR(6)); mvwhline(win, fy, 3, 32, fw);
+			mvwaddnwstr(win, fy, 3, wb[f] + off, fw); wattroff(win, foc == f ? COLOR_PAIR(2) : COLOR_PAIR(6));
+		}
+		wattron(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 7, cx1, "[%c] Case sensitive", cs ? 'x' : ' ');
+		wattroff(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		wattron(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 7, cx2, "[%c] RegExp", rx ? 'x' : ' ');
+		wattroff(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		wattron(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 9, bx, "[ Replace ]"); wattroff(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		wattron(win, foc == 5 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 9, bx + 15, "[ Cancel ]"); wattroff(win, foc == 5 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+
+		if (foc < 2) { curs_set(1); int off = ps[foc] >= fw ? ps[foc] - fw + 1 : 0; wmove(win, foc == 0 ? 2 : 5, 3 + ps[foc] - off); } else curs_set(0);
+		wrefresh(win); InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if ((wy == 2 || wy == 5) && wx >= 3 && wx < 3 + fw) {
+				int f = (wy == 2) ? 0 : 1;
+				int off = ps[f] >= fw ? ps[f] - fw + 1 : 0;
+				int np = off + (wx - 3);
+				foc = f;
+				ps[f] = (np > ln[f]) ? ln[f] : np;
+				continue;
+			}
+			if (wy == 7) {
+				if (wx >= cx1 && wx < cx1 + 18) { foc = 2; cs = !cs; continue; }
+				if (wx >= cx2 && wx < cx2 + 10) { foc = 3; rx = !rx; continue; }
+			}
+			if (wy == 9) {
+				if (wx >= bx && wx < bx + 11) {
+					wcstombs(search_buf, wb[0], s_max); wcstombs(replace_buf, wb[1], r_max);
+					if (case_sens) *case_sens = cs;
+					if (use_regex) *use_regex = rx;
+					res = 1; break;
+				}
+				if (wx >= bx + 15 && wx < bx + 25) break;
+			}
+			continue;
+		}
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+		if (ev.action == ACT_TAB) { foc = (foc + 1) % 6; continue; }
+		if (ev.action == ACT_DOWN) {
+			if (foc == 0) foc = 1;
+			else if (foc == 1) foc = 2;
+			else if (foc == 2) foc = 4;
+			else if (foc == 3) foc = 5;
+			continue;
+		}
+		if (ev.action == ACT_UP) {
+			if (foc == 1) foc = 0;
+			else if (foc == 2 || foc == 3) foc = 1;
+			else if (foc == 4) foc = 2;
+			else if (foc == 5) foc = 3;
+			continue;
+		}
+		if ((foc == 2 || foc == 3) && ev.action == ACT_CHAR && ev.ch == L' ') {
+			if (foc == 2) cs = !cs; else rx = !rx;
+			continue;
+		}
+		if (ev.action == ACT_ENTER) {
+			if (foc == 5) break;
+			wcstombs(search_buf, wb[0], s_max); wcstombs(replace_buf, wb[1], r_max);
+			if (case_sens) *case_sens = cs;
+			if (use_regex) *use_regex = rx;
+			res = 1; break;
+		}
+		if (foc == 2 || foc == 3) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 5 - foc; continue; }
+		if (foc >= 4) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 9 - foc; continue; }
+		if (ev.action == ACT_LEFT && ps[foc] > 0) ps[foc]--;
+		else if (ev.action == ACT_RIGHT && ps[foc] < ln[foc]) ps[foc]++;
+		else if (ev.action == ACT_HOME) ps[foc] = 0; else if (ev.action == ACT_END) ps[foc] = ln[foc];
+		else if (ev.action == ACT_CTRL_U) { ln[foc] = ps[foc] = 0; wb[foc][0] = 0; }
+		else if (ev.action == ACT_BACKSPACE && ps[foc] > 0) { wmemmove(wb[foc] + ps[foc] - 1, wb[foc] + ps[foc], ln[foc] - ps[foc] + 1); ps[foc]--; ln[foc]--; }
+		else if (ev.action == ACT_DELETE && ps[foc] < ln[foc]) { wmemmove(wb[foc] + ps[foc], wb[foc] + ps[foc] + 1, ln[foc] - ps[foc]); ln[foc]--; }
+		else if (ev.action == ACT_CHAR && iswprint(ev.ch) && ln[foc] < MAX_PATH - 2) { wmemmove(wb[foc] + ps[foc] + 1, wb[foc] + ps[foc], ln[foc] - ps[foc] + 1); wb[foc][ps[foc]++] = ev.ch; ln[foc]++; }
+	}
+	curs_set(0); delwin(win); touchwin(stdscr); return res;
+}
+
+int ui_overwrite_prompt(const char *filename, off_t src_size, time_t src_mtime, off_t dst_size, time_t dst_mtime) {
+	int h, w; getmaxyx(stdscr, h, w);
+	int bw = (w - 4 < 56) ? (w - 4) : 56;
+	if (bw < 44) bw = w - 2;
+	int bh = 9, sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	char s_sz[32], d_sz[32], s_tm[32] = "", d_tm[32] = "";
+	format_size(src_size, s_sz, sizeof(s_sz));
+	format_size(dst_size, d_sz, sizeof(d_sz));
+	struct tm *tm1 = localtime(&src_mtime);
+	if (tm1) strftime(s_tm, sizeof(s_tm), "%d.%m.%Y %H:%M", tm1);
+	struct tm *tm2 = localtime(&dst_mtime);
+	if (tm2) strftime(d_tm, sizeof(d_tm), "%d.%m.%Y %H:%M", tm2);
+
+	char line_src[96], line_dst[96];
+	snprintf(line_src, sizeof(line_src), "Source: %10s  %s", s_sz, s_tm);
+	snprintf(line_dst, sizeof(line_dst), "Target: %10s  %s", d_sz, d_tm);
 
 	curs_set(0);
-	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	WINDOW *win = newwin(bh, bw, sy, sx);
 	wbkgd(win, COLOR_PAIR(5));
 
-	char line_s[160], line_r[160];
-	snprintf(line_s, sizeof(line_s), "\"%s\"", search_str);
-	snprintf(line_r, sizeof(line_r), "\"%s\"", replace_str);
+	const char *btns[4] = {"[ Overwrite ]", "[ All ]", "[ Skip ]", "[ Cancel ]"};
+	int bwid[4] = {13, 7, 8, 10};
+	int total_w = 13 + 1 + 7 + 1 + 8 + 1 + 10;
+	int bx0 = (bw - total_w) / 2;
+	if (bx0 < 2) bx0 = 2;
 
-	const char *btns[4] = { "[ Replace ]", "[ All ]", "[ Skip ]", "[ Cancel ]" };
-	int bw[4] = { 11, 7, 8, 10 };
-	int total_bw = 11 + 1 + 7 + 1 + 8 + 1 + 10;
-	int bx0 = (box_w - total_bw) / 2;
-	if (bx0 < 1) bx0 = 1;
-
-	int sel = 0;
-	int res = 0;
-
+	int sel = 0, res = 0;
 	while (1) {
 		werase(win);
 		draw_win_box(win);
-		mvwprintw(win, 0, (box_w - 9) / 2, " Replace ");
-		mvwprintw(win, 1, (box_w - 7) / 2, "Replace");
-
-		int sl = (int)mbstowcs(NULL, line_s, 0); if (sl < 0) sl = (int)strlen(line_s);
-		if (sl > box_w - 4) sl = box_w - 4;
-		mvwprint_utf8(win, 2, (box_w - sl) / 2, box_w - 4, line_s);
-
-		mvwprintw(win, 3, (box_w - 4) / 2, "with");
-
-		int rl = (int)mbstowcs(NULL, line_r, 0); if (rl < 0) rl = (int)strlen(line_r);
-		if (rl > box_w - 4) rl = box_w - 4;
-		mvwprint_utf8(win, 4, (box_w - rl) / 2, box_w - 4, line_r);
-
-		for (int i = 1; i < box_w - 1; i++) mvwaddstr(win, 5, i, "─");
-		mvwaddstr(win, 5, 0, "├");
-		mvwaddstr(win, 5, box_w - 1, "┤");
+		mvwprintw(win, 0, (bw - 11) / 2, " Overwrite ");
+		mvwprint_utf8(win, 1, 3, bw - 6, "File already exists:");
+		wattron(win, A_BOLD);
+		mvwprint_utf8(win, 2, 3, bw - 6, filename);
+		wattroff(win, A_BOLD);
+		mvwprint_utf8(win, 4, 3, bw - 6, line_src);
+		mvwprint_utf8(win, 5, 3, bw - 6, line_dst);
 
 		int cx = bx0;
 		for (int i = 0; i < 4; i++) {
 			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, 6, cx, "%s", btns[i]);
+			mvwprintw(win, 7, cx, "%s", btns[i]);
 			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bw[i] + 1;
+			cx += bwid[i] + 1;
 		}
 		wrefresh(win);
 
 		InputEvent ev = input_read();
-		if (ev.action == ACT_NONE || ev.action == ACT_MOD_CHANGE) continue;
-
 		if (ev.action == ACT_MOUSE_LEFT) {
-			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
-			if (wy == 6) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) { res = 0; break; }
+			if (wy == 7) {
 				int px = bx0;
 				for (int i = 0; i < 4; i++) {
-					if (wx >= px && wx < px + bw[i]) {
-						res = (i == 3) ? 0 : (i + 1);
-						goto done_rp;
-					}
-					px += bw[i] + 1;
+					if (wx >= px && wx < px + bwid[i]) { res = (i == 3) ? 0 : (i + 1); goto done_ovr; }
+					px += bwid[i] + 1;
 				}
 			}
 			continue;
 		}
-
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) { res = 0; break; }
-		if (ev.action == ACT_LEFT) { sel = (sel + 3) % 4; continue; }
-		if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) { sel = (sel + 1) % 4; continue; }
-		if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) {
-			res = (sel == 3) ? 0 : (sel + 1);
-			break;
-		}
-		if (ev.action == ACT_CHAR) {
-			wchar_t c = towlower(ev.ch);
-			if (c == L'r' || c == L'y' || c == L'к' || c == L'н') { res = 1; break; }
-			if (c == L'a' || c == L'ф') { res = 2; break; }
-			if (c == L's' || c == L'n' || c == L'ы' || c == L'т') { res = 3; break; }
-			if (c == L'c' || c == L'с') { res = 0; break; }
+		if (ev.action == ACT_LEFT) sel = (sel + 3) % 4;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 4;
+		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 3) ? 0 : (sel + 1); break; }
+		else if (ev.action == ACT_CHAR) {
+			wchar_t ch = towlower(ev.ch);
+			if (ch == L'o' || ch == L'y') { res = 1; break; }
+			if (ch == L'a') { res = 2; break; }
+			if (ch == L's' || ch == L'n') { res = 3; break; }
+			if (ch == L'c') { res = 0; break; }
 		}
 	}
-
-done_rp:
+done_ovr:
 	delwin(win);
 	touchwin(stdscr);
 	return res;
 }
 
-static void get_ml_history_path(char *out, size_t out_size) {
-	const char *state_home = getenv("XDG_STATE_HOME");
-	char base_dir[MAX_PATH];
-	if (state_home && *state_home) {
-		snprintf(base_dir, sizeof(base_dir), "%s/xcommander", state_home);
-	} else {
-		const char *home = getenv("HOME");
-		if (!home || !*home) home = "/tmp";
-		char d1[MAX_PATH];
-		snprintf(d1, sizeof(d1), "%s/.local", home); mkdir(d1, 0755);
-		snprintf(d1, sizeof(d1), "%s/.local/state", home); mkdir(d1, 0755);
-		snprintf(base_dir, sizeof(base_dir), "%s/.local/state/xcommander", home);
+int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid_y) {
+	int h, w; getmaxyx(stdscr, h, w);
+	int bw = w - 2 < 50 ? w - 2 : 50, bh = 8, sx = (w - bw) / 2, sy = h - bh - 2;
+	if (avoid_y >= sy - 1 && avoid_y <= sy + bh) sy = 2;
+	if (sy < 1) sy = 1;
+	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
+	const char *btns[4] = {"[ Replace ]", "[ All ]", "[ Skip ]", "[ Cancel ]"};
+	int bwid[4] = {11, 7, 8, 10}, bx0 = (bw - 39) / 2, sel = 0, res = 0;
+	while (1) {
+		werase(win); draw_win_box(win); mvwprintw(win, 0, (bw - 9) / 2, " Replace ");
+		mvwprintw(win, 1, (bw - 7) / 2, "Replace"); mvwprint_utf8(win, 2, 4, bw - 8, search_str);
+		mvwprintw(win, 3, (bw - 4) / 2, "with"); mvwprint_utf8(win, 4, 4, bw - 8, replace_str);
+		int cx = bx0;
+		for (int i = 0; i < 4; i++) {
+			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, cx, "%s", btns[i]);
+			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5)); cx += bwid[i] + 1;
+		}
+		wrefresh(win); InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy == 6) {
+				int px = bx0;
+				for (int i = 0; i < 4; i++) {
+					if (wx >= px && wx < px + bwid[i]) { res = (i == 3) ? 0 : (i + 1); goto done_rp; }
+					px += bwid[i] + 1;
+				}
+			}
+			continue;
+		}
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+		if (ev.action == ACT_LEFT) sel = (sel + 3) % 4;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 4;
+		else if (ev.action == ACT_ENTER) { res = (sel == 3) ? 0 : (sel + 1); break; }
+		else if (ev.action == ACT_CHAR) {
+			wchar_t ch = towlower(ev.ch);
+			if (ch == L'r' || ch == L'y') { res = 1; break; }
+			if (ch == L'a') { res = 2; break; }
+			if (ch == L's' || ch == L'n') { res = 3; break; }
+			if (ch == L'c') break;
+		}
 	}
-	mkdir(base_dir, 0755);
-	snprintf(out, out_size, "%s/multiline_history", base_dir);
+done_rp:
+	delwin(win); touchwin(stdscr); return res;
 }
 
+static void get_ml_path(char *out, size_t sz) {
+	const char *h = getenv("HOME"); if (!h || !*h) h = "/tmp";
+	char d[MAX_PATH]; snprintf(d, sizeof(d), "%s/.local/state/xcommander", h);
+	snprintf(out, sz, "%s/multiline_history", d);
+}
 void ml_history_add(const char *dir, const char *script) {
 	if (!script || !*script) return;
-	char path[MAX_PATH + 48];
-	get_ml_history_path(path, sizeof(path));
+	char p[MAX_PATH + 48];
+	get_ml_path(p, sizeof(p));
 
-	time_t now = time(NULL);
-	struct tm *tm_i = localtime(&now);
-	char tstr[32] = "0000-00-00 00:00:00";
-	if (tm_i) strftime(tstr, sizeof(tstr), "%Y-%m-%d %H:%M:%S", tm_i);
+	char *hdr[64] = {0}, *bdy[64] = {0};
+	int cnt = 0;
 
-	char *old_data = NULL;
-	FILE *rf = fopen(path, "rb");
+	FILE *rf = fopen(p, "rb");
 	if (rf) {
 		fseek(rf, 0, SEEK_END);
 		long sz = ftell(rf);
 		fseek(rf, 0, SEEK_SET);
-		if (sz > 0 && sz < 512 * 1024) {
-			old_data = malloc((size_t)sz + 1);
-			if (old_data) {
-				size_t rn = fread(old_data, 1, (size_t)sz, rf);
-				old_data[rn] = '\0';
+		if (sz > 0 && sz < 1048576) {
+			char *raw = malloc((size_t)sz + 1);
+			if (raw) {
+				size_t r = fread(raw, 1, (size_t)sz, rf);
+				raw[r] = '\0';
+				char *cur = raw;
+				while (cnt < 63 && (cur = strstr(cur, "<<<XC_ML_ENTRY ")) != NULL) {
+					cur += 15;
+					char *he = strstr(cur, ">>>\n");
+					if (!he) break;
+					*he = '\0';
+					char *bs = he + 4;
+					char *be = strstr(bs, "\n<<<XC_ML_END>>>");
+					if (!be) break;
+					*be = '\0';
+					if (strcmp(bs, script) != 0) {
+						hdr[cnt] = strdup(cur);
+						bdy[cnt] = strdup(bs);
+						cnt++;
+					}
+					cur = be + 16;
+				}
+				free(raw);
 			}
 		}
 		fclose(rf);
 	}
 
-	FILE *wf = fopen(path, "wb");
+	time_t now = time(NULL);
+	struct tm *tm_i = localtime(&now);
+	char ts[32] = "";
+	if (tm_i) strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M", tm_i);
+
+	FILE *wf = fopen(p, "wb");
 	if (wf) {
-		fprintf(wf, "<<<XC_ML_ENTRY %s | %s>>>\n%s\n<<<XC_ML_END>>>\n", tstr, dir ? dir : ".", script);
-		if (old_data) fwrite(old_data, 1, strlen(old_data), wf);
+		if (ts[0]) fprintf(wf, "<<<XC_ML_ENTRY [%s] %s>>>\n%s\n<<<XC_ML_END>>>\n", ts, dir ? dir : ".", script);
+		else fprintf(wf, "<<<XC_ML_ENTRY %s>>>\n%s\n<<<XC_ML_END>>>\n", dir ? dir : ".", script);
+		int limit = (cnt > 49) ? 49 : cnt;
+		for (int i = 0; i < limit; i++) {
+			fprintf(wf, "<<<XC_ML_ENTRY %s>>>\n%s\n<<<XC_ML_END>>>\n", hdr[i], bdy[i]);
+		}
 		fclose(wf);
 	}
-	free(old_data);
+	for (int i = 0; i < cnt; i++) { free(hdr[i]); free(bdy[i]); }
+}
+
+static void ml_history_save_all(const char *path, char **hdr, char **bdy, int cnt) {
+	FILE *wf = fopen(path, "wb");
+	if (!wf) return;
+	for (int i = 0; i < cnt; i++) {
+		fprintf(wf, "<<<XC_ML_ENTRY %s>>>\n%s\n<<<XC_ML_END>>>\n", hdr[i], bdy[i]);
+	}
+	fclose(wf);
 }
 
 int ui_multiline_history(char *out_script, size_t out_size) {
-	char path[MAX_PATH + 48];
-	get_ml_history_path(path, sizeof(path));
-
-	FILE *f = fopen(path, "rb");
-	if (!f) {
-		ui_message("Multiline History (Alt+H)", "Multiline command history is empty");
-		return 0;
-	}
+	char p[MAX_PATH + 48];
+	get_ml_path(p, sizeof(p));
+	FILE *f = fopen(p, "rb");
+	if (!f) { ui_message("History", "Multiline history is empty"); return 0; }
 	fseek(f, 0, SEEK_END);
-	long fsz = ftell(f);
+	long s = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (fsz <= 0) {
-		fclose(f);
-		ui_message("Multiline History (Alt+H)", "Multiline command history is empty");
-		return 0;
-	}
-	char *raw = malloc((size_t)fsz + 1);
+	if (s <= 0) { fclose(f); ui_message("History", "Multiline history is empty"); return 0; }
+
+	char *raw = malloc((size_t)s + 1);
 	if (!raw) { fclose(f); return 0; }
-	size_t n = fread(raw, 1, (size_t)fsz, f);
+	size_t n = fread(raw, 1, (size_t)s, f);
 	fclose(f);
 	raw[n] = '\0';
 
-	char *headers[32] = {0};
-	char *bodies[32] = {0};
-	int count = 0;
-
-	char *p = raw;
-	while (count < 32 && (p = strstr(p, "<<<XC_ML_ENTRY ")) != NULL) {
-		p += 15;
-		char *hend = strstr(p, ">>>\n");
-		if (!hend) break;
-		*hend = '\0';
-		char *body_start = hend + 4;
-		char *bend = strstr(body_start, "\n<<<XC_ML_END>>>");
-		if (!bend) break;
-		*bend = '\0';
-
-		headers[count] = strdup(p);
-		bodies[count] = strdup(body_start);
-		count++;
-		p = bend + 16;
+	char *hdr[64] = {0}, *bdy[64] = {0};
+	int cnt = 0;
+	char *cur = raw;
+	while (cnt < 64 && (cur = strstr(cur, "<<<XC_ML_ENTRY ")) != NULL) {
+		cur += 15;
+		char *he = strstr(cur, ">>>\n");
+		if (!he) break;
+		*he = '\0';
+		char *bs = he + 4;
+		char *be = strstr(bs, "\n<<<XC_ML_END>>>");
+		if (!be) break;
+		*be = '\0';
+		hdr[cnt] = strdup(cur);
+		bdy[cnt] = strdup(bs);
+		cnt++;
+		cur = be + 16;
 	}
 	free(raw);
+	if (cnt == 0) { ui_message("History", "Multiline history is empty"); return 0; }
 
-	if (count == 0) {
-		ui_message("Multiline History (Alt+H)", "Multiline command history is empty");
-		return 0;
+	int h, w;
+	getmaxyx(stdscr, h, w);
+	int bw = (w - 6 > 88) ? 88 : (w - 6);
+	if (bw < 50) bw = w - 2;
+	int bh = (h - 4 > 26) ? 26 : (h - 4);
+	if (bh < 12) bh = h - 2;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(bh, bw, sy, sx);
+	wbkgd(win, COLOR_PAIR(5));
+
+	int sel = 0, top = 0, chs = -1;
+	while (1) {
+		int lh = (bh - 5) / 2;
+		if (lh < 3) lh = 3;
+		if (sel >= cnt) sel = cnt - 1;
+		if (sel < 0) sel = 0;
+		if (sel < top) top = sel;
+		if (sel >= top + lh) top = sel - lh + 1;
+
+		werase(win);
+		draw_win_box(win);
+		mvwprintw(win, 0, 2, " Multiline History (Alt+H) [%d/%d] ", sel + 1, cnt);
+
+		for (int i = 0; i < lh && (top + i) < cnt; i++) {
+			int idx = top + i;
+			wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwhline(win, 1 + i, 1, ' ', bw - 2);
+			mvwprint_utf8(win, 1 + i, 2, bw - 4, hdr[idx]);
+			wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		}
+
+		int sep_y = 1 + lh;
+		mvwaddstr(win, sep_y, 0, "├");
+		for (int x = 1; x < bw - 1; x++) mvwaddstr(win, sep_y, x, "─");
+		mvwaddstr(win, sep_y, bw - 1, "┤");
+
+		int prev_rows = bh - sep_y - 3;
+		const char *bp = bdy[sel];
+		for (int r = 0; r < prev_rows && bp && *bp; r++) {
+			const char *nl = strchr(bp, '\n');
+			int len = nl ? (int)(nl - bp) : (int)strlen(bp);
+			char line[256];
+			if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
+			memcpy(line, bp, (size_t)len);
+			line[len] = '\0';
+			mvwprint_utf8(win, sep_y + 1 + r, 2, bw - 4, line);
+			if (!nl) break;
+			bp = nl + 1;
+		}
+
+		const char *hints = " Enter:Run  F4:Edit  F8/Del:Delete  Esc:Close ";
+		if (bw > (int)strlen(hints) + 4) {
+			wattron(win, COLOR_PAIR(2));
+			mvwprintw(win, bh - 2, (bw - (int)strlen(hints)) / 2, "%s", hints);
+			wattroff(win, COLOR_PAIR(2));
+		}
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+		if (ev.action == ACT_MOUSE_WHEEL_UP && sel > 0) sel--;
+		else if (ev.action == ACT_MOUSE_WHEEL_DOWN && sel + 1 < cnt) sel++;
+		else if (ev.action == ACT_UP && sel > 0) sel--;
+		else if (ev.action == ACT_DOWN && sel + 1 < cnt) sel++;
+		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
+		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= cnt) sel = cnt - 1; }
+		else if (ev.action == ACT_ENTER) { chs = sel; break; }
+		else if (ev.action == ACT_F8 || ev.action == ACT_DELETE) {
+			if (ui_confirm("Delete Entry", "Remove selected script from history?")) {
+				free(hdr[sel]); free(bdy[sel]);
+				for (int k = sel; k + 1 < cnt; k++) { hdr[k] = hdr[k + 1]; bdy[k] = bdy[k + 1]; }
+				cnt--;
+				ml_history_save_all(p, hdr, bdy, cnt);
+				if (cnt == 0) break;
+			}
+		} else if (ev.action == ACT_F4) {
+			char tmp_ed[128];
+			snprintf(tmp_ed, sizeof(tmp_ed), "/tmp/xc_ml_edit_%d.sh", (int)getpid());
+			FILE *tf = fopen(tmp_ed, "wb");
+			if (tf) {
+				fwrite(bdy[sel], 1, strlen(bdy[sel]), tf);
+				fclose(tf);
+				ui_edit_file(tmp_ed);
+				FILE *rf2 = fopen(tmp_ed, "rb");
+				if (rf2) {
+					fseek(rf2, 0, SEEK_END);
+					long nsz = ftell(rf2);
+					fseek(rf2, 0, SEEK_SET);
+					if (nsz > 0 && nsz < 65536) {
+						char *nb = malloc((size_t)nsz + 1);
+						if (nb) {
+							size_t rr = fread(nb, 1, (size_t)nsz, rf2);
+							nb[rr] = '\0';
+							free(bdy[sel]);
+							bdy[sel] = nb;
+							ml_history_save_all(p, hdr, bdy, cnt);
+						}
+					}
+					fclose(rf2);
+				}
+				unlink(tmp_ed);
+				clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
+			}
+		}
 	}
 
+	if (chs >= 0) snprintf(out_script, out_size, "%s", bdy[chs]);
+	for (int i = 0; i < cnt; i++) { free(hdr[i]); free(bdy[i]); }
+	delwin(win);
+	touchwin(stdscr);
+	return chs >= 0;
+}
+
+int ui_confirm_cancel(const char *title, const char *msg) {
 	int height, width;
 	getmaxyx(stdscr, height, width);
-	int box_w = width - 6;
-	if (box_w > 86) box_w = 86;
-	if (box_w < 46) box_w = 46;
-	int box_h = height - 4;
-	if (box_h > 24) box_h = 24;
-	if (box_h < 12) box_h = 12;
-
-	int start_y = (height - box_h) / 2;
-	int start_x = (width - box_w) / 2;
+	int msg_cols = (int)mbstowcs(NULL, msg, 0);
+	if (msg_cols < 0) msg_cols = (int)strlen(msg);
+	int box_w = msg_cols + 6;
+	if (box_w < 36) box_w = 36;
+	if (box_w > width - 4) box_w = width - 4;
+	int box_h = 5;
+	int start_y = (height - box_h) / 2, start_x = (width - box_w) / 2;
 
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	wbkgd(win, COLOR_PAIR(5));
 
-	int sel = 0;
-	int btn_focus = 0;
-	int chosen = -1;
+	const char *btns[3] = { "[ Yes ]", "[ No ]", "[ Cancel ]" };
+	int bwid[3] = { 7, 6, 10 };
+	int total_w = 7 + 2 + 6 + 2 + 10;
+	int bx0 = (box_w - total_w) / 2;
+	if (bx0 < 2) bx0 = 2;
+
+	int sel = 0; /* 0 = Yes, 1 = No, 2 = Cancel */
+	int res = -1;
 
 	while (1) {
-		werase(win);
 		draw_win_box(win);
-		mvwprintw(win, 0, 2, " Multiline Command History (Alt+H) [%d/%d] ", sel + 1, count);
+		mvwprintw(win, 0, 2, " %s ", title);
+		int msg_x = (box_w - msg_cols) / 2;
+		if (msg_x < 2) msg_x = 2;
+		mvwprint_utf8(win, 1, msg_x, box_w - 4, msg);
 
-		int list_h = (box_h - 5) / 2;
-		if (list_h < 3) list_h = 3;
-		int prev_y = 1 + list_h;
-		int prev_h = box_h - 3 - prev_y;
-
-		int top = 0;
-		if (sel >= list_h) top = sel - list_h + 1;
-
-		for (int i = 0; i < list_h && (top + i) < count; i++) {
-			int idx = top + i;
-			char summary[256];
-			const char *b = bodies[idx] ? bodies[idx] : "";
-			while (*b == ' ' || *b == '\t' || *b == '\n') b++;
-			char first_line[96] = {0};
-			int k = 0;
-			while (b[k] && b[k] != '\n' && b[k] != '\r' && k < 90) { first_line[k] = b[k]; k++; }
-			first_line[k] = '\0';
-			snprintf(summary, sizeof(summary), "%s | %s", headers[idx], first_line);
-
-			wattron(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwhline(win, 1 + i, 1, ' ', box_w - 2);
-			mvwprint_utf8(win, 1 + i, 2, box_w - 4, summary);
-			wattroff(win, idx == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		int cx = bx0;
+		for (int i = 0; i < 3; i++) {
+			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, 3, cx, "%s", btns[i]);
+			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			cx += bwid[i] + 2;
 		}
-
-		for (int i = 1; i < box_w - 1; i++) mvwaddstr(win, prev_y, i, "─");
-		mvwaddstr(win, prev_y, 0, "├");
-		mvwaddstr(win, prev_y, box_w - 1, "┤");
-		mvwprintw(win, prev_y, 2, " Preview ");
-
-		const char *cur_body = bodies[sel] ? bodies[sel] : "";
-		const char *lp = cur_body;
-		for (int r = 0; r < prev_h && *lp; r++) {
-			const char *nl = strchr(lp, '\n');
-			int llen = nl ? (int)(nl - lp) : (int)strlen(lp);
-			char lbuf[512];
-			if (llen >= (int)sizeof(lbuf)) llen = (int)sizeof(lbuf) - 1;
-			memcpy(lbuf, lp, (size_t)llen);
-			lbuf[llen] = '\0';
-			mvwprint_utf8(win, prev_y + 1 + r, 2, box_w - 4, lbuf);
-			if (!nl) break;
-			lp = nl + 1;
-		}
-
-		const char *b_exec = "[ Execute ]";
-		const char *b_canc = "[ Close ]";
-		int bx = (box_w - 24) / 2;
-		wattron(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, box_h - 2, bx, "%s", b_exec);
-		wattroff(win, btn_focus == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, box_h - 2, bx + 15, "%s", b_canc);
-		wattroff(win, btn_focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
 		wrefresh(win);
 
 		InputEvent ev = input_read();
-		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
-		if (ev.action == ACT_TAB || ev.action == ACT_LEFT || ev.action == ACT_RIGHT) { btn_focus = 1 - btn_focus; continue; }
-		if (ev.action == ACT_MOUSE_WHEEL_UP) { btn_focus = 0; if (sel > 0) sel--; continue; }
-		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { btn_focus = 0; if (sel + 1 < count) sel++; continue; }
-		if (ev.action == ACT_MOUSE_LEFT) {
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) { res = -1; break; }
+		if (ev.action == ACT_LEFT) sel = (sel + 2) % 3;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 3;
+		else if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) break;
-			if (wy == box_h - 2) {
-				if (wx >= bx && wx < bx + 11) { chosen = sel; break; }
-				if (wx >= bx + 15 && wx < bx + 24) break;
-				continue;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = -1; break; }
+			if (wy == 3) {
+				int px = bx0;
+				for (int i = 0; i < 3; i++) {
+					if (wx >= px && wx < px + bwid[i]) { res = (i == 0) ? 1 : (i == 1 ? 0 : -1); goto done_cc; }
+					px += bwid[i] + 2;
+				}
 			}
-			if (wy >= 1 && wy < 1 + list_h && (top + wy - 1) < count) {
-				sel = top + (wy - 1);
-				btn_focus = 0;
-			}
-			continue;
-		}
-		if (ev.action == ACT_UP && sel > 0) { btn_focus = 0; sel--; }
-		else if (ev.action == ACT_DOWN && sel + 1 < count) { btn_focus = 0; sel++; }
-		else if (ev.action == ACT_ENTER) {
-			if (btn_focus == 1) break;
-			chosen = sel;
+		} else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) {
+			res = (sel == 0) ? 1 : (sel == 1 ? 0 : -1);
 			break;
+		} else if (ev.action == ACT_CHAR) {
+			wchar_t ch = towlower(ev.ch);
+			if (ch == L'y' || ch == L'н') { res = 1; break; }
+			if (ch == L'n' || ch == L'т') { res = 0; break; }
+			if (ch == L'c' || ch == L'с') { res = -1; break; }
 		}
 	}
-
-	if (chosen >= 0 && chosen < count && bodies[chosen]) {
-		snprintf(out_script, out_size, "%s", bodies[chosen]);
-	}
-	for (int i = 0; i < count; i++) {
-		free(headers[i]);
-		free(bodies[i]);
-	}
+done_cc:
 	delwin(win);
 	touchwin(stdscr);
-	return (chosen >= 0) ? 1 : 0;
+	return res;
 }
+
+static void get_git_branch(const char *dir, char *out, size_t out_size) {
+	out[0] = '\0';
+	char cur[MAX_PATH];
+	snprintf(cur, sizeof(cur), "%s", dir);
+	while (1) {
+		char head[MAX_PATH + 16];
+		snprintf(head, sizeof(head), "%s/.git/HEAD", cur);
+		FILE *f = fopen(head, "r");
+		if (f) {
+			char line[256] = {0};
+			if (fgets(line, sizeof(line), f)) {
+				size_t l = strlen(line);
+				while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+				const char *ref = strstr(line, "ref: refs/heads/");
+				if (ref) snprintf(out, out_size, " (%s)", ref + 16);
+				else if (l >= 7) snprintf(out, out_size, " (%.7s)", line);
+			}
+			fclose(f);
+			return;
+		}
+		char *sl = strrchr(cur, '/');
+		if (!sl || sl == cur) break;
+		*sl = '\0';
+	}
+}
+
+static void load_prompt_template(char *tmpl, size_t tmpl_size) {
+	const char *home = getenv("HOME");
+	if (!home || !*home) home = "/tmp";
+	char dir[MAX_PATH], path[MAX_PATH + 16];
+	snprintf(dir, sizeof(dir), "%s/.config", home);
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), "%s/.config/xcommander", home);
+	mkdir(dir, 0755);
+	snprintf(path, sizeof(path), "%s/prompt", dir);
+
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		f = fopen(path, "w");
+		if (f) {
+			fprintf(f, "# xCommander Terminal Prompt (Ctrl+O)\n");
+			fprintf(f, "# Macros: \\u=user, \\h=host, \\w=path(~), \\W=dir, \\g=git, \\$=$/#, \\e=ESC\n");
+			fprintf(f, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ \n");
+			fclose(f);
+		}
+		snprintf(tmpl, tmpl_size, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ ");
+		return;
+	}
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		size_t l = strlen(line);
+		while (l > 0 && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = '\0';
+		if (line[0] == '\0' || line[0] == '#') continue;
+		snprintf(tmpl, tmpl_size, "%s", line);
+		fclose(f);
+		return;
+	}
+	fclose(f);
+	snprintf(tmpl, tmpl_size, "\\e[1;32m\\u@\\h\\e[0m:\\e[1;34m\\w\\e[1;33m\\g\\e[0m\\$ ");
+}
+
+static void format_custom_prompt(const char *path, char *out, size_t out_size) {
+	char tmpl[512];
+	load_prompt_template(tmpl, sizeof(tmpl));
+
+	const char *user = getenv("USER");
+	if (!user || !*user) user = "user";
+
+	char host[128] = "linux";
+	if (gethostname(host, sizeof(host) - 1) == 0) {
+		char *dot = strchr(host, '.');
+		if (dot) *dot = '\0';
+	}
+
+	char short_w[MAX_PATH];
+	const char *home = getenv("HOME");
+	if (home && *home && strncmp(path, home, strlen(home)) == 0 &&
+	    (path[strlen(home)] == '/' || path[strlen(home)] == '\0')) {
+		snprintf(short_w, sizeof(short_w), "~%s", path + strlen(home));
+	} else {
+		snprintf(short_w, sizeof(short_w), "%s", path);
+	}
+
+	const char *base_w = strrchr(short_w, '/');
+	base_w = (base_w && *(base_w + 1)) ? (base_w + 1) : short_w;
+
+	char git_br[128];
+	get_git_branch(path, git_br, sizeof(git_br));
+
+	size_t j = 0;
+	for (size_t i = 0; tmpl[i] != '\0' && j + 1 < out_size; i++) {
+		if (tmpl[i] == '\\' && tmpl[i + 1] != '\0') {
+			char next = tmpl[i + 1];
+			if (next == 'e') { out[j++] = '\033'; i++; continue; }
+			if (next == 'n') { out[j++] = '\n'; i++; continue; }
+			const char *rep = NULL;
+			if (next == 'u') rep = user;
+			else if (next == 'h') rep = host;
+			else if (next == 'w') rep = short_w;
+			else if (next == 'W') rep = base_w;
+			else if (next == 'g') rep = git_br;
+			else if (next == '$') rep = (geteuid() == 0) ? "#" : "$";
+			if (rep) {
+				size_t rlen = strlen(rep);
+				if (j + rlen >= out_size) rlen = out_size - 1 - j;
+				memcpy(out + j, rep, rlen);
+				j += rlen;
+				i++;
+				continue;
+			}
+		}
+		out[j++] = tmpl[i];
+	}
+	out[j] = '\0';
+}
+
+
+static int visible_cols_ansi(const char *str) {
+	wchar_t wbuf[16384];
+	char clean[16384];
+	size_t j = 0;
+	for (size_t i = 0; str[i] != '\0' && j + 1 < sizeof(clean); i++) {
+		if (str[i] == '\033' && str[i + 1] == '[') {
+			i += 2;
+			while (str[i] != '\0' && !(str[i] >= '@' && str[i] <= '~')) i++;
+			continue;
+		}
+		clean[j++] = str[i];
+	}
+	clean[j] = '\0';
+	size_t wl = mbstowcs(wbuf, clean, 16383);
+	if (wl == (size_t)-1) return (int)j;
+	wbuf[wl] = L'\0';
+	int cols = wcswidth(wbuf, wl);
+	return (cols >= 0) ? cols : (int)wl;
+}
+
+void print_term_prompt_ex(const wchar_t *wcmd, int with_header) {
+	static int prev_cur_row = 0;
+	if (with_header) prev_cur_row = 0;
+
+	struct winsize ws;
+	int term_cols = 80;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+		term_cols = ws.ws_col;
+	}
+
+	if (!with_header && prev_cur_row > 0) {
+		printf("\033[%dA", prev_cur_row);
+	}
+
+	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
+	char prompt_str[MAX_PATH + 256];
+	format_custom_prompt(path, prompt_str, sizeof(prompt_str));
+	char *last_nl = strrchr(prompt_str, '\n');
+	const char *prompt_line = prompt_str;
+	if (last_nl) {
+		*last_nl = '\0';
+		if (with_header) {
+			const char *hdr = prompt_str;
+			while (*hdr == '\n') { printf("\r\n"); hdr++; }
+			printf("\r\033[K%s\r\n", hdr);
+		}
+		prompt_line = last_nl + 1;
+	}
+
+	printf("\r\033[J%s", prompt_line);
+
+	char full_utf[16384] = "";
+	if (wcmd) {
+		wcstombs(full_utf, wcmd, sizeof(full_utf) - 1);
+		full_utf[sizeof(full_utf) - 1] = '\0';
+	} else {
+		snprintf(full_utf, sizeof(full_utf), "%s", cmd_buffer);
+	}
+
+	if (wcmd && cmd_sel_start >= 0 && cmd_sel_end > cmd_sel_start && cmd_sel_end <= cmd_len) {
+		wchar_t part[16384];
+		char utf[16384];
+		if (cmd_sel_start > 0) {
+			wmemcpy(part, wcmd, (size_t)cmd_sel_start);
+			part[cmd_sel_start] = L'\0';
+			if (wcstombs(utf, part, sizeof(utf)) != (size_t)-1) printf("%s", utf);
+		}
+		int slen = cmd_sel_end - cmd_sel_start;
+		wmemcpy(part, wcmd + cmd_sel_start, (size_t)slen);
+		part[slen] = L'\0';
+		if (wcstombs(utf, part, sizeof(utf)) != (size_t)-1) printf("\033[7m%s\033[27m", utf);
+		if (cmd_len > cmd_sel_end) {
+			int rlen = cmd_len - cmd_sel_end;
+			wmemcpy(part, wcmd + cmd_sel_end, (size_t)rlen);
+			part[rlen] = L'\0';
+			if (wcstombs(utf, part, sizeof(utf)) != (size_t)-1) printf("%s", utf);
+		}
+	} else {
+		printf("%s", full_utf);
+	}
+
+	int pcols = visible_cols_ansi(prompt_line);
+	int tcols = visible_cols_ansi(full_utf);
+	int total_cols = pcols + tcols;
+	int cur_cols = pcols + (wcmd ? wcswidth(wcmd, (size_t)cmd_pos) : cmd_pos);
+	if (cur_cols < pcols) cur_cols = pcols;
+
+	int end_row = (total_cols > 0) ? ((total_cols - 1) / term_cols) : 0;
+	int cur_row = cur_cols / term_cols;
+	int cur_col = cur_cols % term_cols;
+
+	if (total_cols > 0 && (total_cols % term_cols) == 0) {
+		printf(" \b");
+	}
+	if (end_row > cur_row) {
+		printf("\033[%dA", end_row - cur_row);
+	}
+	printf("\r");
+	if (cur_col > 0) {
+		printf("\033[%dC", cur_col);
+	}
+
+	prev_cur_row = cur_row;
+	fflush(stdout);
+}
+

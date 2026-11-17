@@ -4,17 +4,21 @@
 #include "xc.h"
 
 void ui_init(void);
+void print_term_prompt_ex(const wchar_t *wcmd, int with_header);
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active);
 void draw_fkey_bar(int y, int width);
 void draw_screen(void);
 int ui_confirm(const char *title, const char *msg);
+int ui_confirm_cancel(const char *title, const char *msg);
 int ui_multiline_paste(const char *text);
 void ml_history_add(const char *dir, const char *script);
 int ui_multiline_history(char *out_script, size_t out_size);
 void ui_message(const char *title, const char *msg);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
-int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max);
+int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex);
+int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max, int *case_sens, int *use_regex);
 int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid_y);
+int ui_overwrite_prompt(const char *filename, off_t src_size, time_t src_mtime, off_t dst_size, time_t dst_mtime);
 void ui_help(void);
 void ui_editor_help(void);
 void ui_user_menu(void);
