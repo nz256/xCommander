@@ -179,6 +179,7 @@ void draw_fkey_bar(int y, int width) {
 	if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
 		labels[0] = "Left";
 		labels[1] = "Right";
+		labels[7] = "Hist";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
 		labels[3] = "Create";
 	}
@@ -2132,6 +2133,176 @@ static void ml_history_save_all(const char *path, char **hdr, char **bdy, int cn
 	fclose(wf);
 }
 
+int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t out_size) {
+	if (!hist || !hist_count || *hist_count <= 0) {
+		ui_message("Command History", "Command history is empty");
+		return 0;
+	}
+
+	int h, w;
+	getmaxyx(stdscr, h, w);
+	int bw = (w - 6 > 88) ? 88 : (w - 6);
+	if (bw < 52) bw = w - 2;
+	int bh = (h - 4 > 24) ? 24 : (h - 4);
+	if (bh < 12) bh = h - 2;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(bh, bw, sy, sx);
+	wbkgd(win, COLOR_PAIR(5));
+
+	const char *btns[4] = {"[ Run ]", "[ Insert ]", "[ Delete ]", "[ Cancel ]"};
+	int bwid[4] = {7, 10, 10, 10};
+	int total_bw = 7 + 1 + 10 + 1 + 10 + 1 + 10;
+
+	char filter[128] = "";
+	int flen = 0;
+	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
+	if (!map_idx) return 0;
+	int sel = 0, top = 0, btn = 0, res = 0, mcnt = 0;
+
+	while (1) {
+		mcnt = 0;
+		for (int i = *hist_count - 1; i >= 0; i--) {
+			if (flen == 0 || strcasestr(hist[i], filter) != NULL) {
+				map_idx[mcnt++] = i;
+			}
+		}
+
+		int lh = bh - 8;
+		if (lh < 4) lh = 4;
+		if (sel >= mcnt) sel = (mcnt > 0) ? (mcnt - 1) : 0;
+		if (sel < 0) sel = 0;
+		if (sel < top) top = sel;
+		if (sel >= top + lh) top = sel - lh + 1;
+
+		werase(win);
+		draw_win_box(win);
+		if (flen > 0) {
+			mvwprintw(win, 0, 2, " Command History (Alt+F8) [%d/%d] Filter: %s ", mcnt, *hist_count, filter);
+		} else {
+			mvwprintw(win, 0, 2, " Command History (Alt+F8) [%d] (type to filter) ", *hist_count);
+		}
+
+		if (mcnt == 0) {
+			mvwprint_utf8(win, 2, 3, bw - 6, "No matching commands in history");
+		} else {
+			for (int i = 0; i < lh && (top + i) < mcnt; i++) {
+				int ridx = map_idx[top + i];
+				wattron(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+				mvwhline(win, 1 + i, 1, ' ', bw - 2);
+				mvwprint_utf8(win, 1 + i, 2, bw - 4, hist[ridx]);
+				wattroff(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			}
+		}
+
+		int sep_y = 1 + lh;
+		mvwaddstr(win, sep_y, 0, "├");
+		for (int x = 1; x < bw - 1; x++) mvwaddstr(win, sep_y, x, "─");
+		mvwaddstr(win, sep_y, bw - 1, "┤");
+
+		if (mcnt > 0) {
+			const char *full = hist[map_idx[sel]];
+			int pcols = bw - 4;
+			int off = 0, fl = (int)strlen(full);
+			for (int r = 0; r < 2 && off < fl; r++) {
+				mvwprint_utf8(win, sep_y + 1 + r, 2, pcols, full + off);
+				off += pcols;
+			}
+		}
+
+		int bx0 = (bw - total_bw) / 2;
+		if (bx0 < 2) bx0 = 2;
+		int cx = bx0;
+		for (int i = 0; i < 4; i++) {
+			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
+			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			cx += bwid[i] + 1;
+		}
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
+				sel = top + wy - 1;
+				continue;
+			}
+			if (wy == bh - 2) {
+				int px = bx0;
+				for (int i = 0; i < 4; i++) {
+					if (wx >= px && wx < px + bwid[i]) {
+						btn = i;
+						if (i == 0 && mcnt > 0) { res = 1; goto done_ch; }
+						if (i == 1 && mcnt > 0) { res = 2; goto done_ch; }
+						if (i == 2 && mcnt > 0) goto do_del_ch;
+						goto done_ch;
+					}
+					px += bwid[i] + 1;
+				}
+			}
+			continue;
+		}
+		if (ev.action == ACT_ESC) {
+			if (flen > 0) { flen = 0; filter[0] = '\0'; sel = 0; top = 0; continue; }
+			break;
+		}
+		if (ev.action == ACT_F10) break;
+		if (ev.action == ACT_MOUSE_WHEEL_UP && sel > 0) sel--;
+		else if (ev.action == ACT_MOUSE_WHEEL_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_UP && sel > 0) sel--;
+		else if (ev.action == ACT_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
+		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= mcnt) sel = mcnt - 1; }
+		else if (ev.action == ACT_LEFT) btn = (btn + 3) % 4;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 4;
+		else if (ev.action == ACT_F4 && mcnt > 0) { res = 2; break; }
+		else if ((ev.action == ACT_F8 || ev.action == ACT_DELETE) && mcnt > 0) goto do_del_ch;
+		else if (ev.action == ACT_BACKSPACE && flen > 0) {
+			while (flen > 0 && ((unsigned char)filter[flen - 1] & 0xC0) == 0x80) flen--;
+			if (flen > 0) flen--;
+			filter[flen] = '\0';
+			sel = 0; top = 0;
+		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && !(ev.ch == L' ' && btn != 0 && flen == 0)) {
+			char mb[8];
+			int bl = wctomb(mb, ev.ch);
+			if (bl > 0 && flen + bl < (int)sizeof(filter) - 1) {
+				memcpy(filter + flen, mb, (size_t)bl);
+				flen += bl;
+				filter[flen] = '\0';
+				sel = 0; top = 0;
+			}
+		} else if (ev.action == ACT_ENTER) {
+			if (mcnt == 0 || btn == 3) break;
+			if (btn == 0) { res = 1; break; }
+			if (btn == 1) { res = 2; break; }
+			if (btn == 2) goto do_del_ch;
+		}
+		continue;
+
+do_del_ch:
+		if (mcnt > 0) {
+			int del_i = map_idx[sel];
+			for (int k = del_i; k + 1 < *hist_count; k++) {
+				memcpy(hist[k], hist[k + 1], MAX_CMD);
+			}
+			(*hist_count)--;
+			if (*hist_count == 0) break;
+		}
+	}
+
+done_ch:
+	if (res > 0 && mcnt > 0) {
+		snprintf(out_cmd, out_size, "%s", hist[map_idx[sel]]);
+	}
+	delwin(win);
+	free(map_idx);
+	touchwin(stdscr);
+	return res;
+}
+
 int ui_multiline_history(char *out_script, size_t out_size) {
 	char p[MAX_PATH + 48];
 	get_ml_path(p, sizeof(p));
@@ -2180,7 +2351,11 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 	WINDOW *win = newwin(bh, bw, sy, sx);
 	wbkgd(win, COLOR_PAIR(5));
 
-	int sel = 0, top = 0, chs = -1;
+	const char *btns[4] = {"[ Run ]", "[ Edit ]", "[ Delete ]", "[ Cancel ]"};
+	int bwid[4] = {7, 8, 10, 10};
+	int total_bw = 7 + 1 + 8 + 1 + 10 + 1 + 10;
+
+	int sel = 0, top = 0, btn = 0, chs = -1;
 	while (1) {
 		int lh = (bh - 5) / 2;
 		if (lh < 3) lh = 3;
@@ -2211,7 +2386,7 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 		for (int r = 0; r < prev_rows && bp && *bp; r++) {
 			const char *nl = strchr(bp, '\n');
 			int len = nl ? (int)(nl - bp) : (int)strlen(bp);
-			char line[256];
+			char line[512];
 			if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
 			memcpy(line, bp, (size_t)len);
 			line[len] = '\0';
@@ -2220,15 +2395,40 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 			bp = nl + 1;
 		}
 
-		const char *hints = " Enter:Run  F4:Edit  F8/Del:Delete  Esc:Close ";
-		if (bw > (int)strlen(hints) + 4) {
-			wattron(win, COLOR_PAIR(2));
-			mvwprintw(win, bh - 2, (bw - (int)strlen(hints)) / 2, "%s", hints);
-			wattroff(win, COLOR_PAIR(2));
+		int bx0 = (bw - total_bw) / 2;
+		if (bx0 < 2) bx0 = 2;
+		int cx = bx0;
+		for (int i = 0; i < 4; i++) {
+			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
+			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			cx += bwid[i] + 1;
 		}
 		wrefresh(win);
 
 		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < cnt) {
+				sel = top + wy - 1;
+				continue;
+			}
+			if (wy == bh - 2) {
+				int px = bx0;
+				for (int i = 0; i < 4; i++) {
+					if (wx >= px && wx < px + bwid[i]) {
+						btn = i;
+						if (i == 0) { chs = sel; goto done_ml; }
+						if (i == 1) goto do_edit_ml;
+						if (i == 2) goto do_del_ml;
+						goto done_ml;
+					}
+					px += bwid[i] + 1;
+				}
+			}
+			continue;
+		}
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
 		if (ev.action == ACT_MOUSE_WHEEL_UP && sel > 0) sel--;
 		else if (ev.action == ACT_MOUSE_WHEEL_DOWN && sel + 1 < cnt) sel++;
@@ -2236,16 +2436,30 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 		else if (ev.action == ACT_DOWN && sel + 1 < cnt) sel++;
 		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
 		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= cnt) sel = cnt - 1; }
-		else if (ev.action == ACT_ENTER) { chs = sel; break; }
-		else if (ev.action == ACT_F8 || ev.action == ACT_DELETE) {
-			if (ui_confirm("Delete Entry", "Remove selected script from history?")) {
-				free(hdr[sel]); free(bdy[sel]);
-				for (int k = sel; k + 1 < cnt; k++) { hdr[k] = hdr[k + 1]; bdy[k] = bdy[k + 1]; }
-				cnt--;
-				ml_history_save_all(p, hdr, bdy, cnt);
-				if (cnt == 0) break;
-			}
-		} else if (ev.action == ACT_F4) {
+		else if (ev.action == ACT_LEFT) btn = (btn + 3) % 4;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 4;
+		else if (ev.action == ACT_F8 || ev.action == ACT_DELETE) goto do_del_ml;
+		else if (ev.action == ACT_F4) goto do_edit_ml;
+		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) {
+			if (btn == 0) { chs = sel; break; }
+			if (btn == 1) goto do_edit_ml;
+			if (btn == 2) goto do_del_ml;
+			break;
+		}
+		continue;
+
+do_del_ml:
+		if (ui_confirm("Delete Entry", "Remove selected script from history?")) {
+			free(hdr[sel]); free(bdy[sel]);
+			for (int k = sel; k + 1 < cnt; k++) { hdr[k] = hdr[k + 1]; bdy[k] = bdy[k + 1]; }
+			cnt--;
+			ml_history_save_all(p, hdr, bdy, cnt);
+			if (cnt == 0) break;
+		}
+		continue;
+
+do_edit_ml:
+		{
 			char tmp_ed[128];
 			snprintf(tmp_ed, sizeof(tmp_ed), "/tmp/xc_ml_edit_%d.sh", (int)getpid());
 			FILE *tf = fopen(tmp_ed, "wb");
@@ -2276,6 +2490,7 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 		}
 	}
 
+done_ml:
 	if (chs >= 0) snprintf(out_script, out_size, "%s", bdy[chs]);
 	for (int i = 0; i < cnt; i++) { free(hdr[i]); free(bdy[i]); }
 	delwin(win);

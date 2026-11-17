@@ -13,6 +13,7 @@ int ui_confirm_cancel(const char *title, const char *msg);
 int ui_multiline_paste(const char *text);
 void ml_history_add(const char *dir, const char *script);
 int ui_multiline_history(char *out_script, size_t out_size);
+int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t out_size);
 void ui_message(const char *title, const char *msg);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
 int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex);

@@ -260,6 +260,13 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 		if (col_w < 3) col_w = 3;
 		int idx = mx / col_w;
 		if (idx > 9) idx = 9;
+		if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
+			if (idx == 0) return ACT_ALT_F1;
+			if (idx == 1) return ACT_ALT_F2;
+			if (idx == 7) return ACT_ALT_F8;
+		} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+			if (idx == 3) return ACT_SHIFT_F4;
+		}
 		const KeyAction fkeys[10] = {
 			ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_F5,
 			ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10
@@ -619,6 +626,31 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_INSERT_LEFT_PATH) { cmdline_insert_path(&left_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
 		if (ev.action == ACT_INSERT_RIGHT_PATH) { cmdline_insert_path(&right_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
+		if (ev.action == ACT_ALT_F8 || ev.action == ACT_CTRL_H) {
+			char picked_cmd[MAX_CMD] = "";
+			int prev_cnt = history_count;
+			int hres = ui_cmd_history(cmd_history, &history_count, picked_cmd, sizeof(picked_cmd));
+			if (history_count != prev_cnt) {
+				history_idx = history_count;
+				history_save();
+			}
+			if (hres == 1 && picked_cmd[0] != '\0') {
+				if (terminal_mode) { printf("\r\n"); fflush(stdout); }
+				history_add(picked_cmd);
+				history_save();
+				execute_system_command(picked_cmd);
+				last_prompt_dir[0] = '\0';
+				if (!terminal_mode) reload_panels_keep_cursor();
+				cmdline_clear();
+				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+			} else if (hres == 2 && picked_cmd[0] != '\0') {
+				cmdline_set_text(picked_cmd);
+				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			} else {
+				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			}
+			continue;
+		}
 		if (ev.action == ACT_ALT_CHAR && (ev.ch == L'h' || ev.ch == L'H' || ev.ch == L'р' || ev.ch == L'Р')) {
 			int was_term = terminal_mode;
 			if (was_term) { reset_prog_mode(); refresh(); }

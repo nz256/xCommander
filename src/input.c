@@ -121,6 +121,7 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'c' || code == 'C') return ACT_CTRL_C;
 		if (code == 'e' || code == 'E') return ACT_CTRL_E;
 		if (code == 'f' || code == 'F') return ACT_CTRL_F;
+		if (code == 'h' || code == 'H' || code == 1088 || code == 1056) return ACT_CTRL_H;
 		if (code == 'j' || code == 'J') return ACT_INSERT_NAME;
 		if (code == 'o' || code == 'O') return ACT_CTRL_O;
 		if (code == 'q' || code == 'Q') return ACT_CTRL_Q;
@@ -199,6 +200,7 @@ static KeyAction parse_csi(const char *seq) {
 			int f_idx = code - 57370;
 			if (f_idx == 1) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
 			if (f_idx == 2) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
+			if (f_idx == 8) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 			if (f_idx == 3) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 			if (f_idx == 4) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 			if (f_idx == 5) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
@@ -272,7 +274,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 15) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
 		if (p1 == 17) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
 		if (p1 == 18) { if (mod == 2) return ACT_SHIFT_F7; if (mod == 5) return ACT_CTRL_F7; return ACT_F7; }
-		if (p1 == 19) return ACT_F8;
+		if (p1 == 19) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 		if (p1 == 20) return ACT_F9;
 		if (p1 == 21) return ACT_F10;
 		if (p1 == 26) return ACT_SHIFT_F4;
