@@ -183,7 +183,7 @@ void draw_fkey_bar(int y, int width) {
 		labels[3] = "";
 		labels[4] = "Pack";
 		labels[5] = "";
-		labels[6] = "";
+		labels[6] = "Find";
 		labels[7] = "CmdH";
 		labels[8] = "FileH";
 		labels[9] = "DirH";
@@ -964,6 +964,7 @@ void ui_help(void) {
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  F7 / F8            Create directory / Delete selected items",
+		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Insert)",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
 		"                       Inside: F3 View, F4 Edit+Upd, F5 Extract, F8 Del",
 		"  Shift+F1 / Alt+F5  Pack selected items to archive (.zip/.tar.*/.7z)",
@@ -988,7 +989,7 @@ void ui_help(void) {
 		"  Mouse Right        Toggle file selection mark (like Insert)",
 		"  Mouse Wheel        Scroll panels, menus, viewer, editor & help",
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
-		"  Ctrl+O             Toggle full terminal mode / panels (.bashrc aware)",
+		"  Ctrl+O             Toggle terminal mode (native mouse scroll/select)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
 		"  CLI Options        xc -e[LINE[:POS]] [FILE] | -v (version) | -h (help)",
 		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"

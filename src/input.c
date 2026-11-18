@@ -21,6 +21,12 @@ static void on_sigwinch(int sig) { (void)sig; g_resized = 1; }
 static struct termios g_orig_termios;
 static int g_has_orig_termios = 0;
 
+void input_set_mouse(int enable) {
+	const char *seq = enable ? "\033[?1000;1006h" : "\033[?1000;1006l";
+	ssize_t w = write(STDOUT_FILENO, seq, strlen(seq));
+	(void)w;
+}
+
 void input_enable_raw(void) {
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -278,7 +284,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 14) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 		if (p1 == 15) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : ACT_F5);
 		if (p1 == 17) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
-		if (p1 == 18) { if (mod == 2) return ACT_SHIFT_F7; if (mod == 5) return ACT_CTRL_F7; return ACT_F7; }
+		if (p1 == 18) { if ((mod == 3) || g_mod_alt) return ACT_ALT_F7; if ((mod == 2) || g_mod_shift) return ACT_SHIFT_F7; if ((mod == 5) || g_mod_ctrl) return ACT_CTRL_F7; return ACT_F7; }
 		if (p1 == 19) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 		if (p1 == 20) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F9 : ACT_F9;
 		if (p1 == 21) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F10 : ACT_F10;

@@ -7,6 +7,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
 ## Features
 
 - **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6`), and drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount.
+- **File Search by Mask & Content (`Alt+F7`)**: Fast recursive search supporting multi-masks (`*.c;*.h`), case-sensitive/insensitive text search with line numbers, and instant actions (`Enter` Go to, `F3` View, `F4` Edit at matched line, `Ctrl+J` Insert path).
 - **Virtual Archive VFS**: Enter archives seamlessly (`Enter` or `Ctrl+PgDn` on `.zip`, `.jar`, `.apk`, `.whl`, `.epub`, `.docx`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.7z`, `.rar`), view (`F3`), edit with auto-update (`F4`), extract (`F5`), delete inside archives (`F8`), and pack files (`Shift+F1` / `Alt+F5`).
 - **Built-in Viewer & TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with automatic cursor position memory per file.
 - **4 Persistent History Journals & Dynamic 12-Key F-Bar**:
@@ -15,7 +16,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
   - `Alt+F10` / `Ctrl+D`: Folder History (512 visited steps; live filter, Go / Other panel / Insert / Delete; plus `Alt+Backspace` / `Alt+Shift+Backspace` Back/Forward)
   - `Alt+F11` / `Ctrl+L`: Multiline Script History (Run / Edit in built-in editor / Delete)
   - Hold `Alt` / `Ctrl` / `Shift` to dynamically switch the 12-button bottom F-bar.
-- **Smart Clipboard & Terminal Mode**: URI-list file copy/paste (`Ctrl+C` / `Ctrl+X` / `Ctrl+V`), multiline script paste dialog, quick prefix search (`Alt+<char>` with auto EN/RU layout), live-filtered Help (`F1`), and full shell toggle (`Ctrl+O`).
+- **Smart Clipboard & Native Terminal Scrollback**: URI-list file copy/paste (`Ctrl+C` / `Ctrl+X` / `Ctrl+V`), multiline script paste dialog, quick prefix search (`Alt+<char>` with auto EN/RU layout), live-filtered Help (`F1`), and full shell toggle (`Ctrl+O`) with automatic mouse release for native wheel scrolling and text selection.
 
 ## Build & Run
 
@@ -49,9 +50,10 @@ make
 | `F2` | Open User Menu (`~/.config/xcommander/menu`) |
 | `F3` | Built-in Text / Hex viewer (`F2` Wrap, `F4` Hex, `F7` Find) |
 | `F4` / `Shift+F4` | Edit file (auto-restores cursor pos) / Create new file |
-| `F5` / `F6` | Copy (or extract from archive) / Move or rename |
+| `F5` / `F6` | Copy (or extract from archive) / Move or rename (supports relative paths) |
 | `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
 | `F7` / `F8` | Create directory / Delete selected items (works inside `.zip`/`.7z` archives) |
+| `Alt+F7` | Find files by mask & content (`Enter` Go to, `F3` View, `F4` Edit at line, `Ctrl+J` Insert) |
 | `Alt+F8` / `Ctrl+H` | Open Command History (filter, Run / Insert / Jump / Delete) |
 | `Alt+F9` / `Ctrl+G` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
 | `Alt+F10` / `Ctrl+D` | Open Folder History (filter, Go / Other / Insert / Delete) |
@@ -60,5 +62,5 @@ make
 | `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
 | `Alt+Enter` / `Ctrl+J` | Insert filename under cursor into command line |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Smart copy / cut / paste (files or text) |
-| `Ctrl+O` | Toggle full terminal mode / panels |
+| `Ctrl+O` | Toggle full terminal mode / panels (with native mouse wheel scroll & selection) |
 | `F10` / `Ctrl+Q` | Save state & histories and quit |

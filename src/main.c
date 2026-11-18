@@ -13,6 +13,7 @@
 #include "xc.h"
 #include "panel.h"
 #include "archive.h"
+#include "find.h"
 #include "ui.h"
 #include "exec.h"
 #include "input.h"
@@ -843,16 +844,16 @@ int main(int argc, char **argv) {
 				char raw_clip[65536] = {0};
 				if (clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
 					int was_term = terminal_mode;
-					if (was_term) { reset_prog_mode(); refresh(); }
+					if (was_term) { reset_prog_mode(); input_set_mouse(1); refresh(); }
 					int ok = ui_multiline_paste(raw_clip);
-					if (was_term) { endwin(); input_enable_raw(); }
+					if (was_term) { endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); }
 					if (ok == 1) {
 						run_multiline_script(raw_clip, was_term);
 					} else if (ok == 2) {
-						if (was_term) { reset_prog_mode(); refresh(); }
+						if (was_term) { reset_prog_mode(); input_set_mouse(1); refresh(); }
 						char picked[65536] = {0};
 						int h_ok = ui_multiline_history(picked, sizeof(picked));
-						if (was_term) { endwin(); input_enable_raw(); }
+						if (was_term) { endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); }
 						if (h_ok) run_multiline_script(picked, was_term);
 						else if (!was_term) { draw_screen(); refresh(); }
 						else { print_term_prompt(cmd_wbuf); }
@@ -889,7 +890,7 @@ int main(int argc, char **argv) {
 		if (ev.action == ACT_CTRL_O) {
 			terminal_mode = !terminal_mode;
 			if (terminal_mode) {
-				def_prog_mode(); endwin(); input_enable_raw();
+				def_prog_mode(); endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); input_set_mouse(0);
 				if (strcmp(last_prompt_dir, active_panel->current_path) != 0) {
 					snprintf(last_prompt_dir, sizeof(last_prompt_dir), "%s", active_panel->current_path);
 					print_term_prompt_ex(cmd_wbuf, 1);
@@ -897,7 +898,7 @@ int main(int argc, char **argv) {
 					print_term_prompt_ex(cmd_wbuf, 0);
 				}
 			} else {
-				reset_prog_mode(); input_enable_raw(); clearok(stdscr, TRUE);
+				reset_prog_mode(); input_enable_raw(); input_set_mouse(1); clearok(stdscr, TRUE);
 				reload_panels_keep_cursor(); refresh(); draw_screen(); refresh();
 			}
 			continue;
@@ -1063,10 +1064,10 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_ALT_F11 || ev.action == ACT_CTRL_L) {
 			int was_term = terminal_mode;
-			if (was_term) { reset_prog_mode(); refresh(); }
+			if (was_term) { reset_prog_mode(); input_set_mouse(1); refresh(); }
 			char picked[65536] = {0};
 			int h_ok = ui_multiline_history(picked, sizeof(picked));
-			if (was_term) { endwin(); input_enable_raw(); }
+			if (was_term) { endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); }
 			if (h_ok) run_multiline_script(picked, was_term);
 			else if (!was_term) { draw_screen(); refresh(); }
 			else { print_term_prompt(cmd_wbuf); }
@@ -1283,6 +1284,31 @@ int main(int argc, char **argv) {
 			}
 		}
 		else if (ev.action == ACT_F6) { Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel; int ps = active_panel->selected; if (move_items(active_panel, oth) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; } }
+		else if (ev.action == ACT_ALT_F7) {
+			char found_fp[MAX_PATH * 2] = "";
+			int fres = ui_find_files(active_panel->current_path, found_fp, sizeof(found_fp));
+			if (fres == 1 && found_fp[0] != '\0') {
+				char *sl = strrchr(found_fp, '/');
+				if (sl) {
+					const char *bn = sl + 1;
+					if (sl == found_fp) strcpy(found_fp, "/");
+					else *sl = '\0';
+					active_panel->archive_file[0] = '\0';
+					active_panel->archive_dir[0] = '\0';
+					quick_search_reset();
+					snprintf(active_panel->parent_name, MAX_FILENAME, "%s", bn);
+					snprintf(active_panel->current_path, MAX_PATH, "%s", found_fp);
+					load_directory(active_panel);
+				}
+			} else if (fres == 2 && found_fp[0] != '\0') {
+				wchar_t wfp[MAX_PATH * 2];
+				if (mbstowcs(wfp, found_fp, MAX_PATH * 2 - 1) != (size_t)-1) {
+					wfp[MAX_PATH * 2 - 1] = L'\0';
+					cmdline_insert_wstr(wfp);
+				}
+			}
+			draw_screen(); refresh();
+		}
 		else if (ev.action == ACT_F7) { if (make_directory(active_panel) > 0) { reload_panels_keep_cursor(); } }
 		else if (ev.action == ACT_SHIFT_F1 || ev.action == ACT_ALT_F5) {
 			if (archive_create_from_panel(active_panel) > 0) {
