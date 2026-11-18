@@ -198,6 +198,23 @@ int create_and_edit_file(Panel *panel) {
 	return 0;
 }
 
+static void resolve_dest_path(const Panel *src_panel, char *dest, size_t dest_sz) {
+	if (!dest || dest[0] == '\0') return;
+	char tmp[MAX_PATH * 2];
+	if (dest[0] == '~' && (dest[1] == '/' || dest[1] == '\0')) {
+		const char *home = getenv("HOME");
+		if (home && *home) {
+			snprintf(tmp, sizeof(tmp), "%s%s", home, dest + 1);
+			snprintf(dest, dest_sz, "%s", tmp);
+			return;
+		}
+	}
+	if (dest[0] != '/' && src_panel) {
+		build_full_path(tmp, sizeof(tmp), src_panel->current_path, dest);
+		snprintf(dest, dest_sz, "%s", tmp);
+	}
+}
+
 int copy_items(const Panel *src_panel, const Panel *dst_panel) {
 	if (!src_panel || !dst_panel || src_panel->count == 0) return 0;
 
@@ -262,6 +279,7 @@ int copy_items(const Panel *src_panel, const Panel *dst_panel) {
 
 	if (!ui_input("Copy Group (F5)", prompt, dest_dir, sizeof(dest_dir))) return 0;
 	if (strlen(dest_dir) == 0) return 0;
+	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 
 	g_overwrite_all = 0;
 	for (int i = 0; i < src_panel->count; i++) {
@@ -344,6 +362,7 @@ int move_items(const Panel *src_panel, const Panel *dst_panel) {
 
 	if (!ui_input("Move Group (F6)", prompt, dest_dir, sizeof(dest_dir))) return 0;
 	if (strlen(dest_dir) == 0) return 0;
+	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 
 	for (int i = 0; i < src_panel->count; i++) {
 		if (!src_panel->files[i].is_selected) continue;
