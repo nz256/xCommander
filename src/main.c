@@ -893,7 +893,7 @@ int main(int argc, char **argv) {
 				if (strcmp(last_prompt_dir, active_panel->current_path) != 0) {
 					snprintf(last_prompt_dir, sizeof(last_prompt_dir), "%s", active_panel->current_path);
 					print_term_prompt_ex(cmd_wbuf, 1);
-				} else if (cmd_len > 0) {
+				} else {
 					print_term_prompt_ex(cmd_wbuf, 0);
 				}
 			} else {
