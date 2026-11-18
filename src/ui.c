@@ -181,7 +181,7 @@ void draw_fkey_bar(int y, int width) {
 		labels[1] = "Right";
 		labels[2] = "";
 		labels[3] = "";
-		labels[4] = "";
+		labels[4] = "Pack";
 		labels[5] = "";
 		labels[6] = "";
 		labels[7] = "CmdH";
@@ -190,7 +190,7 @@ void draw_fkey_bar(int y, int width) {
 		labels[10] = "ScrH";
 		labels[11] = "";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
-		labels[0] = "";
+		labels[0] = "Pack";
 		labels[1] = "";
 		labels[2] = "";
 		labels[3] = "Create";
@@ -265,6 +265,11 @@ static void format_perms(mode_t m, char out[10]) {
 }
 
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active) {
+	char disp_path[MAX_PATH * 2];
+	if (p->archive_file[0] != '\0') {
+		const char *ab = strrchr(p->archive_file, '/'); ab = ab ? (ab + 1) : p->archive_file;
+		snprintf(disp_path, sizeof(disp_path), "%s:/%s", ab, p->archive_dir);
+	} else snprintf(disp_path, sizeof(disp_path), "%s", p->current_path);
 	int normal_attr = COLOR_PAIR(1);
 	int dir_attr = COLOR_PAIR(7);
 	int exec_attr = COLOR_PAIR(8);
@@ -318,7 +323,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	int max_path_len = width - 6 - (int)strlen(sort_info);
 	if (max_path_len < 1) max_path_len = 1;
 	char short_path[MAX_PATH];
-	snprintf(short_path, (size_t)max_path_len + 1, "%s%s", p->current_path, sort_info);
+	snprintf(short_path, (size_t)max_path_len + 1, "%s%s", disp_path, sort_info);
 
 	int path_len = (int)mbstowcs(NULL, short_path, 0);
 	if (path_len < 0) path_len = (int)strlen(short_path);
@@ -784,6 +789,8 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 
 static void ui_show_help_lines(const char *title, const char **lines, int total) {
 	int top = 0;
+	char filter[128] = "";
+	int flen = 0;
 
 	int height, width;
 	getmaxyx(stdscr, height, width);
@@ -798,38 +805,79 @@ static void ui_show_help_lines(const char *title, const char **lines, int total)
 	int start_y = (height - box_h) / 2;
 	int start_x = (width - box_w) / 2;
 
+	const char **f_lines = malloc(sizeof(const char *) * (size_t)(total > 0 ? total : 1));
+	if (!f_lines) return;
+
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	wbkgd(win, COLOR_PAIR(5));
 
-	draw_win_box(win);
-	mvwprintw(win, 0, 2, " %s ", title);
-	const char *btn = "[ Close (Esc) ]";
-	wattron(win, COLOR_PAIR(2));
-	mvwprintw(win, box_h - 2, (box_w - (int)strlen(btn)) / 2, "%s", btn);
-	wattroff(win, COLOR_PAIR(2));
-	const char *nav = " Up/Down/Wheel: Scroll ";
-	if (box_w > (int)strlen(nav) + 4) mvwprintw(win, box_h - 1, box_w - (int)strlen(nav) - 2, "%s", nav);
-
 	while (1) {
-		int vis = box_h - 4;
-		if (vis < 1) vis = 1;
-		if (top > total - vis) top = (total > vis) ? (total - vis) : 0;
-		if (top < 0) top = 0;
+		int f_total = 0;
+		if (flen == 0) {
+			for (int i = 0; i < total; i++) f_lines[f_total++] = lines[i];
+		} else {
+			const char *pending_hdr = NULL;
+			for (int i = 0; i < total; i++) {
+				const char *ln = lines[i];
+				if (strncmp(ln, "===", 3) == 0) {
+					pending_hdr = ln;
+					continue;
+				}
+				if (*ln == '\0') continue;
+				if (strcasestr(ln, filter) || (pending_hdr && strcasestr(pending_hdr, filter))) {
+					if (pending_hdr) {
+						if (f_total > 0) f_lines[f_total++] = "";
+						f_lines[f_total++] = pending_hdr;
+						pending_hdr = NULL;
+					}
+					f_lines[f_total++] = ln;
+				}
+			}
+		}
+
+		draw_win_box(win);
+		mvwprintw(win, 0, 2, " %s ", title);
 
 		char pos_str[32];
-		snprintf(pos_str, sizeof(pos_str), " %d-%d/%d ", top + 1, (top + vis < total ? top + vis : total), total);
+		if (f_total > 0) {
+			int vis_tmp = box_h - 5;
+			if (vis_tmp < 1) vis_tmp = 1;
+			snprintf(pos_str, sizeof(pos_str), " %d-%d/%d ", top + 1, (top + vis_tmp < f_total ? top + vis_tmp : f_total), f_total);
+		} else {
+			snprintf(pos_str, sizeof(pos_str), " 0/0 ");
+		}
 		if (box_w > (int)strlen(pos_str) + 4) {
 			mvwprintw(win, 0, box_w - (int)strlen(pos_str) - 2, "%s", pos_str);
 		}
 
+		mvwhline(win, 1, 2, ' ', box_w - 4);
+		wattron(win, COLOR_PAIR(2));
+		mvwhline(win, 1, 2, ' ', box_w - 4);
+		char f_disp[256];
+		snprintf(f_disp, sizeof(f_disp), "Filter: %s", flen > 0 ? filter : "(type to filter)");
+		mvwprint_utf8(win, 1, 3, box_w - 6, f_disp);
+		wattroff(win, COLOR_PAIR(2));
+
+		const char *btn = flen > 0 ? "[ Clear (Esc) ]" : "[ Close (Esc) ]";
+		wattron(win, COLOR_PAIR(2));
+		mvwprintw(win, box_h - 2, (box_w - (int)strlen(btn)) / 2, "%s", btn);
+		wattroff(win, COLOR_PAIR(2));
+		const char *nav = " Type: Filter | Up/Down: Scroll ";
+		if (box_w > (int)strlen(nav) + 4) mvwprintw(win, box_h - 1, box_w - (int)strlen(nav) - 2, "%s", nav);
+
+		int vis = box_h - 5;
+		if (vis < 1) vis = 1;
+		if (top > f_total - vis) top = (f_total > vis) ? (f_total - vis) : 0;
+		if (top < 0) top = 0;
+
 		for (int i = 0; i < vis; i++) {
-			mvwhline(win, 1 + i, 2, ' ', box_w - 4);
-			if (top + i >= total) continue;
-			const char *ln = lines[top + i];
+			mvwhline(win, 2 + i, 2, ' ', box_w - 4);
+			if (top + i >= f_total) continue;
+			const char *ln = f_lines[top + i];
 			int is_hdr = (strncmp(ln, "===", 3) == 0);
 			if (is_hdr) wattron(win, COLOR_PAIR(5) | A_UNDERLINE);
-			mvwprint_utf8(win, 1 + i, 2, box_w - 4, ln);
+			mvwprint_utf8(win, 2 + i, 2, box_w - 4, ln);
 			if (is_hdr) wattroff(win, COLOR_PAIR(5) | A_UNDERLINE);
 		}
 		printf("\033[?2026h"); fflush(stdout);
@@ -841,18 +889,45 @@ static void ui_show_help_lines(const char *title, const char **lines, int total)
 		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { top += 3; continue; }
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w || wy == box_h - 2) break;
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w || wy == box_h - 2) {
+				if (wy == box_h - 2 && flen > 0) { flen = 0; filter[0] = '\0'; top = 0; continue; }
+				break;
+			}
 			continue;
 		}
-		if (ev.action == ACT_ESC || ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10) break;
+		if (ev.action == ACT_ESC) {
+			if (flen > 0) { flen = 0; filter[0] = '\0'; top = 0; continue; }
+			break;
+		}
+		if (ev.action == ACT_ENTER || ev.action == ACT_F1 || ev.action == ACT_F10) break;
+		else if (ev.action == ACT_BACKSPACE || ev.action == ACT_CTRL_U) {
+			if (ev.action == ACT_CTRL_U) { flen = 0; filter[0] = '\0'; top = 0; }
+			else if (flen > 0) {
+				while (flen > 0 && ((unsigned char)filter[flen - 1] & 0xC0) == 0x80) flen--;
+				if (flen > 0) flen--;
+				filter[flen] = '\0';
+				top = 0;
+			}
+		}
+		else if (ev.action == ACT_CHAR && ev.ch >= 32) {
+			char u8[8];
+			int n = wctomb(u8, ev.ch);
+			if (n > 0 && flen + n < (int)sizeof(filter) - 1) {
+				memcpy(filter + flen, u8, (size_t)n);
+				flen += n;
+				filter[flen] = '\0';
+				top = 0;
+			}
+		}
 		else if (ev.action == ACT_UP && top > 0) top--;
-		else if (ev.action == ACT_DOWN && top + vis < total) top++;
+		else if (ev.action == ACT_DOWN && top + vis < f_total) top++;
 		else if (ev.action == ACT_PGUP) { top -= vis; if (top < 0) top = 0; }
 		else if (ev.action == ACT_PGDN) { top += vis; }
 		else if (ev.action == ACT_HOME) top = 0;
-		else if (ev.action == ACT_END) top = total;
+		else if (ev.action == ACT_END) top = f_total;
 	}
 
+	free(f_lines);
 	delwin(win);
 	touchwin(stdscr);
 }
@@ -882,13 +957,16 @@ void ui_help(void) {
 		"                     Continue typing without Alt; Esc to cancel",
 		"",
 		"=== 2. VIEWER, EDITOR & FILE OPERATIONS ===",
-		"  F1                 Open this Help guide",
+		"  F1                 Open this Help guide (type to live-filter)",
 		"  F2                 Open User Menu (submenus { } & hotkeys)",
 		"  F3                 Built-in Text / Hex viewer (F2:Wrap F4:Hex F7:Find)",
 		"  F4                 Built-in TUI Editor (F1 inside editor for keys)",
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  F7 / F8            Create directory / Delete selected items",
+		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
+		"                       Inside: F3 View, F4 Edit+Upd, F5 Extract, F8 Del",
+		"  Shift+F1 / Alt+F5  Pack selected items to archive (.zip/.tar.*/.7z)",
 		"",
 		"=== 3. COMMAND LINE & SMART CLIPBOARD ===",
 		"  Alt+[ / Alt+]      Insert Left / Right panel path into cmd",

@@ -201,12 +201,12 @@ static KeyAction parse_csi(const char *seq) {
 		if (code == 27) return ACT_ESC;
 		if (code >= 57371 && code <= 57382) {
 			int f_idx = code - 57370;
-			if (f_idx == 1) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+			if (f_idx == 1) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
 			if (f_idx == 2) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 			if (f_idx == 8) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 			if (f_idx == 3) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 			if (f_idx == 4) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
-			if (f_idx == 5) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
+			if (f_idx == 5) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : ACT_F5);
 			if (f_idx == 6) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
 			if (f_idx == 7) return ACT_F7;
 			if (f_idx == 8) return ACT_F8;
@@ -260,7 +260,7 @@ static KeyAction parse_csi(const char *seq) {
 	}
 	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
 	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
-	if (final == 'P') return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+	if (final == 'P') return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
 	if (final == 'Q') return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 	if (final == 'R') return ACT_F3;
 	if (final == 'S') return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
@@ -272,11 +272,11 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 3) return ACT_DELETE;
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;
 		if (p1 == 6) return (mod == 5) ? ACT_CTRL_PGDN : ACT_PGDN;
-		if (p1 == 11) return (mod == 3) ? ACT_ALT_F1 : ACT_F1;
+		if (p1 == 11) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
 		if (p1 == 12) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 		if (p1 == 13) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 		if (p1 == 14) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
-		if (p1 == 15) return (mod == 5) ? ACT_CTRL_F5 : ACT_F5;
+		if (p1 == 15) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : ACT_F5);
 		if (p1 == 17) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
 		if (p1 == 18) { if (mod == 2) return ACT_SHIFT_F7; if (mod == 5) return ACT_CTRL_F7; return ACT_F7; }
 		if (p1 == 19) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
@@ -403,7 +403,7 @@ InputEvent input_read(void) {
 					else if (b3 == 'B') ev.action = ACT_DOWN;
 					else if (b3 == 'C') ev.action = ACT_RIGHT;
 					else if (b3 == 'D') ev.action = ACT_LEFT;
-					else if (b3 == 'P') ev.action = ACT_F1;
+					else if (b3 == 'P') ev.action = g_mod_alt ? ACT_ALT_F1 : (g_mod_shift ? ACT_SHIFT_F1 : ACT_F1);
 					else if (b3 == 'Q') ev.action = ACT_F2;
 					else if (b3 == 'R') ev.action = ACT_F3;
 					else if (b3 == 'S') ev.action = ACT_F4;

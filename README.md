@@ -1,90 +1,64 @@
 # xCommander (`xc`)
 
-A fast, lightweight, FAR Manager-inspired dual-panel TUI file manager and text editor for Linux, written in C11 and `ncursesw`.
+**English** | [Русский](README.ru.md)
 
-> **Note:** Built primarily for personal daily use on **Arch Linux** with **Kitty** as the primary terminal emulator (leveraging the Kitty Keyboard Protocol for dynamic `Ctrl`/`Alt`/`Shift` function key bars and full modifier support across EN/RU layouts), while remaining compatible with other modern Linux terminals (`xterm`, `konsole`, `xfce4-terminal`).
+A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Manager and Midnight Commander, written in pure C with `ncurses`.
 
-![xCommander Screenshot](docs/screenshot.png)
+## Features
 
-## Key Features
+- **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6`), and drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount.
+- **Virtual Archive VFS**: Enter archives seamlessly (`Enter` or `Ctrl+PgDn` on `.zip`, `.jar`, `.apk`, `.whl`, `.epub`, `.docx`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.7z`, `.rar`), view (`F3`), edit with auto-update (`F4`), extract (`F5`), delete inside archives (`F8`), and pack files (`Shift+F1` / `Alt+F5`).
+- **Built-in Viewer & TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with automatic cursor position memory per file.
+- **4 Persistent History Journals & Dynamic 12-Key F-Bar**:
+  - `Alt+F8` / `Ctrl+H`: Command History (512 items with timestamp & directory; live filter, Run / Insert / Jump / Delete)
+  - `Alt+F9` / `Ctrl+G`: File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete)
+  - `Alt+F10` / `Ctrl+D`: Folder History (512 visited steps; live filter, Go / Other panel / Insert / Delete; plus `Alt+Backspace` / `Alt+Shift+Backspace` Back/Forward)
+  - `Alt+F11` / `Ctrl+L`: Multiline Script History (Run / Edit in built-in editor / Delete)
+  - Hold `Alt` / `Ctrl` / `Shift` to dynamically switch the 12-button bottom F-bar.
+- **Smart Clipboard & Terminal Mode**: URI-list file copy/paste (`Ctrl+C` / `Ctrl+X` / `Ctrl+V`), multiline script paste dialog, quick prefix search (`Alt+<char>` with auto EN/RU layout), live-filtered Help (`F1`), and full shell toggle (`Ctrl+O`).
 
-- **Dual-Panel File Management:** Full UTF-8 support, real-time `inotify` auto-refresh with debouncing (plus manual `Ctrl+R`), persistent panel state & symlink-aware logical navigation, full folder visit history (`Alt+F12` / `Ctrl+D`, `Alt+Backspace` / `Alt+Shift+Backspace` Back/Forward), sorting (`Ctrl+F3`–`Ctrl+F6`), quick prefix search (`Alt+<char>` with auto EN/RU layout), FAR-style mask & range selection (`+`, `-`, `*`, `Shift+Arrows`, `Alt+Shift+Home/End`), overwrite confirmation dialog (`F5`/`F6`/`Ctrl+V`), instant panel swap (`Ctrl+U`), and opening items in the system file manager (`Shift+Enter`).
-- **Drive & Bookmarks Menu (`Alt+F1` / `Alt+F2`):** Instant jump to the opposite panel path (`-`), `$HOME` (`~`), `/`, mounted partitions (`/media`, `/run/media`, `/mnt`) with free space indicators, custom bookmarks (`Ins`/`+`, stored in `~/.config/xcommander/bookmarks`), and safe USB unmount (`F8` / `Delete` via `udisksctl`).
-- **Built-in TUI Text Editor (`F4` / `Shift+F4` or `xc -e FILE`):**
-  - Syntax highlighting (`C/C++`, `Python`, `Shell`, `Config`, `Generic`) with shebang (`#!/...`) detection, toggled via `F4`.
-  - Matching bracket & quote highlighting, enclosing block jump (`Ctrl+]`), and block selection (`Alt+Shift+]`).
-  - 64-step `Undo` / `Redo` (`Ctrl+Z` / `Ctrl+R`), search (`F7` / `Shift+F7`) and interactive FAR-style replace (`Ctrl+F7`) with **Case sensitive** and **POSIX RegExp** (`\t`, `\1`..`\9` capture groups) support, visible whitespace (`F5`), and auto-indent (`F9`).
-- **Built-in Text & Hex Viewer (`F3`):** Line wrapping (`F2`), Hex dump mode (`F4`), binary character filtering, and search (`F7` / `Shift+F7`).
-- **Terminal Mode (`Ctrl+O`) & Smart Clipboard:** Interactive shell execution loading `~/.bashrc` with custom Git-aware prompt (`~/.config/xcommander/prompt`), scrollable long command line, `text/uri-list` file copy/cut (`Ctrl+C` / `Ctrl+X`), and multiline script preview & runner (`Ctrl+V`) with deduplicated persistent history (`Alt+H`, editable via `F4`).
-- **User Menu (`F2`) & Full Mouse Support:** Hierarchical user menus with hotkeys (`~/.config/xcommander/menu`), dynamic `F1`–`F10` modifier bar (`Ctrl`/`Alt`/`Shift`), and full mouse click/wheel support across all windows and dialogs.
-
-## Command-Line Options
-
-```bash
-xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
-```
-
-- `-e[LINE[:POS]] [FILE], --edit` — Open `FILE` directly in the built-in editor at `LINE:POS` (1-based) and exit upon closing.
-- `-v, --version` — Print version and 6-digit build number.
-- `-h, --help` — Show CLI usage help.
-
-## Keyboard Shortcuts
-
-### Panels, Viewer & Command Line
-
-| Key | Action |
-| --- | --- |
-| `Tab` | Switch active panel (Left / Right) |
-| `Enter` / `Ctrl+PgDn` | Open directory or run executable |
-| `Shift+Enter` | Open directory or file in system file manager (`xdg-open`) |
-| `Ctrl+PgUp` | Go to parent directory (`..`) |
-| `Ctrl+U` | Swap left and right panels (preserving cursor) |
-| `Ctrl+R` | Force reload both panels (auto-updates via `inotify`) |
-| `Ctrl+F3` .. `Ctrl+F6` | Sort active panel by Name, Ext, Time, or Size (repeat to reverse) |
-| `Alt+F1` / `Alt+F2` | Open Drive & Bookmarks menu for Left / Right panel (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
-| `Insert` / `Shift+Arrows` | Mark or unmark files & column ranges (auto-clears after copy) |
-
-| `Alt+F8` / `Ctrl+H` | Open Command History (512 items with timestamp & dir; filter, Run / Insert / Jump / Delete) |
-
-| `Alt+F9` / `Ctrl+G` | Open File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete) |
-| `Alt+F10` / `Ctrl+D` | Open Folder History (512 steps; filter, Go, Other panel, Insert path) |
-| `Alt+F11` / `Ctrl+L` | Open Multiline Script History (Run / Edit in built-in editor / Delete) |
-| Hold `Alt` / `Ctrl` / `Shift` | Dynamic 12-key bottom F-bar (`Alt`: `1Left`, `2Right`, `8CmdH`, `9FileH`, `10DirH`, `11ScrH`; `Ctrl`: `3Name`–`6Size`; `Shift`: `4Create`) |
-| `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
-| `Alt+Shift+Home` / `End` | Add range from cursor to start / end of directory to selection |
-| `+` / `-` / `*` | Select by wildcard mask / Deselect by mask / Invert selection |
-| `Alt+<char>` | Quick prefix search (auto EN/RU layout; `Esc` to cancel) |
-| `F1` / `F2` | Open Help / Hierarchical User Menu |
-| `F3` / `F4` / `Shift+F4` | Built-in Viewer / Built-in Editor / Create & edit new file |
-| `F5` / `F6` / `F7` / `F8` | Copy (with overwrite prompt) / Move or rename / Make folder / Delete |
-| `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
-| `Alt+Enter` / `Ctrl+J` | Insert current filename into command line |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste files (`text/uri-list`), text, or multiline script |
-| `Ctrl+E` / `Ctrl+X` | Step through persistent command line history inline |
-| `Ctrl+O` | Toggle full terminal mode / panels |
-| `F10` / `Ctrl+Q` | Save panel paths & history and quit |
-
-### Built-in Editor (`F4`)
-
-| Key | Action |
-| --- | --- |
-| `Arrows` / `Ctrl+Left/Right` | Move by character or jump by word |
-| `Home` / `End` / `Ctrl+Home/End` | Jump to line start/end or file start/end |
-| `Ctrl+]` / `Alt+Shift+]` | Jump to matching bracket/quote or select enclosing block |
-| `F3` / `Shift+Arrows` / `Ctrl+A` | Toggle block mark / select text / select entire file |
-| `Ctrl+C` / `F6` (`Ctrl+X`) / `Ctrl+V` | Copy / Cut / Paste block |
-| `Ctrl+Z` / `Ctrl+R` / `Ctrl+Y` | Undo / Redo / Delete current line |
-| `F2` / `F4` / `F5` / `F9` | Save / Toggle syntax / Toggle whitespace / Toggle auto-indent |
-| `F7` / `Shift+F7` / `Ctrl+F7` | Find / Find next / Interactive Replace (`Case sensitive`, `RegExp`, `\t`, `\1`..`\9`) |
-| `F1` / `Esc` (`F10`, `Ctrl+Q`) | Editor Help / Exit editor (prompts to save if modified) |
-
-## Build & Install
+## Build & Run
 
 ```bash
 make
-sudo make install
+./xc
 ```
 
-## License
+### CLI Options
 
-This project is licensed under the **BSD 3-Clause License** — see the [LICENSE](LICENSE) file for details.
+- `xc` — launch dual-pane file manager in current directory
+- `xc -e [LINE[:COL]] [FILE]` — open file directly in built-in TUI editor
+- `xc -v` — print version and build number
+- `xc -h` — show command-line help
+
+## Key Bindings
+
+| Key | Action |
+| :--- | :--- |
+| `Tab` | Switch active panel (Left / Right) |
+| `Enter` | Open directory, enter archive, or run executable |
+| `Ctrl+PgUp` / `Ctrl+PgDn` | Go to parent (`..`) / enter directory or any archive |
+| `Ctrl+U` | Swap left and right panels with cursor |
+| `Ctrl+R` | Force reload both panels |
+| `Ctrl+F3`..`Ctrl+F6` | Sort active panel by Name, Extension, Time, Size (repeat to reverse) |
+| `Alt+F1` / `Alt+F2` | Drive & bookmarks menu for Left / Right panel (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
+| `Insert` / `Shift+Arrows` | Select / deselect files and ranges |
+| `+` / `-` / `*` | Select by mask / Deselect by mask / Invert selection |
+| `Alt+<char>` | Quick search by filename prefix (auto EN/RU layout) |
+| `F1` | Open Help guide with live search filter |
+| `F2` | Open User Menu (`~/.config/xcommander/menu`) |
+| `F3` | Built-in Text / Hex viewer (`F2` Wrap, `F4` Hex, `F7` Find) |
+| `F4` / `Shift+F4` | Edit file (auto-restores cursor pos) / Create new file |
+| `F5` / `F6` | Copy (or extract from archive) / Move or rename |
+| `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
+| `F7` / `F8` | Create directory / Delete selected items (works inside `.zip`/`.7z` archives) |
+| `Alt+F8` / `Ctrl+H` | Open Command History (filter, Run / Insert / Jump / Delete) |
+| `Alt+F9` / `Ctrl+G` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
+| `Alt+F10` / `Ctrl+D` | Open Folder History (filter, Go / Other / Insert / Delete) |
+| `Alt+F11` / `Ctrl+L` | Open Multiline Script History (Run / Edit / Delete) |
+| `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
+| `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
+| `Alt+Enter` / `Ctrl+J` | Insert filename under cursor into command line |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Smart copy / cut / paste (files or text) |
+| `Ctrl+O` | Toggle full terminal mode / panels |
+| `F10` / `Ctrl+Q` | Save state & histories and quit |

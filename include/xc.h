@@ -32,6 +32,8 @@ typedef struct {
 	int top_line;
 	char current_path[MAX_PATH];
 	char parent_name[MAX_FILENAME];
+	char archive_file[MAX_PATH];
+	char archive_dir[MAX_PATH];
 	SortMode sort_mode;
 	int sort_desc;
 	int watch_fd;

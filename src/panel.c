@@ -9,6 +9,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include "panel.h"
+#include "archive.h"
 
 static SortMode current_sort_mode = SORT_NAME;
 static int current_sort_desc = 0;
@@ -81,6 +82,11 @@ static void panel_watch_update(Panel *p) {
 }
 
 void load_directory(Panel *p) {
+	if (p && p->archive_file[0] != '\0') {
+		if (access(p->archive_file, R_OK) == 0 && archive_load_dir(p)) return;
+		p->archive_file[0] = '\0';
+		p->archive_dir[0] = '\0';
+	}
 	char marked_names[MAX_FILES][MAX_FILENAME];
 	int marked_cnt = 0;
 	for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
@@ -180,6 +186,40 @@ void load_directory(Panel *p) {
 
 void change_directory(Panel *p, const char *dir) {
 	if (!p || !dir || !*dir) return;
+
+	if (p->archive_file[0] != '\0') {
+		if (strcmp(dir, "..") == 0) {
+			if (p->archive_dir[0] == '\0') {
+				const char *abase = strrchr(p->archive_file, '/');
+				abase = abase ? (abase + 1) : p->archive_file;
+				snprintf(p->parent_name, MAX_FILENAME, "%s", abase);
+				p->archive_file[0] = '\0';
+				p->archive_dir[0] = '\0';
+				load_directory(p);
+			} else {
+				char *sl = strrchr(p->archive_dir, '/');
+				if (sl) {
+					snprintf(p->parent_name, MAX_FILENAME, "%s", sl + 1);
+					*sl = '\0';
+				} else {
+					snprintf(p->parent_name, MAX_FILENAME, "%s", p->archive_dir);
+					p->archive_dir[0] = '\0';
+				}
+				archive_load_dir(p);
+			}
+			return;
+		}
+		char next_sub[MAX_PATH];
+		if (p->archive_dir[0] != '\0') {
+			snprintf(next_sub, sizeof(next_sub), "%s/%s", p->archive_dir, dir);
+		} else {
+			snprintf(next_sub, sizeof(next_sub), "%s", dir);
+		}
+		snprintf(p->archive_dir, MAX_PATH, "%s", next_sub);
+		p->parent_name[0] = '\0';
+		archive_load_dir(p);
+		return;
+	}
 
 	char next_path[MAX_PATH];
 	if (strcmp(dir, "..") == 0) {

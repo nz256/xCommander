@@ -12,6 +12,7 @@
 #include <wctype.h>
 #include "xc.h"
 #include "panel.h"
+#include "archive.h"
 #include "ui.h"
 #include "exec.h"
 #include "input.h"
@@ -1191,15 +1192,54 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_F3 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
-				char fp[MAX_PATH * 2];
-				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
-				file_history_add_entry(NULL, "View", 0, 0, fp);
-				file_history_save();
-				ui_view_file(fp);
+				if (active_panel->archive_file[0]) {
+					char in[MAX_PATH*2], tfp[MAX_PATH];
+					if (active_panel->archive_dir[0]) snprintf(in, sizeof(in), "%s/%s", active_panel->archive_dir, cur->name);
+					else snprintf(in, sizeof(in), "%s", cur->name);
+					if (archive_extract_one(active_panel->archive_file, in, tfp, sizeof(tfp))) {
+						ui_view_file(tfp); unlink(tfp);
+						char *sl = strrchr(tfp, '/'); if (sl) { *sl = '\0'; rmdir(tfp); }
+					} else ui_message("Archive View", "Failed to extract file from archive");
+				} else {
+					char fp[MAX_PATH * 2];
+					snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
+					file_history_add_entry(NULL, "View", 0, 0, fp);
+					file_history_save();
+					ui_view_file(fp);
+				}
 			}
 		} else if (ev.action == ACT_F4 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
+				if (active_panel->archive_file[0] != '\0') {
+					char inner[MAX_PATH * 2], tfp[MAX_PATH];
+					if (active_panel->archive_dir[0] != '\0') snprintf(inner, sizeof(inner), "%s/%s", active_panel->archive_dir, cur->name);
+					else snprintf(inner, sizeof(inner), "%s", cur->name);
+					if (archive_extract_one(active_panel->archive_file, inner, tfp, sizeof(tfp))) {
+						struct stat st1, st2;
+						int has_st1 = (stat(tfp, &st1) == 0);
+						int end_ln = 1, end_cl = 1;
+						ui_edit_file_ex(tfp, 1, 1, &end_ln, &end_cl);
+						if (has_st1 && stat(tfp, &st2) == 0 && (st1.st_mtime != st2.st_mtime || st1.st_size != st2.st_size)) {
+							char qmsg[MAX_FILENAME + 64];
+							snprintf(qmsg, sizeof(qmsg), "Update \"%s\" in archive?", cur->name);
+							if (ui_confirm("Archive Edit", qmsg)) {
+								if (archive_update_one(active_panel->archive_file, inner, tfp)) {
+									archive_load_dir(active_panel);
+								} else {
+									ui_message("Archive Edit", "Failed to update file in archive");
+								}
+							}
+						}
+						unlink(tfp);
+						char *sl = strrchr(tfp, '/');
+						if (sl) { *sl = '\0'; rmdir(tfp); }
+					} else {
+						ui_message("Archive Edit", "Failed to extract file from archive");
+					}
+					draw_screen(); refresh();
+					continue;
+				}
 				char fp[MAX_PATH * 2];
 				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
 				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", cur->name);
@@ -1228,6 +1268,11 @@ int main(int argc, char **argv) {
 		}
 		else if (ev.action == ACT_F5) {
 			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			if (active_panel->archive_file[0]) {
+				if (archive_extract_items(active_panel, oth) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
+				draw_screen(); refresh();
+				continue;
+			}
 			char keep_name[MAX_FILENAME] = "";
 			if (active_panel->count > 0) snprintf(keep_name, sizeof(keep_name), "%s", active_panel->files[active_panel->selected].name);
 			if (copy_items(active_panel, oth) > 0) {
@@ -1239,7 +1284,27 @@ int main(int argc, char **argv) {
 		}
 		else if (ev.action == ACT_F6) { Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel; int ps = active_panel->selected; if (move_items(active_panel, oth) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; } }
 		else if (ev.action == ACT_F7) { if (make_directory(active_panel) > 0) { reload_panels_keep_cursor(); } }
-		else if (ev.action == ACT_F8) { int ps = active_panel->selected; if (delete_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; } }
+		else if (ev.action == ACT_SHIFT_F1 || ev.action == ACT_ALT_F5) {
+			if (archive_create_from_panel(active_panel) > 0) {
+				load_directory(&left_panel);
+				load_directory(&right_panel);
+			}
+			draw_screen(); refresh();
+		}
+		else if (ev.action == ACT_F8) {
+			if (active_panel->archive_file[0] != '\0') {
+				int ps = active_panel->selected;
+				if (archive_delete_items(active_panel) > 0) {
+					archive_load_dir(active_panel);
+					if (ps >= active_panel->count) ps = active_panel->count - 1;
+					if (ps >= 0) active_panel->selected = ps;
+				}
+				draw_screen(); refresh();
+				continue;
+			}
+			int ps = active_panel->selected;
+			if (delete_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; }
+		}
 		else if (ev.action == ACT_ALT_SHIFT_END && active_panel->count > 0) {
 			for (int i = active_panel->selected; i < active_panel->count; i++) {
 				if (strcmp(active_panel->files[i].name, "..") != 0) active_panel->files[i].is_selected = 1;
@@ -1290,6 +1355,13 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_ENTER && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
+			else if (!active_panel->archive_file[0] && archive_is_supported(cur->name) && !(cur->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
+				quick_search_reset();
+				if (!strcmp(active_panel->current_path, "/")) snprintf(active_panel->archive_file, MAX_PATH, "/%s", cur->name);
+				else snprintf(active_panel->archive_file, MAX_PATH, "%s/%s", active_panel->current_path, cur->name);
+				active_panel->archive_dir[0] = '\0'; active_panel->parent_name[0] = '\0';
+				archive_load_dir(active_panel);
+			}
 			else {
 				char fp[MAX_PATH * 2];
 				if (strcmp(active_panel->current_path, "/") == 0) snprintf(fp, sizeof(fp), "/%s", cur->name);
@@ -1297,7 +1369,17 @@ int main(int argc, char **argv) {
 				if (access(fp, X_OK) == 0) { char rc[MAX_FILENAME + 16]; snprintf(rc, sizeof(rc), "./\"%s\"", cur->name); execute_system_command(rc); reload_panels_keep_cursor(); }
 			}
 		} else if (ev.action == ACT_CTRL_PGUP) change_directory(active_panel, "..");
-		else if (ev.action == ACT_CTRL_PGDN && active_panel->count > 0) { FileEntry *cur = &active_panel->files[active_panel->selected]; if (cur->is_dir) change_directory(active_panel, cur->name); }
+		else if (ev.action == ACT_CTRL_PGDN && active_panel->count > 0) {
+			FileEntry *cur = &active_panel->files[active_panel->selected];
+			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
+			else if (!active_panel->archive_file[0] && strcmp(cur->name, "..") != 0) {
+				quick_search_reset();
+				if (!strcmp(active_panel->current_path, "/")) snprintf(active_panel->archive_file, MAX_PATH, "/%s", cur->name);
+				else snprintf(active_panel->archive_file, MAX_PATH, "%s/%s", active_panel->current_path, cur->name);
+				active_panel->archive_dir[0] = '\0'; active_panel->parent_name[0] = '\0';
+				archive_load_dir(active_panel);
+			}
+		}
 		if (!terminal_mode) { draw_screen(); refresh(); }
 	}
 	history_save();
