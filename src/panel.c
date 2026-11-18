@@ -90,7 +90,7 @@ void load_directory(Panel *p) {
 	}
 
 	char resolved_path[MAX_PATH];
-	if (realpath(p->current_path, resolved_path) != NULL) {
+	if (access(p->current_path, F_OK) != 0 && realpath(p->current_path, resolved_path) != NULL) {
 		snprintf(p->current_path, MAX_PATH, "%s", resolved_path);
 	}
 
@@ -178,35 +178,42 @@ void load_directory(Panel *p) {
 	panel_watch_update(p);
 }
 
-void change_directory(Panel *p, const char *new_dir) {
-	char new_path[MAX_PATH];
+void change_directory(Panel *p, const char *dir) {
+	if (!p || !dir || !*dir) return;
 
-	if (strcmp(new_dir, "..") == 0) {
-		char *last_slash = strrchr(p->current_path, '/');
-		if (last_slash != NULL) {
-			snprintf(p->parent_name, MAX_FILENAME, "%s", last_slash + 1);
-
-			if (last_slash == p->current_path) {
-				strcpy(new_path, "/");
-			} else {
-				size_t len = (size_t)(last_slash - p->current_path);
-				if (len >= MAX_PATH) len = MAX_PATH - 1;
-				memcpy(new_path, p->current_path, len);
-				new_path[len] = '\0';
-			}
+	char next_path[MAX_PATH];
+	if (strcmp(dir, "..") == 0) {
+		if (strcmp(p->current_path, "/") == 0) return;
+		char tmp[MAX_PATH];
+		snprintf(tmp, sizeof(tmp), "%s", p->current_path);
+		size_t len = strlen(tmp);
+		while (len > 1 && tmp[len - 1] == '/') tmp[--len] = '\0';
+		char *sl = strrchr(tmp, '/');
+		if (!sl) return;
+		snprintf(p->parent_name, MAX_FILENAME, "%s", sl + 1);
+		if (sl == tmp) {
+			snprintf(next_path, sizeof(next_path), "/");
 		} else {
-			strcpy(new_path, "/");
+			*sl = '\0';
+			snprintf(next_path, sizeof(next_path), "%s", tmp);
 		}
+	} else if (dir[0] == '/') {
+		snprintf(next_path, sizeof(next_path), "%s", dir);
+		p->parent_name[0] = '\0';
 	} else {
 		if (strcmp(p->current_path, "/") == 0) {
-			snprintf(new_path, sizeof(new_path), "/%s", new_dir);
+			snprintf(next_path, sizeof(next_path), "/%s", dir);
 		} else {
-			snprintf(new_path, sizeof(new_path), "%s/%s", p->current_path, new_dir);
+			snprintf(next_path, sizeof(next_path), "%s/%s", p->current_path, dir);
 		}
+		p->parent_name[0] = '\0';
 	}
 
-	snprintf(p->current_path, MAX_PATH, "%s", new_path);
-	load_directory(p);
+	struct stat st;
+	if (stat(next_path, &st) == 0 && S_ISDIR(st.st_mode) && access(next_path, R_OK | X_OK) == 0) {
+		snprintf(p->current_path, MAX_PATH, "%s", next_path);
+		load_directory(p);
+	}
 }
 
 int panel_marked_count(const Panel *p) {

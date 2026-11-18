@@ -41,6 +41,21 @@ extern Panel left_panel;
 extern Panel right_panel;
 extern Panel *active_panel;
 
+#define MAX_HISTORY 512
+
+typedef struct {
+	char timestamp[24];
+	char dir[MAX_PATH];
+	char cmd[MAX_CMD];
+} CmdHistoryEntry;
+
+#define MAX_DIR_HISTORY 512
+
+typedef struct {
+	char timestamp[32];
+	char dir[MAX_PATH];
+} DirHistoryEntry;
+
 extern char cmd_buffer[MAX_CMD];
 extern int cmd_pos;
 extern int cmd_sel_start;

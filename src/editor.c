@@ -1358,9 +1358,25 @@ static void ed_move_word_right(EditorState *ed) {
 }
 
 void ui_edit_file(const char *filepath) {
+	ui_edit_file_at(filepath, 1, 1);
+}
+
+void ui_edit_file_at(const char *filepath, int start_line, int start_col) {
 	EditorState ed;
 	memset(&ed, 0, sizeof(ed));
 	ed_load_file(&ed, filepath);
+	if (ed.line_count > 0) {
+		if (start_line > 0) {
+			int ty = start_line - 1;
+			if (ty >= ed.line_count) ty = ed.line_count - 1;
+			ed.cur_y = ty;
+		}
+		if (start_col > 0) {
+			int tx = start_col - 1;
+			if (tx > ed.lines[ed.cur_y].len) tx = ed.lines[ed.cur_y].len;
+			ed.cur_x = tx;
+		}
+	}
 
 	while (1) {
 		int height, width;

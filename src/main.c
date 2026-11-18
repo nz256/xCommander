@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <time.h>
 #include "cmdline.h"
 #include <sys/time.h>
 #include <ncurses.h>
@@ -92,25 +93,48 @@ static void quick_search_reset(void) {
 	quick_search[0] = '\0';
 }
 
-#define MAX_HISTORY 64
-static char cmd_history[MAX_HISTORY][MAX_CMD];
-static int history_count = 0;
+CmdHistoryEntry cmd_history[MAX_HISTORY];
+int history_count = 0;
 static int history_idx = 0;
 
-static void history_add(const char *cmd) {
+static void history_add_entry(const char *ts, const char *dir, const char *cmd) {
 	if (!cmd || *cmd == '\0') return;
-	if (history_count > 0 && strcmp(cmd_history[history_count - 1], cmd) == 0) {
-		history_idx = history_count;
-		return;
+	for (int i = 0; i < history_count; i++) {
+		if (strcmp(cmd_history[i].cmd, cmd) == 0) {
+			for (int k = i; k + 1 < history_count; k++) {
+				cmd_history[k] = cmd_history[k + 1];
+			}
+			history_count--;
+			break;
+		}
 	}
-	if (history_count < MAX_HISTORY) {
-		snprintf(cmd_history[history_count], MAX_CMD, "%s", cmd);
-		history_count++;
-	} else {
+	if (history_count >= MAX_HISTORY) {
 		memmove(cmd_history, cmd_history + 1, sizeof(cmd_history[0]) * (MAX_HISTORY - 1));
-		snprintf(cmd_history[MAX_HISTORY - 1], MAX_CMD, "%s", cmd);
+		history_count = MAX_HISTORY - 1;
 	}
+	CmdHistoryEntry *e = &cmd_history[history_count];
+	if (ts && *ts) {
+		snprintf(e->timestamp, sizeof(e->timestamp), "%s", ts);
+	} else {
+		time_t now = time(NULL);
+		struct tm *tmi = localtime(&now);
+		if (tmi) strftime(e->timestamp, sizeof(e->timestamp), "%Y-%m-%d %H:%M", tmi);
+		else e->timestamp[0] = '\0';
+	}
+	if (dir && *dir) {
+		snprintf(e->dir, sizeof(e->dir), "%s", dir);
+	} else if (active_panel && active_panel->current_path[0] != '\0') {
+		snprintf(e->dir, sizeof(e->dir), "%s", active_panel->current_path);
+	} else {
+		snprintf(e->dir, sizeof(e->dir), ".");
+	}
+	snprintf(e->cmd, sizeof(e->cmd), "%s", cmd);
+	history_count++;
 	history_idx = history_count;
+}
+
+static void history_add(const char *cmd) {
+	history_add_entry(NULL, NULL, cmd);
 }
 
 static void history_apply(void) {
@@ -120,7 +144,7 @@ static void history_apply(void) {
 		cmdline_clear();
 		return;
 	}
-	cmdline_set_text(cmd_history[history_idx]);
+	cmdline_set_text(cmd_history[history_idx].cmd);
 }
 
 #include <sys/stat.h>
@@ -154,14 +178,21 @@ static void history_load(void) {
 	FILE *f = fopen(path, "r");
 	if (!f) return;
 
-	char line[MAX_CMD];
+	char line[MAX_CMD + MAX_PATH + 64];
 	while (fgets(line, sizeof(line), f)) {
 		size_t len = strlen(line);
 		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
 			line[--len] = '\0';
 		}
-		if (len > 0) {
-			history_add(line);
+		if (len == 0) continue;
+		char *t1 = strchr(line, '\t');
+		char *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+		if (t1 && t2) {
+			*t1 = '\0';
+			*t2 = '\0';
+			history_add_entry(line, t1 + 1, t2 + 1);
+		} else {
+			history_add_entry("", "", line);
 		}
 	}
 	fclose(f);
@@ -175,11 +206,97 @@ static void history_save(void) {
 	if (!f) return;
 
 	for (int i = 0; i < history_count; i++) {
-		fprintf(f, "%s\n", cmd_history[i]);
+		fprintf(f, "%s\t%s\t%s\n",
+		        cmd_history[i].timestamp,
+		        cmd_history[i].dir,
+		        cmd_history[i].cmd);
 	}
 	fclose(f);
 }
 
+static DirHistoryEntry dir_history[MAX_DIR_HISTORY];
+static int dir_history_count = 0;
+static int dir_history_pos = -1;
+static int suppress_dir_track = 0;
+
+static void dir_history_add_entry(const char *ts, const char *dir) {
+	if (!dir || *dir == '\0') return;
+	if (dir_history_count > 0 && strcmp(dir_history[dir_history_count - 1].dir, dir) == 0) {
+		return;
+	}
+	if (dir_history_count >= MAX_DIR_HISTORY) {
+		memmove(dir_history, dir_history + 1, sizeof(dir_history[0]) * (MAX_DIR_HISTORY - 1));
+		dir_history_count = MAX_DIR_HISTORY - 1;
+	}
+	DirHistoryEntry *e = &dir_history[dir_history_count];
+	if (ts && *ts) {
+		snprintf(e->timestamp, sizeof(e->timestamp), "%s", ts);
+	} else {
+		time_t now = time(NULL);
+		struct tm *tmi = localtime(&now);
+		if (tmi) strftime(e->timestamp, sizeof(e->timestamp), "%Y-%m-%d %H:%M", tmi);
+		else e->timestamp[0] = '\0';
+	}
+	snprintf(e->dir, sizeof(e->dir), "%s", dir);
+	dir_history_count++;
+	dir_history_pos = dir_history_count - 1;
+}
+
+static void get_dir_history_path(char *out, size_t out_size) {
+	char hist_path[MAX_PATH + 32];
+	get_history_path(hist_path, sizeof(hist_path));
+	char *sl = strrchr(hist_path, '/');
+	if (sl) *sl = '\0';
+	snprintf(out, out_size, "%s/dir_history", hist_path);
+}
+
+static void dir_history_load(void) {
+	char path[MAX_PATH + 32];
+	get_dir_history_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	char line[MAX_PATH + 64];
+	while (fgets(line, sizeof(line), f)) {
+		size_t len = strlen(line);
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+		if (len == 0) continue;
+		char *t1 = strchr(line, '\t');
+		if (t1) {
+			*t1 = '\0';
+			dir_history_add_entry(line, t1 + 1);
+		} else {
+			dir_history_add_entry("", line);
+		}
+	}
+	fclose(f);
+}
+
+static void dir_history_save(void) {
+	char path[MAX_PATH + 32];
+	get_dir_history_path(path, sizeof(path));
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	for (int i = 0; i < dir_history_count; i++) {
+		fprintf(f, "%s\t%s\n", dir_history[i].timestamp, dir_history[i].dir);
+	}
+	fclose(f);
+}
+
+static void track_panel_dirs(char *last_l, size_t lsz, char *last_r, size_t rsz) {
+	if (suppress_dir_track) return;
+	int changed = 0;
+	if (left_panel.current_path[0] != '\0' && strcmp(last_l, left_panel.current_path) != 0) {
+		snprintf(last_l, lsz, "%s", left_panel.current_path);
+		dir_history_add_entry(NULL, left_panel.current_path);
+		changed = 1;
+	}
+	if (right_panel.current_path[0] != '\0' && strcmp(last_r, right_panel.current_path) != 0) {
+		snprintf(last_r, rsz, "%s", right_panel.current_path);
+		dir_history_add_entry(NULL, right_panel.current_path);
+		changed = 1;
+	}
+	if (changed) dir_history_save();
+}
 
 static void get_state_path(char *out, size_t out_size) {
 	char hist_path[MAX_PATH + 32];
@@ -389,6 +506,9 @@ typedef struct {
 	const char *left_dir;
 	const char *right_dir;
 	const char *edit_file;
+	int edit_mode;
+	int edit_line;
+	int edit_col;
 } StartupOpts;
 
 static void print_cli_version(void) {
@@ -398,7 +518,7 @@ static void print_cli_version(void) {
 static void print_cli_help(const char *prog) {
 	printf("Usage: %s [OPTIONS] [LEFT_DIR] [RIGHT_DIR]\n\n", prog);
 	printf("Options:\n");
-	printf("  -e, --edit FILE  Open FILE directly in built-in editor\n");
+	printf("  -e[LINE[:POS]] [FILE], --edit  Open FILE in built-in editor at LINE:POS\n");
 	printf("  -v, --version    Show version and build number\n");
 	printf("  -h, --help       Show this help message\n");
 }
@@ -414,12 +534,42 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 			print_cli_help(argv[0]);
 			return 1;
 		}
-		if (strcmp(argv[i], "-e") == 0 || strcmp(argv[i], "--edit") == 0) {
-			if (i + 1 >= argc) {
-				fprintf(stderr, "Option '%s' requires a file path.\n", argv[i]);
-				return -1;
+		if (strncmp(argv[i], "-e", 2) == 0 && (argv[i][2] == '\0' || (argv[i][2] >= '0' && argv[i][2] <= '9'))) {
+			opts->edit_mode = 1;
+			opts->edit_line = 1;
+			opts->edit_col = 1;
+			const char *spec = argv[i] + 2;
+			if (*spec != '\0') {
+				char *endp = NULL;
+				long ln = strtol(spec, &endp, 10);
+				if (endp == spec || ln < 1 || (*endp != '\0' && *endp != ':')) {
+					fprintf(stderr, "Invalid editor position in '%s'. Expected -e[LINE[:POS]]\n", argv[i]);
+					return -1;
+				}
+				opts->edit_line = (int)ln;
+				if (*endp == ':') {
+					const char *cspec = endp + 1;
+					char *cendp = NULL;
+					long cl = strtol(cspec, &cendp, 10);
+					if (cendp == cspec || cl < 1 || *cendp != '\0') {
+						fprintf(stderr, "Invalid column position in '%s'. Expected -e[LINE[:POS]]\n", argv[i]);
+						return -1;
+					}
+					opts->edit_col = (int)cl;
+				}
 			}
-			opts->edit_file = argv[++i];
+			if (i + 1 < argc && argv[i + 1][0] != '-') {
+				opts->edit_file = argv[++i];
+			}
+			continue;
+		}
+		if (strcmp(argv[i], "--edit") == 0) {
+			opts->edit_mode = 1;
+			opts->edit_line = 1;
+			opts->edit_col = 1;
+			if (i + 1 < argc && argv[i + 1][0] != '-') {
+				opts->edit_file = argv[++i];
+			}
 			continue;
 		}
 		if (argv[i][0] == '-') {
@@ -469,6 +619,7 @@ int main(int argc, char **argv) {
 	
 	
         history_load();
+	dir_history_load();
 
 	char cwd[MAX_PATH];
 	if (getcwd(cwd, sizeof(cwd)) == NULL) strcpy(cwd, ".");
@@ -507,8 +658,9 @@ int main(int argc, char **argv) {
 	refresh();
 	input_enable_raw();
 
-	if (opts.edit_file && opts.edit_file[0] != '\0') {
-		ui_edit_file(opts.edit_file);
+	if (opts.edit_mode) {
+		const char *target_file = (opts.edit_file && opts.edit_file[0] != '\0') ? opts.edit_file : "untitled.txt";
+		ui_edit_file_at(target_file, opts.edit_line, opts.edit_col);
 		input_restore_sane();
 		endwin();
 		input_restore_sane();
@@ -517,7 +669,10 @@ int main(int argc, char **argv) {
 
 	cmdline_init();
 	static char last_prompt_dir[MAX_PATH] = "";
+	char tracked_l[MAX_PATH] = "", tracked_r[MAX_PATH] = "";
+	track_panel_dirs(tracked_l, sizeof(tracked_l), tracked_r, sizeof(tracked_r));
 	while (1) {
+		track_panel_dirs(tracked_l, sizeof(tracked_l), tracked_r, sizeof(tracked_r));
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;
 		if (ev.action == ACT_DIR_CHANGED) {
@@ -559,7 +714,11 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
 			if (!terminal_mode && cmd_len == 0 && clipboard_has_files()) {
-				if (clipboard_paste_files(active_panel) > 0) { reload_panels_keep_cursor(); }
+				if (clipboard_paste_files(active_panel) > 0) {
+					for (int i = 0; i < left_panel.count; i++) left_panel.files[i].is_selected = 0;
+					for (int i = 0; i < right_panel.count; i++) right_panel.files[i].is_selected = 0;
+					reload_panels_keep_cursor();
+				}
 				draw_screen(); refresh();
 			} else {
 				char raw_clip[65536] = {0};
@@ -626,10 +785,89 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_INSERT_LEFT_PATH) { cmdline_insert_path(&left_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
 		if (ev.action == ACT_INSERT_RIGHT_PATH) { cmdline_insert_path(&right_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
+		if (!terminal_mode && cmd_len == 0 && ev.action == ACT_ALT_BACKSPACE) {
+			if (dir_history_count > 1) {
+				int start_i = (dir_history_pos >= 0 && dir_history_pos < dir_history_count) ? (dir_history_pos - 1) : (dir_history_count - 2);
+				int found_i = -1;
+				for (int i = start_i; i >= 0; i--) {
+					if (strcmp(dir_history[i].dir, active_panel->current_path) != 0 &&
+					    access(dir_history[i].dir, R_OK | X_OK) == 0) {
+						found_i = i;
+						break;
+					}
+				}
+				if (found_i >= 0) {
+					dir_history_pos = found_i;
+					suppress_dir_track = 1;
+					quick_search_reset();
+					active_panel->parent_name[0] = '\0';
+					snprintf(active_panel->current_path, MAX_PATH, "%s", dir_history[found_i].dir);
+					load_directory(active_panel);
+					if (active_panel == &left_panel) snprintf(tracked_l, sizeof(tracked_l), "%s", active_panel->current_path);
+					else snprintf(tracked_r, sizeof(tracked_r), "%s", active_panel->current_path);
+					suppress_dir_track = 0;
+					draw_screen();
+					refresh();
+				}
+			}
+			continue;
+		}
+		if (!terminal_mode && cmd_len == 0 && ev.action == ACT_ALT_SHIFT_BACKSPACE) {
+			if (dir_history_count > 1 && dir_history_pos >= 0 && dir_history_pos + 1 < dir_history_count) {
+				int found_i = -1;
+				for (int i = dir_history_pos + 1; i < dir_history_count; i++) {
+					if (strcmp(dir_history[i].dir, active_panel->current_path) != 0 &&
+					    access(dir_history[i].dir, R_OK | X_OK) == 0) {
+						found_i = i;
+						break;
+					}
+				}
+				if (found_i >= 0) {
+					dir_history_pos = found_i;
+					suppress_dir_track = 1;
+					quick_search_reset();
+					active_panel->parent_name[0] = '\0';
+					snprintf(active_panel->current_path, MAX_PATH, "%s", dir_history[found_i].dir);
+					load_directory(active_panel);
+					if (active_panel == &left_panel) snprintf(tracked_l, sizeof(tracked_l), "%s", active_panel->current_path);
+					else snprintf(tracked_r, sizeof(tracked_r), "%s", active_panel->current_path);
+					suppress_dir_track = 0;
+					draw_screen();
+					refresh();
+				}
+			}
+			continue;
+		}
+		if (ev.action == ACT_ALT_F12 || ev.action == ACT_CTRL_D) {
+			char picked_dir[MAX_PATH] = "";
+			int prev_dcnt = dir_history_count;
+			int dres = ui_dir_history(dir_history, &dir_history_count, picked_dir, sizeof(picked_dir));
+			if (dir_history_count != prev_dcnt) dir_history_save();
+			if ((dres == 1 || dres == 2) && picked_dir[0] != '\0') {
+				Panel *tp = (dres == 1) ? active_panel : ((active_panel == &left_panel) ? &right_panel : &left_panel);
+				if (access(picked_dir, R_OK | X_OK) == 0) {
+					quick_search_reset();
+					tp->parent_name[0] = '\0';
+					snprintf(tp->current_path, MAX_PATH, "%s", picked_dir);
+					load_directory(tp);
+					track_panel_dirs(tracked_l, sizeof(tracked_l), tracked_r, sizeof(tracked_r));
+				} else {
+					ui_message("Folder History", "Directory no longer exists");
+				}
+			} else if (dres == 3 && picked_dir[0] != '\0') {
+				char qpath[MAX_PATH + 16];
+				if (strchr(picked_dir, ' ')) snprintf(qpath, sizeof(qpath), "\"%s\" ", picked_dir);
+				else snprintf(qpath, sizeof(qpath), "%s ", picked_dir);
+				wchar_t wqpath[MAX_PATH + 16]; if (mbstowcs(wqpath, qpath, MAX_PATH + 15) != (size_t)-1) cmdline_insert_wstr(wqpath);
+			}
+			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			continue;
+		}
 		if (ev.action == ACT_ALT_F8 || ev.action == ACT_CTRL_H) {
 			char picked_cmd[MAX_CMD] = "";
+			char picked_dir[MAX_PATH] = "";
 			int prev_cnt = history_count;
-			int hres = ui_cmd_history(cmd_history, &history_count, picked_cmd, sizeof(picked_cmd));
+			int hres = ui_cmd_history(cmd_history, &history_count, picked_cmd, sizeof(picked_cmd), picked_dir, sizeof(picked_dir));
 			if (history_count != prev_cnt) {
 				history_idx = history_count;
 				history_save();
@@ -646,6 +884,16 @@ int main(int argc, char **argv) {
 			} else if (hres == 2 && picked_cmd[0] != '\0') {
 				cmdline_set_text(picked_cmd);
 				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			} else if (hres == 3) {
+				if (picked_dir[0] != '\0' && access(picked_dir, R_OK | X_OK) == 0) {
+					quick_search_reset();
+					active_panel->parent_name[0] = '\0';
+					snprintf(active_panel->current_path, MAX_PATH, "%s", picked_dir);
+					load_directory(active_panel);
+				} else {
+					ui_message("Jump", "Saved directory no longer exists");
+				}
+				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
 			} else {
 				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
 			}
@@ -798,6 +1046,7 @@ int main(int argc, char **argv) {
 			char keep_name[MAX_FILENAME] = "";
 			if (active_panel->count > 0) snprintf(keep_name, sizeof(keep_name), "%s", active_panel->files[active_panel->selected].name);
 			if (copy_items(active_panel, oth) > 0) {
+				for (int i = 0; i < active_panel->count; i++) active_panel->files[i].is_selected = 0;
 				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", keep_name);
 				load_directory(&left_panel);
 				load_directory(&right_panel);
@@ -822,6 +1071,22 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_END && active_panel->count > 0) active_panel->selected = active_panel->count - 1;
 		else if (ev.action == ACT_SHIFT_UP) { panel_toggle_mark(active_panel, active_panel->selected); if (active_panel->selected > 0) active_panel->selected--; }
 		else if (ev.action == ACT_SHIFT_DOWN || ev.action == ACT_INSERT) { panel_toggle_mark(active_panel, active_panel->selected); if (active_panel->selected < active_panel->count - 1) active_panel->selected++; }
+		else if (ev.action == ACT_SHIFT_LEFT && active_panel->count > 0) {
+			int h, w; getmaxyx(stdscr, h, w); (void)w;
+			int vis = h - 6; if (vis < 1) vis = 1;
+			int target = active_panel->selected - vis;
+			if (target < 0) target = 0;
+			for (int i = active_panel->selected; i >= target; i--) panel_toggle_mark(active_panel, i);
+			active_panel->selected = target;
+		}
+		else if (ev.action == ACT_SHIFT_RIGHT && active_panel->count > 0) {
+			int h, w; getmaxyx(stdscr, h, w); (void)w;
+			int vis = h - 6; if (vis < 1) vis = 1;
+			int target = active_panel->selected + vis;
+			if (target >= active_panel->count) target = active_panel->count - 1;
+			for (int i = active_panel->selected; i <= target; i++) panel_toggle_mark(active_panel, i);
+			active_panel->selected = target;
+		}
 		else if (ev.action == ACT_UP && active_panel->selected > 0) active_panel->selected--;
 		else if (ev.action == ACT_DOWN && active_panel->selected < active_panel->count - 1) active_panel->selected++;
 		else if (ev.action == ACT_LEFT || ev.action == ACT_PGUP) { int h, w; getmaxyx(stdscr, h, w); (void)w; int vis = h - 6; if (vis < 1) vis = 1; active_panel->selected -= vis; if (active_panel->selected < 0) active_panel->selected = 0; }
@@ -851,6 +1116,7 @@ int main(int argc, char **argv) {
 		if (!terminal_mode) { draw_screen(); refresh(); }
 	}
 	history_save();
+	dir_history_save();
 	state_save();
 	input_restore_sane();
 	endwin();

@@ -119,6 +119,7 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'a' || code == 'A') return ACT_CTRL_A;
 		if (code == 'b' || code == 'B') return ACT_CTRL_B;
 		if (code == 'c' || code == 'C') return ACT_CTRL_C;
+		if (code == 'd' || code == 'D' || code == 1074 || code == 1042) return ACT_CTRL_D;
 		if (code == 'e' || code == 'E') return ACT_CTRL_E;
 		if (code == 'f' || code == 'F') return ACT_CTRL_F;
 		if (code == 'h' || code == 'H' || code == 1088 || code == 1056) return ACT_CTRL_H;
@@ -209,9 +210,10 @@ static KeyAction parse_csi(const char *seq) {
 			if (f_idx == 8) return ACT_F8;
 			if (f_idx == 9) return ACT_F9;
 			if (f_idx == 10) return ACT_F10;
+			if (f_idx == 12) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F12 : ACT_NONE;
 		}
 		
-		if (code == 127 || code == 8) return ACT_BACKSPACE;
+		if (code == 127 || code == 8) { if ((mod == 4) || (g_mod_alt && g_mod_shift)) return ACT_ALT_SHIFT_BACKSPACE; if ((mod == 3) || g_mod_alt) return ACT_ALT_BACKSPACE; return ACT_BACKSPACE; }
 
 		if (mod > 1) {
 			KeyAction ma = map_modified_code(code, mod);
@@ -277,6 +279,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 19) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 		if (p1 == 20) return ACT_F9;
 		if (p1 == 21) return ACT_F10;
+		if (p1 == 24) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F12 : ACT_NONE;
 		if (p1 == 26) return ACT_SHIFT_F4;
 	}
 	return ACT_NONE;
@@ -387,7 +390,8 @@ InputEvent input_read(void) {
 				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR || ev.action == ACT_CHAR) ev.ch = g_mod_ch;
 				return ev;
 			}
-		} else if (b2 == 'O') {
+		} else if (b2 == 127 || b2 == 8) { ev.action = ACT_ALT_BACKSPACE; return ev; }
+			if (b2 == 'O') {
 			if (wait_byte(10)) {
 				unsigned char b3 = 0;
 				if (read_byte(&b3)) {

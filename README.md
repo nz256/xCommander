@@ -8,7 +8,7 @@ A fast, lightweight, FAR Manager-inspired dual-panel TUI file manager and text e
 
 ## Key Features
 
-- **Dual-Panel File Management:** Full UTF-8 support, real-time `inotify` auto-refresh with debouncing (plus manual `Ctrl+R`), persistent panel state & cursor tracking, sorting (`Ctrl+F3`–`Ctrl+F6`), quick prefix search (`Alt+<char>` with auto EN/RU layout), FAR-style mask & range selection (`+`, `-`, `*`, `Alt+Shift+Home/End`), overwrite confirmation dialog (`F5`/`F6`/`Ctrl+V`), instant panel swap (`Ctrl+U`), and opening items in the system file manager (`Shift+Enter`).
+- **Dual-Panel File Management:** Full UTF-8 support, real-time `inotify` auto-refresh with debouncing (plus manual `Ctrl+R`), persistent panel state & symlink-aware logical navigation, full folder visit history (`Alt+F12` / `Ctrl+D`, `Alt+Backspace` / `Alt+Shift+Backspace` Back/Forward), sorting (`Ctrl+F3`–`Ctrl+F6`), quick prefix search (`Alt+<char>` with auto EN/RU layout), FAR-style mask & range selection (`+`, `-`, `*`, `Shift+Arrows`, `Alt+Shift+Home/End`), overwrite confirmation dialog (`F5`/`F6`/`Ctrl+V`), instant panel swap (`Ctrl+U`), and opening items in the system file manager (`Shift+Enter`).
 - **Drive & Bookmarks Menu (`Alt+F1` / `Alt+F2`):** Instant jump to the opposite panel path (`-`), `$HOME` (`~`), `/`, mounted partitions (`/media`, `/run/media`, `/mnt`) with free space indicators, custom bookmarks (`Ins`/`+`, stored in `~/.config/xcommander/bookmarks`), and safe USB unmount (`F8` / `Delete` via `udisksctl`).
 - **Built-in TUI Text Editor (`F4` / `Shift+F4` or `xc -e FILE`):**
   - Syntax highlighting (`C/C++`, `Python`, `Shell`, `Config`, `Generic`) with shebang (`#!/...`) detection, toggled via `F4`.
@@ -24,7 +24,7 @@ A fast, lightweight, FAR Manager-inspired dual-panel TUI file manager and text e
 xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
 ```
 
-- `-e, --edit FILE` — Open `FILE` directly in the built-in editor and exit upon closing.
+- `-e[LINE[:POS]] [FILE], --edit` — Open `FILE` directly in the built-in editor at `LINE:POS` (1-based) and exit upon closing.
 - `-v, --version` — Print version and 6-digit build number.
 - `-h, --help` — Show CLI usage help.
 
@@ -42,7 +42,10 @@ xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
 | `Ctrl+R` | Force reload both panels (auto-updates via `inotify`) |
 | `Ctrl+F3` .. `Ctrl+F6` | Sort active panel by Name, Ext, Time, or Size (repeat to reverse) |
 | `Alt+F1` / `Alt+F2` | Open Drive & Bookmarks menu for Left / Right panel (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
-| `Insert` / `Shift+Up/Down` | Mark or unmark individual files and directories |
+| `Insert` / `Shift+Arrows` | Mark or unmark files & column ranges (auto-clears after copy) |
+
+| `Alt+F12` / `Ctrl+D` | Open Folder History (512 steps; filter, Go, Other panel, Insert path) |
+| `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
 | `Alt+Shift+Home` / `End` | Add range from cursor to start / end of directory to selection |
 | `+` / `-` / `*` | Select by wildcard mask / Deselect by mask / Invert selection |
 | `Alt+<char>` | Quick prefix search (auto EN/RU layout; `Esc` to cancel) |
@@ -53,7 +56,8 @@ xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
 | `Alt+Enter` / `Ctrl+J` | Insert current filename into command line |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste files (`text/uri-list`), text, or multiline script |
 | `Alt+H` | Open Multiline Command History (`Enter` run, `F4` edit, `F8`/`Del` remove) |
-| `Ctrl+E` / `Ctrl+X` | Browse persistent command line history |
+| `Alt+F8` / `Ctrl+H` | Open Command History (512 items with timestamp & dir; type to filter command; Run / Insert / Jump to dir / Delete) |
+| `Ctrl+E` / `Ctrl+X` | Step through persistent command line history inline |
 | `Ctrl+O` | Toggle full terminal mode / panels |
 | `F10` / `Ctrl+Q` | Save panel paths & history and quit |
 

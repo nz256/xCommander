@@ -843,7 +843,9 @@ void ui_help(void) {
 		"  Alt+F1 / Alt+F2    Change drive / bookmarks menu (Left / Right)",
 		"                       Ins / + : Bookmark current dir with custom hotkey",
 		"                       F8 / Del: Remove bookmark or safe-unmount USB",
-		"  Insert / Shift+Arr Mark or unmark individual files and directories",
+		"  Insert / Shift+Arr Mark or unmark files & ranges (incl. Shift+Left/Right)",
+		"  Alt+F12 / Ctrl+D   Open Folder History (512 steps; Go / Other / Insert)",
+		"  Alt+BkSp / Sh+BkSp Step Back / Forward through visited folder history",
 		"  Alt+Shift+Home/End Select range from cursor to start / end of panel",
 		"  + / - / *          Select by mask / Deselect by mask / Invert selection",
 		"  Alt+<char>         Quick search by prefix (auto EN/RU layout)",
@@ -868,7 +870,9 @@ void ui_help(void) {
 		"  Shift+Arrows       Select characters in command line",
 		"  Alt+Shift+Arrows   Select whole words (also Ctrl+Shift+Arrows)",
 		"  Alt+H              Multiline History (Enter:Run F4:Edit F8:Delete)",
-		"  Ctrl+E / Ctrl+X    Browse persistent command history",
+		"  Alt+F8 / Ctrl+H    Open Command History (512 items, timestamp & dir)",
+		"                       Type to filter cmd; Run / Insert / Jump dir / Del",
+		"  Ctrl+E / Ctrl+X    Step through command history inline",
 		"  Ctrl+U / Esc       Clear command line (when text is entered)",
 		"",
 		"=== 4. MOUSE, CLI & TERMINAL MODE ===",
@@ -878,7 +882,7 @@ void ui_help(void) {
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
 		"  Ctrl+O             Toggle full terminal mode / panels (.bashrc aware)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
-		"  CLI Options        xc -e FILE (edit & exit) | -v (version) | -h (help)",
+		"  CLI Options        xc -e[LINE[:POS]] [FILE] | -v (version) | -h (help)",
 		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"
 	};
 #ifndef XC_BUILD
@@ -2133,7 +2137,7 @@ static void ml_history_save_all(const char *path, char **hdr, char **bdy, int cn
 	fclose(wf);
 }
 
-int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t out_size) {
+int ui_cmd_history(CmdHistoryEntry *hist, int *hist_count, char *out_cmd, size_t out_size, char *out_dir, size_t dir_size) {
 	if (!hist || !hist_count || *hist_count <= 0) {
 		ui_message("Command History", "Command history is empty");
 		return 0;
@@ -2141,8 +2145,8 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 
 	int h, w;
 	getmaxyx(stdscr, h, w);
-	int bw = (w - 6 > 88) ? 88 : (w - 6);
-	if (bw < 52) bw = w - 2;
+	int bw = (w - 6 > 96) ? 96 : (w - 6);
+	if (bw < 58) bw = w - 2;
 	int bh = (h - 4 > 24) ? 24 : (h - 4);
 	if (bh < 12) bh = h - 2;
 	int sy = (h - bh) / 2, sx = (w - bw) / 2;
@@ -2151,20 +2155,24 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 	WINDOW *win = newwin(bh, bw, sy, sx);
 	wbkgd(win, COLOR_PAIR(5));
 
-	const char *btns[4] = {"[ Run ]", "[ Insert ]", "[ Delete ]", "[ Cancel ]"};
-	int bwid[4] = {7, 10, 10, 10};
-	int total_bw = 7 + 1 + 10 + 1 + 10 + 1 + 10;
+	const char *btns[5] = {"[ Run ]", "[ Insert ]", "[ Jump ]", "[ Delete ]", "[ Cancel ]"};
+	int bwid[5] = {7, 10, 8, 10, 10};
+	int total_bw = 7 + 1 + 10 + 1 + 8 + 1 + 10 + 1 + 10;
+
+	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
+	if (!map_idx) { delwin(win); return 0; }
 
 	char filter[128] = "";
 	int flen = 0;
-	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
-	if (!map_idx) return 0;
 	int sel = 0, top = 0, btn = 0, res = 0, mcnt = 0;
 
 	while (1) {
 		mcnt = 0;
 		for (int i = *hist_count - 1; i >= 0; i--) {
-			if (flen == 0 || strcasestr(hist[i], filter) != NULL) {
+			if (flen == 0 ||
+			    strcasestr(hist[i].cmd, filter) != NULL ||
+			    strcasestr(hist[i].dir, filter) != NULL ||
+			    strcasestr(hist[i].timestamp, filter) != NULL) {
 				map_idx[mcnt++] = i;
 			}
 		}
@@ -2189,9 +2197,15 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 		} else {
 			for (int i = 0; i < lh && (top + i) < mcnt; i++) {
 				int ridx = map_idx[top + i];
+				char row_buf[MAX_CMD + 64];
+				if (hist[ridx].timestamp[0] != '\0') {
+					snprintf(row_buf, sizeof(row_buf), "[%s] %s", hist[ridx].timestamp, hist[ridx].cmd);
+				} else {
+					snprintf(row_buf, sizeof(row_buf), "%s", hist[ridx].cmd);
+				}
 				wattron(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 				mvwhline(win, 1 + i, 1, ' ', bw - 2);
-				mvwprint_utf8(win, 1 + i, 2, bw - 4, hist[ridx]);
+				mvwprint_utf8(win, 1 + i, 2, bw - 4, row_buf);
 				wattroff(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			}
 		}
@@ -2202,19 +2216,21 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 		mvwaddstr(win, sep_y, bw - 1, "┤");
 
 		if (mcnt > 0) {
-			const char *full = hist[map_idx[sel]];
-			int pcols = bw - 4;
-			int off = 0, fl = (int)strlen(full);
-			for (int r = 0; r < 2 && off < fl; r++) {
-				mvwprint_utf8(win, sep_y + 1 + r, 2, pcols, full + off);
-				off += pcols;
-			}
+			const CmdHistoryEntry *cur = &hist[map_idx[sel]];
+			char meta[MAX_PATH + 64];
+			const char *ts = cur->timestamp[0] ? cur->timestamp : "---- -- -- --:--";
+			const char *dr = cur->dir[0] ? cur->dir : ".";
+			snprintf(meta, sizeof(meta), "%s  |  %s", ts, dr);
+			wattron(win, A_BOLD);
+			mvwprint_utf8(win, sep_y + 1, 2, bw - 4, meta);
+			wattroff(win, A_BOLD);
+			mvwprint_utf8(win, sep_y + 2, 2, bw - 4, cur->cmd);
 		}
 
 		int bx0 = (bw - total_bw) / 2;
 		if (bx0 < 2) bx0 = 2;
 		int cx = bx0;
-		for (int i = 0; i < 4; i++) {
+		for (int i = 0; i < 5; i++) {
 			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
 			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
@@ -2232,12 +2248,13 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 			}
 			if (wy == bh - 2) {
 				int px = bx0;
-				for (int i = 0; i < 4; i++) {
+				for (int i = 0; i < 5; i++) {
 					if (wx >= px && wx < px + bwid[i]) {
 						btn = i;
 						if (i == 0 && mcnt > 0) { res = 1; goto done_ch; }
 						if (i == 1 && mcnt > 0) { res = 2; goto done_ch; }
-						if (i == 2 && mcnt > 0) goto do_del_ch;
+						if (i == 2 && mcnt > 0) { res = 3; goto done_ch; }
+						if (i == 3 && mcnt > 0) goto do_del_ch;
 						goto done_ch;
 					}
 					px += bwid[i] + 1;
@@ -2256,9 +2273,10 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 		else if (ev.action == ACT_DOWN && sel + 1 < mcnt) sel++;
 		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
 		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= mcnt) sel = mcnt - 1; }
-		else if (ev.action == ACT_LEFT) btn = (btn + 3) % 4;
-		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 4;
+		else if (ev.action == ACT_LEFT) btn = (btn + 4) % 5;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 5;
 		else if (ev.action == ACT_F4 && mcnt > 0) { res = 2; break; }
+		else if (ev.action == ACT_INSERT_NAME && mcnt > 0) { res = 3; break; }
 		else if ((ev.action == ACT_F8 || ev.action == ACT_DELETE) && mcnt > 0) goto do_del_ch;
 		else if (ev.action == ACT_BACKSPACE && flen > 0) {
 			while (flen > 0 && ((unsigned char)filter[flen - 1] & 0xC0) == 0x80) flen--;
@@ -2275,10 +2293,11 @@ int ui_cmd_history(char (*hist)[MAX_CMD], int *hist_count, char *out_cmd, size_t
 				sel = 0; top = 0;
 			}
 		} else if (ev.action == ACT_ENTER) {
-			if (mcnt == 0 || btn == 3) break;
+			if (mcnt == 0 || btn == 4) break;
 			if (btn == 0) { res = 1; break; }
 			if (btn == 1) { res = 2; break; }
-			if (btn == 2) goto do_del_ch;
+			if (btn == 2) { res = 3; break; }
+			if (btn == 3) goto do_del_ch;
 		}
 		continue;
 
@@ -2286,7 +2305,7 @@ do_del_ch:
 		if (mcnt > 0) {
 			int del_i = map_idx[sel];
 			for (int k = del_i; k + 1 < *hist_count; k++) {
-				memcpy(hist[k], hist[k + 1], MAX_CMD);
+				hist[k] = hist[k + 1];
 			}
 			(*hist_count)--;
 			if (*hist_count == 0) break;
@@ -2295,7 +2314,186 @@ do_del_ch:
 
 done_ch:
 	if (res > 0 && mcnt > 0) {
-		snprintf(out_cmd, out_size, "%s", hist[map_idx[sel]]);
+		const CmdHistoryEntry *chosen = &hist[map_idx[sel]];
+		if (out_cmd && out_size > 0) snprintf(out_cmd, out_size, "%s", chosen->cmd);
+		if (out_dir && dir_size > 0) snprintf(out_dir, dir_size, "%s", chosen->dir);
+	}
+	delwin(win);
+	free(map_idx);
+	touchwin(stdscr);
+	return res;
+}
+
+int ui_dir_history(DirHistoryEntry *hist, int *hist_count, char *out_dir, size_t dir_size) {
+	if (!hist || !hist_count || *hist_count <= 0) {
+		ui_message("Folder History", "Folder history is empty");
+		return 0;
+	}
+
+	int h, w;
+	getmaxyx(stdscr, h, w);
+	int bw = (w - 6 > 96) ? 96 : (w - 6);
+	if (bw < 58) bw = w - 2;
+	int bh = (h - 4 > 24) ? 24 : (h - 4);
+	if (bh < 12) bh = h - 2;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(bh, bw, sy, sx);
+	wbkgd(win, COLOR_PAIR(5));
+
+	const char *btns[5] = {"[ Go ]", "[ Other ]", "[ Insert ]", "[ Delete ]", "[ Cancel ]"};
+	int bwid[5] = {6, 9, 10, 10, 10};
+	int total_bw = 6 + 1 + 9 + 1 + 10 + 1 + 10 + 1 + 10;
+
+	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
+	if (!map_idx) { delwin(win); return 0; }
+
+	char filter[128] = "";
+	int flen = 0;
+	int sel = 0, top = 0, btn = 0, res = 0, mcnt = 0;
+
+	while (1) {
+		mcnt = 0;
+		for (int i = *hist_count - 1; i >= 0; i--) {
+			if (flen == 0 || strcasestr(hist[i].dir, filter) != NULL) {
+				map_idx[mcnt++] = i;
+			}
+		}
+
+		int lh = bh - 7;
+		if (lh < 4) lh = 4;
+		if (sel >= mcnt) sel = (mcnt > 0) ? (mcnt - 1) : 0;
+		if (sel < 0) sel = 0;
+		if (sel < top) top = sel;
+		if (sel >= top + lh) top = sel - lh + 1;
+
+		werase(win);
+		draw_win_box(win);
+		if (flen > 0) {
+			mvwprintw(win, 0, 2, " Folder History (Alt+F12 / Ctrl+D) [%d/%d] Filter: %s ", mcnt, *hist_count, filter);
+		} else {
+			mvwprintw(win, 0, 2, " Folder History (Alt+F12 / Ctrl+D) [%d] (type to filter) ", *hist_count);
+		}
+
+		if (mcnt == 0) {
+			mvwprint_utf8(win, 2, 3, bw - 6, "No matching folders in history");
+		} else {
+			for (int i = 0; i < lh && (top + i) < mcnt; i++) {
+				int ridx = map_idx[top + i];
+				char row_buf[MAX_PATH + 64];
+				if (hist[ridx].timestamp[0] != '\0') {
+					snprintf(row_buf, sizeof(row_buf), "[%s] %s", hist[ridx].timestamp, hist[ridx].dir);
+				} else {
+					snprintf(row_buf, sizeof(row_buf), "%s", hist[ridx].dir);
+				}
+				wattron(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+				mvwhline(win, 1 + i, 1, ' ', bw - 2);
+				mvwprint_utf8(win, 1 + i, 2, bw - 4, row_buf);
+				wattroff(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			}
+		}
+
+		int sep_y = 1 + lh;
+		mvwaddstr(win, sep_y, 0, "├");
+		for (int x = 1; x < bw - 1; x++) mvwaddstr(win, sep_y, x, "─");
+		mvwaddstr(win, sep_y, bw - 1, "┤");
+
+		if (mcnt > 0) {
+			const DirHistoryEntry *cur = &hist[map_idx[sel]];
+			wattron(win, A_BOLD);
+			mvwprint_utf8(win, sep_y + 1, 2, bw - 4, cur->dir);
+			wattroff(win, A_BOLD);
+		}
+
+		int bx0 = (bw - total_bw) / 2;
+		if (bx0 < 2) bx0 = 2;
+		int cx = bx0;
+		for (int i = 0; i < 5; i++) {
+			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
+			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			cx += bwid[i] + 1;
+		}
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
+				sel = top + wy - 1;
+				continue;
+			}
+			if (wy == bh - 2) {
+				int px = bx0;
+				for (int i = 0; i < 5; i++) {
+					if (wx >= px && wx < px + bwid[i]) {
+						btn = i;
+						if (i == 0 && mcnt > 0) { res = 1; goto done_dh; }
+						if (i == 1 && mcnt > 0) { res = 2; goto done_dh; }
+						if (i == 2 && mcnt > 0) { res = 3; goto done_dh; }
+						if (i == 3 && mcnt > 0) goto do_del_dh;
+						goto done_dh;
+					}
+					px += bwid[i] + 1;
+				}
+			}
+			continue;
+		}
+		if (ev.action == ACT_ESC) {
+			if (flen > 0) { flen = 0; filter[0] = '\0'; sel = 0; top = 0; continue; }
+			break;
+		}
+		if (ev.action == ACT_F10) break;
+		if (ev.action == ACT_MOUSE_WHEEL_UP && sel > 0) sel--;
+		else if (ev.action == ACT_MOUSE_WHEEL_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_UP && sel > 0) sel--;
+		else if (ev.action == ACT_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
+		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= mcnt) sel = mcnt - 1; }
+		else if (ev.action == ACT_LEFT) btn = (btn + 4) % 5;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 5;
+		else if (ev.action == ACT_F4 && mcnt > 0) { res = 2; break; }
+		else if (ev.action == ACT_INSERT_NAME && mcnt > 0) { res = 3; break; }
+		else if ((ev.action == ACT_F8 || ev.action == ACT_DELETE) && mcnt > 0) goto do_del_dh;
+		else if (ev.action == ACT_BACKSPACE && flen > 0) {
+			while (flen > 0 && ((unsigned char)filter[flen - 1] & 0xC0) == 0x80) flen--;
+			if (flen > 0) flen--;
+			filter[flen] = '\0';
+			sel = 0; top = 0;
+		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && !(ev.ch == L' ' && btn != 0 && flen == 0)) {
+			char mb[8];
+			int bl = wctomb(mb, ev.ch);
+			if (bl > 0 && flen + bl < (int)sizeof(filter) - 1) {
+				memcpy(filter + flen, mb, (size_t)bl);
+				flen += bl;
+				filter[flen] = '\0';
+				sel = 0; top = 0;
+			}
+		} else if (ev.action == ACT_ENTER) {
+			if (mcnt == 0 || btn == 4) break;
+			if (btn == 0) { res = 1; break; }
+			if (btn == 1) { res = 2; break; }
+			if (btn == 2) { res = 3; break; }
+			if (btn == 3) goto do_del_dh;
+		}
+		continue;
+
+do_del_dh:
+		if (mcnt > 0) {
+			int del_i = map_idx[sel];
+			for (int k = del_i; k + 1 < *hist_count; k++) {
+				hist[k] = hist[k + 1];
+			}
+			(*hist_count)--;
+			if (*hist_count == 0) break;
+		}
+	}
+
+done_dh:
+	if (res > 0 && mcnt > 0 && out_dir && dir_size > 0) {
+		snprintf(out_dir, dir_size, "%s", hist[map_idx[sel]].dir);
 	}
 	delwin(win);
 	free(map_idx);
