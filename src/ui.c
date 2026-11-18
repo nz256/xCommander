@@ -172,34 +172,63 @@ void ui_init(void) {
 }
 
 void draw_fkey_bar(int y, int width) {
-	const char *labels[10] = {
-		"Help", "UserMn", "View", "Edit", "Copy",
-		"RenMov", "MkFold", "Delete", "ConfMn", "Quit"
+	const char *labels[12] = {
+		"Help", "UserMn", "View", "Edit", "Copy", "RenMov",
+		"MkFold", "Delete", "ConfMn", "Quit", "", ""
 	};
 	if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
 		labels[0] = "Left";
 		labels[1] = "Right";
-		labels[7] = "Hist";
+		labels[2] = "";
+		labels[3] = "";
+		labels[4] = "";
+		labels[5] = "";
+		labels[6] = "";
+		labels[7] = "CmdH";
+		labels[8] = "FileH";
+		labels[9] = "DirH";
+		labels[10] = "ScrH";
+		labels[11] = "";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+		labels[0] = "";
+		labels[1] = "";
+		labels[2] = "";
 		labels[3] = "Create";
+		labels[4] = "";
+		labels[5] = "";
+		labels[6] = "";
+		labels[7] = "";
+		labels[8] = "";
+		labels[9] = "";
+	} else if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
+		labels[0] = "";
+		labels[1] = "";
+		labels[2] = "Name";
+		labels[3] = "Ext";
+		labels[4] = "Time";
+		labels[5] = "Size";
+		labels[6] = "";
+		labels[7] = "";
+		labels[8] = "";
+		labels[9] = "";
 	}
 
 	attrset(COLOR_PAIR(6));
 	mvhline(y, 0, ' ', width);
 
-	int col_w = width / 10;
+	int col_w = width / 12;
 	if (col_w < 3) col_w = 3;
 
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < 12; i++) {
 		int x = i * col_w;
 		if (x >= width) break;
 
-		int item_w = (i == 9) ? (width - x) : col_w;
+		int item_w = (i == 11) ? (width - x) : col_w;
 
 		attrset(COLOR_PAIR(6));
 		mvprintw(y, x, "%d", i + 1);
 
-		int num_len = (i == 9) ? 2 : 1;
+		int num_len = (i >= 9) ? 2 : 1;
 		int label_space = item_w - num_len;
 		if (label_space > 0) {
 			attrset(A_NORMAL | COLOR_PAIR(2));
@@ -844,7 +873,8 @@ void ui_help(void) {
 		"                       Ins / + : Bookmark current dir with custom hotkey",
 		"                       F8 / Del: Remove bookmark or safe-unmount USB",
 		"  Insert / Shift+Arr Mark or unmark files & ranges (incl. Shift+Left/Right)",
-		"  Alt+F12 / Ctrl+D   Open Folder History (512 steps; Go / Other / Insert)",
+		"  Alt+F10 / Ctrl+D   Folder History (512 steps; Go / Other / Insert)",
+		"  Hold Alt / Ctrl    Dynamic 12-key F-bar (Alt: 8CmdH 9FileH 10DirH 11ScrH)",
 		"  Alt+BkSp / Sh+BkSp Step Back / Forward through visited folder history",
 		"  Alt+Shift+Home/End Select range from cursor to start / end of panel",
 		"  + / - / *          Select by mask / Deselect by mask / Invert selection",
@@ -869,9 +899,9 @@ void ui_help(void) {
 		"  Ctrl+Left / Right  Jump cursor by words in command line",
 		"  Shift+Arrows       Select characters in command line",
 		"  Alt+Shift+Arrows   Select whole words (also Ctrl+Shift+Arrows)",
-		"  Alt+H              Multiline History (Enter:Run F4:Edit F8:Delete)",
-		"  Alt+F8 / Ctrl+H    Open Command History (512 items, timestamp & dir)",
-		"                       Type to filter cmd; Run / Insert / Jump dir / Del",
+		"  Alt+F11 / Ctrl+L   Multiline Script History (Enter:Run F4:Edit F8:Delete)",
+		"  Alt+F8 / Ctrl+H    Command History (512 items; filter, Run/Insert/Jump)",
+		"  Alt+F9 / Ctrl+G    File History (512 items + cursor pos; Edit/View/Jump)",
 		"  Ctrl+E / Ctrl+X    Step through command history inline",
 		"  Ctrl+U / Esc       Clear command line (when text is entered)",
 		"",
@@ -2494,6 +2524,202 @@ do_del_dh:
 done_dh:
 	if (res > 0 && mcnt > 0 && out_dir && dir_size > 0) {
 		snprintf(out_dir, dir_size, "%s", hist[map_idx[sel]].dir);
+	}
+	delwin(win);
+	free(map_idx);
+	touchwin(stdscr);
+	return res;
+}
+
+int ui_file_history(FileHistoryEntry *hist, int *hist_count, char *out_path, size_t path_size, int *out_line, int *out_col) {
+	if (!hist || !hist_count || *hist_count <= 0) {
+		ui_message("File History", "File history is empty");
+		return 0;
+	}
+
+	int h, w;
+	getmaxyx(stdscr, h, w);
+	int bw = (w - 6 > 96) ? 96 : (w - 6);
+	if (bw < 58) bw = w - 2;
+	int bh = (h - 4 > 24) ? 24 : (h - 4);
+	if (bh < 12) bh = h - 2;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(bh, bw, sy, sx);
+	wbkgd(win, COLOR_PAIR(5));
+
+	const char *btns[5] = {"[ Edit ]", "[ View ]", "[ Jump ]", "[ Delete ]", "[ Cancel ]"};
+	int bwid[5] = {8, 8, 8, 10, 10};
+	int total_bw = 8 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 10;
+
+	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
+	if (!map_idx) { delwin(win); return 0; }
+
+	char filter[128] = "";
+	int flen = 0;
+	int sel = 0, top = 0, btn = 0, res = 0, mcnt = 0;
+
+	while (1) {
+		mcnt = 0;
+		for (int i = *hist_count - 1; i >= 0; i--) {
+			if (flen == 0 || strcasestr(hist[i].path, filter) != NULL) {
+				map_idx[mcnt++] = i;
+			}
+		}
+
+		int lh = bh - 8;
+		if (lh < 4) lh = 4;
+		if (sel >= mcnt) sel = (mcnt > 0) ? (mcnt - 1) : 0;
+		if (sel < 0) sel = 0;
+		if (sel < top) top = sel;
+		if (sel >= top + lh) top = sel - lh + 1;
+
+		werase(win);
+		draw_win_box(win);
+		if (flen > 0) {
+			mvwprintw(win, 0, 2, " File History (Alt+F11) [%d/%d] Filter: %s ", mcnt, *hist_count, filter);
+		} else {
+			mvwprintw(win, 0, 2, " File History (Alt+F11) [%d] (type to filter) ", *hist_count);
+		}
+
+		if (mcnt == 0) {
+			mvwprint_utf8(win, 2, 3, bw - 6, "No matching files in history");
+		} else {
+			for (int i = 0; i < lh && (top + i) < mcnt; i++) {
+				int ridx = map_idx[top + i];
+				const FileHistoryEntry *fe = &hist[ridx];
+				char row_buf[MAX_PATH + 64];
+				const char *md = fe->mode[0] ? fe->mode : "Edit";
+				char tag[32];
+				if (strcmp(md, "Edit") == 0 && (fe->line > 1 || fe->col > 1)) {
+					snprintf(tag, sizeof(tag), "Edit %d:%d", fe->line > 0 ? fe->line : 1, fe->col > 0 ? fe->col : 1);
+				} else {
+					snprintf(tag, sizeof(tag), "%s", md);
+				}
+				if (fe->timestamp[0] != '\0') {
+					snprintf(row_buf, sizeof(row_buf), "[%s] [%s] %s", fe->timestamp, tag, fe->path);
+				} else {
+					snprintf(row_buf, sizeof(row_buf), "[%s] %s", tag, fe->path);
+				}
+				wattron(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+				mvwhline(win, 1 + i, 1, ' ', bw - 2);
+				mvwprint_utf8(win, 1 + i, 2, bw - 4, row_buf);
+				wattroff(win, (top + i) == sel ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			}
+		}
+
+		int sep_y = 1 + lh;
+		mvwaddstr(win, sep_y, 0, "├");
+		for (int x = 1; x < bw - 1; x++) mvwaddstr(win, sep_y, x, "─");
+		mvwaddstr(win, sep_y, bw - 1, "┤");
+
+		if (mcnt > 0) {
+			const FileHistoryEntry *cur = &hist[map_idx[sel]];
+			char meta[96];
+			snprintf(meta, sizeof(meta), "%s  |  Mode: %s  |  Cursor: %d:%d",
+			         cur->timestamp[0] ? cur->timestamp : "---- -- -- --:--",
+			         cur->mode[0] ? cur->mode : "Edit",
+			         cur->line > 0 ? cur->line : 1,
+			         cur->col > 0 ? cur->col : 1);
+			wattron(win, A_BOLD);
+			mvwprint_utf8(win, sep_y + 1, 2, bw - 4, meta);
+			wattroff(win, A_BOLD);
+			mvwprint_utf8(win, sep_y + 2, 2, bw - 4, cur->path);
+		}
+
+		int bx0 = (bw - total_bw) / 2;
+		if (bx0 < 2) bx0 = 2;
+		int cx = bx0;
+		for (int i = 0; i < 5; i++) {
+			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
+			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			cx += bwid[i] + 1;
+		}
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
+				sel = top + wy - 1;
+				continue;
+			}
+			if (wy == bh - 2) {
+				int px = bx0;
+				for (int i = 0; i < 5; i++) {
+					if (wx >= px && wx < px + bwid[i]) {
+						btn = i;
+						if (i == 0 && mcnt > 0) { res = 1; goto done_fh; }
+						if (i == 1 && mcnt > 0) { res = 2; goto done_fh; }
+						if (i == 2 && mcnt > 0) { res = 3; goto done_fh; }
+						if (i == 3 && mcnt > 0) goto do_del_fh;
+						goto done_fh;
+					}
+					px += bwid[i] + 1;
+				}
+			}
+			continue;
+		}
+		if (ev.action == ACT_ESC) {
+			if (flen > 0) { flen = 0; filter[0] = '\0'; sel = 0; top = 0; continue; }
+			break;
+		}
+		if (ev.action == ACT_F10) break;
+		if (ev.action == ACT_MOUSE_WHEEL_UP && sel > 0) sel--;
+		else if (ev.action == ACT_MOUSE_WHEEL_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_UP && sel > 0) sel--;
+		else if (ev.action == ACT_DOWN && sel + 1 < mcnt) sel++;
+		else if (ev.action == ACT_PGUP) { sel -= lh; if (sel < 0) sel = 0; }
+		else if (ev.action == ACT_PGDN) { sel += lh; if (sel >= mcnt) sel = mcnt - 1; }
+		else if (ev.action == ACT_LEFT) btn = (btn + 4) % 5;
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) btn = (btn + 1) % 5;
+		else if (ev.action == ACT_F4 && mcnt > 0) { res = 1; break; }
+		else if (ev.action == ACT_F3 && mcnt > 0) { res = 2; break; }
+		else if (ev.action == ACT_INSERT_NAME && mcnt > 0) { res = 3; break; }
+		else if ((ev.action == ACT_F8 || ev.action == ACT_DELETE) && mcnt > 0) goto do_del_fh;
+		else if (ev.action == ACT_BACKSPACE && flen > 0) {
+			while (flen > 0 && ((unsigned char)filter[flen - 1] & 0xC0) == 0x80) flen--;
+			if (flen > 0) flen--;
+			filter[flen] = '\0';
+			sel = 0; top = 0;
+		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && !(ev.ch == L' ' && btn != 0 && flen == 0)) {
+			char mb[8];
+			int bl = wctomb(mb, ev.ch);
+			if (bl > 0 && flen + bl < (int)sizeof(filter) - 1) {
+				memcpy(filter + flen, mb, (size_t)bl);
+				flen += bl;
+				filter[flen] = '\0';
+				sel = 0; top = 0;
+			}
+		} else if (ev.action == ACT_ENTER) {
+			if (mcnt == 0 || btn == 4) break;
+			if (btn == 0) { res = 1; break; }
+			if (btn == 1) { res = 2; break; }
+			if (btn == 2) { res = 3; break; }
+			if (btn == 3) goto do_del_fh;
+		}
+		continue;
+
+do_del_fh:
+		if (mcnt > 0) {
+			int del_i = map_idx[sel];
+			for (int k = del_i; k + 1 < *hist_count; k++) {
+				hist[k] = hist[k + 1];
+			}
+			(*hist_count)--;
+			if (*hist_count == 0) break;
+		}
+	}
+
+done_fh:
+	if (res > 0 && mcnt > 0) {
+		const FileHistoryEntry *chosen = &hist[map_idx[sel]];
+		if (out_path && path_size > 0) snprintf(out_path, path_size, "%s", chosen->path);
+		if (out_line) *out_line = (chosen->line > 0) ? chosen->line : 1;
+		if (out_col) *out_col = (chosen->col > 0) ? chosen->col : 1;
 	}
 	delwin(win);
 	free(map_idx);

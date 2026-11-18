@@ -44,7 +44,12 @@ xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
 | `Alt+F1` / `Alt+F2` | Open Drive & Bookmarks menu for Left / Right panel (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
 | `Insert` / `Shift+Arrows` | Mark or unmark files & column ranges (auto-clears after copy) |
 
-| `Alt+F12` / `Ctrl+D` | Open Folder History (512 steps; filter, Go, Other panel, Insert path) |
+| `Alt+F8` / `Ctrl+H` | Open Command History (512 items with timestamp & dir; filter, Run / Insert / Jump / Delete) |
+
+| `Alt+F9` / `Ctrl+G` | Open File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete) |
+| `Alt+F10` / `Ctrl+D` | Open Folder History (512 steps; filter, Go, Other panel, Insert path) |
+| `Alt+F11` / `Ctrl+L` | Open Multiline Script History (Run / Edit in built-in editor / Delete) |
+| Hold `Alt` / `Ctrl` / `Shift` | Dynamic 12-key bottom F-bar (`Alt`: `1Left`, `2Right`, `8CmdH`, `9FileH`, `10DirH`, `11ScrH`; `Ctrl`: `3Name`–`6Size`; `Shift`: `4Create`) |
 | `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
 | `Alt+Shift+Home` / `End` | Add range from cursor to start / end of directory to selection |
 | `+` / `-` / `*` | Select by wildcard mask / Deselect by mask / Invert selection |
@@ -55,8 +60,6 @@ xc [OPTIONS] [LEFT_DIR] [RIGHT_DIR]
 | `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
 | `Alt+Enter` / `Ctrl+J` | Insert current filename into command line |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / Cut / Paste files (`text/uri-list`), text, or multiline script |
-| `Alt+H` | Open Multiline Command History (`Enter` run, `F4` edit, `F8`/`Del` remove) |
-| `Alt+F8` / `Ctrl+H` | Open Command History (512 items with timestamp & dir; type to filter command; Run / Insert / Jump to dir / Delete) |
 | `Ctrl+E` / `Ctrl+X` | Step through persistent command line history inline |
 | `Ctrl+O` | Toggle full terminal mode / panels |
 | `F10` / `Ctrl+Q` | Save panel paths & history and quit |

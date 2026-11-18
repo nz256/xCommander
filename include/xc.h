@@ -56,6 +56,16 @@ typedef struct {
 	char dir[MAX_PATH];
 } DirHistoryEntry;
 
+#define MAX_FILE_HISTORY 512
+
+typedef struct {
+	char timestamp[32];
+	char mode[8];
+	int line;
+	int col;
+	char path[MAX_PATH];
+} FileHistoryEntry;
+
 extern char cmd_buffer[MAX_CMD];
 extern int cmd_pos;
 extern int cmd_sel_start;

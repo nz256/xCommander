@@ -298,6 +298,113 @@ static void track_panel_dirs(char *last_l, size_t lsz, char *last_r, size_t rsz)
 	if (changed) dir_history_save();
 }
 
+static FileHistoryEntry file_history[MAX_FILE_HISTORY];
+static int file_history_count = 0;
+
+static void file_history_add_entry(const char *ts, const char *mode, int line, int col, const char *path) {
+	if (!path || *path == '\0') return;
+	char abs_p[MAX_PATH];
+	if (path[0] != '/' && realpath(path, abs_p) != NULL) {
+		path = abs_p;
+	}
+	int prev_line = 1, prev_col = 1;
+	for (int i = 0; i < file_history_count; i++) {
+		if (strcmp(file_history[i].path, path) == 0) {
+			if (file_history[i].line > 0) prev_line = file_history[i].line;
+			if (file_history[i].col > 0) prev_col = file_history[i].col;
+			for (int k = i; k + 1 < file_history_count; k++) {
+				file_history[k] = file_history[k + 1];
+			}
+			file_history_count--;
+			break;
+		}
+	}
+	if (file_history_count >= MAX_FILE_HISTORY) {
+		memmove(file_history, file_history + 1, sizeof(file_history[0]) * (MAX_FILE_HISTORY - 1));
+		file_history_count = MAX_FILE_HISTORY - 1;
+	}
+	FileHistoryEntry *e = &file_history[file_history_count];
+	if (ts && *ts) {
+		snprintf(e->timestamp, sizeof(e->timestamp), "%s", ts);
+	} else {
+		time_t now = time(NULL);
+		struct tm *tmi = localtime(&now);
+		if (tmi) strftime(e->timestamp, sizeof(e->timestamp), "%Y-%m-%d %H:%M", tmi);
+		else e->timestamp[0] = '\0';
+	}
+	snprintf(e->mode, sizeof(e->mode), "%s", (mode && *mode) ? mode : "Edit");
+	e->line = (line > 0) ? line : prev_line;
+	e->col = (col > 0) ? col : prev_col;
+	snprintf(e->path, sizeof(e->path), "%s", path);
+	file_history_count++;
+}
+
+static void file_history_get_pos(const char *path, int *out_line, int *out_col) {
+	if (out_line) *out_line = 1;
+	if (out_col) *out_col = 1;
+	if (!path || *path == '\0') return;
+	char abs_p[MAX_PATH];
+	if (path[0] != '/' && realpath(path, abs_p) != NULL) path = abs_p;
+	for (int i = file_history_count - 1; i >= 0; i--) {
+		if (strcmp(file_history[i].path, path) == 0) {
+			if (out_line) *out_line = (file_history[i].line > 0) ? file_history[i].line : 1;
+			if (out_col) *out_col = (file_history[i].col > 0) ? file_history[i].col : 1;
+			return;
+		}
+	}
+}
+
+static void get_file_history_path(char *out, size_t out_size) {
+	char hist_path[MAX_PATH + 32];
+	get_history_path(hist_path, sizeof(hist_path));
+	char *sl = strrchr(hist_path, '/');
+	if (sl) *sl = '\0';
+	snprintf(out, out_size, "%s/file_history", hist_path);
+}
+
+static void file_history_load(void) {
+	char path[MAX_PATH + 32];
+	get_file_history_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	char line[MAX_PATH + 128];
+	while (fgets(line, sizeof(line), f)) {
+		size_t len = strlen(line);
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+		if (len == 0) continue;
+		char *t1 = strchr(line, '\t');
+		char *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+		char *t3 = t2 ? strchr(t2 + 1, '\t') : NULL;
+		char *t4 = t3 ? strchr(t3 + 1, '\t') : NULL;
+		if (t1 && t2 && t3 && t4) {
+			*t1 = '\0'; *t2 = '\0'; *t3 = '\0'; *t4 = '\0';
+			file_history_add_entry(line, t1 + 1, atoi(t2 + 1), atoi(t3 + 1), t4 + 1);
+		} else if (t1 && t2) {
+			*t1 = '\0'; *t2 = '\0';
+			file_history_add_entry(line, t1 + 1, 1, 1, t2 + 1);
+		} else {
+			file_history_add_entry("", "Edit", 1, 1, line);
+		}
+	}
+	fclose(f);
+}
+
+static void file_history_save(void) {
+	char path[MAX_PATH + 32];
+	get_file_history_path(path, sizeof(path));
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	for (int i = 0; i < file_history_count; i++) {
+		fprintf(f, "%s\t%s\t%d\t%d\t%s\n",
+		        file_history[i].timestamp,
+		        file_history[i].mode,
+		        file_history[i].line > 0 ? file_history[i].line : 1,
+		        file_history[i].col > 0 ? file_history[i].col : 1,
+		        file_history[i].path);
+	}
+	fclose(f);
+}
+
 static void get_state_path(char *out, size_t out_size) {
 	char hist_path[MAX_PATH + 32];
 	get_history_path(hist_path, sizeof(hist_path));
@@ -381,8 +488,15 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 			if (idx == 0) return ACT_ALT_F1;
 			if (idx == 1) return ACT_ALT_F2;
 			if (idx == 7) return ACT_ALT_F8;
+			if (idx == 8) return ACT_ALT_F11;
+			if (idx == 9) return ACT_ALT_F12;
 		} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
 			if (idx == 3) return ACT_SHIFT_F4;
+		} else if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
+			if (idx == 2) return ACT_CTRL_F3;
+			if (idx == 3) return ACT_CTRL_F4;
+			if (idx == 4) return ACT_CTRL_F5;
+			if (idx == 5) return ACT_CTRL_F6;
 		}
 		const KeyAction fkeys[10] = {
 			ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_F5,
@@ -620,6 +734,7 @@ int main(int argc, char **argv) {
 	
         history_load();
 	dir_history_load();
+	file_history_load();
 
 	char cwd[MAX_PATH];
 	if (getcwd(cwd, sizeof(cwd)) == NULL) strcpy(cwd, ".");
@@ -660,7 +775,10 @@ int main(int argc, char **argv) {
 
 	if (opts.edit_mode) {
 		const char *target_file = (opts.edit_file && opts.edit_file[0] != '\0') ? opts.edit_file : "untitled.txt";
-		ui_edit_file_at(target_file, opts.edit_line, opts.edit_col);
+		int end_ln = opts.edit_line, end_cl = opts.edit_col;
+		ui_edit_file_ex(target_file, opts.edit_line, opts.edit_col, &end_ln, &end_cl);
+		file_history_add_entry(NULL, "Edit", end_ln, end_cl, target_file);
+		file_history_save();
 		input_restore_sane();
 		endwin();
 		input_restore_sane();
@@ -838,7 +956,50 @@ int main(int argc, char **argv) {
 			}
 			continue;
 		}
-		if (ev.action == ACT_ALT_F12 || ev.action == ACT_CTRL_D) {
+		if (ev.action == ACT_ALT_F9 || ev.action == ACT_CTRL_G) {
+			char picked_file[MAX_PATH] = "";
+			int picked_line = 1, picked_col = 1;
+			int prev_fcnt = file_history_count;
+			int fres = ui_file_history(file_history, &file_history_count, picked_file, sizeof(picked_file), &picked_line, &picked_col);
+			if (file_history_count != prev_fcnt) file_history_save();
+			if ((fres == 1 || fres == 2) && picked_file[0] != '\0') {
+				if (access(picked_file, F_OK) == 0) {
+					if (fres == 1) {
+						int end_ln = picked_line, end_cl = picked_col;
+						ui_edit_file_ex(picked_file, picked_line, picked_col, &end_ln, &end_cl);
+						file_history_add_entry(NULL, "Edit", end_ln, end_cl, picked_file);
+						file_history_save();
+						reload_panels_keep_cursor();
+					} else {
+						file_history_add_entry(NULL, "View", 0, 0, picked_file);
+						file_history_save();
+						ui_view_file(picked_file);
+					}
+				} else {
+					ui_message("File History", "File no longer exists");
+				}
+			} else if (fres == 3 && picked_file[0] != '\0') {
+				char dir_buf[MAX_PATH];
+				snprintf(dir_buf, sizeof(dir_buf), "%s", picked_file);
+				char *sl = strrchr(dir_buf, '/');
+				if (sl) {
+					const char *fname = sl + 1;
+					if (sl == dir_buf) strcpy(dir_buf, "/");
+					else *sl = '\0';
+					if (access(dir_buf, R_OK | X_OK) == 0) {
+						quick_search_reset();
+						snprintf(active_panel->parent_name, MAX_FILENAME, "%s", fname);
+						snprintf(active_panel->current_path, MAX_PATH, "%s", dir_buf);
+						load_directory(active_panel);
+					} else {
+						ui_message("Jump", "Parent directory no longer exists");
+					}
+				}
+			}
+			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			continue;
+		}
+		if (ev.action == ACT_ALT_F10 || ev.action == ACT_CTRL_D) {
 			char picked_dir[MAX_PATH] = "";
 			int prev_dcnt = dir_history_count;
 			int dres = ui_dir_history(dir_history, &dir_history_count, picked_dir, sizeof(picked_dir));
@@ -899,7 +1060,7 @@ int main(int argc, char **argv) {
 			}
 			continue;
 		}
-		if (ev.action == ACT_ALT_CHAR && (ev.ch == L'h' || ev.ch == L'H' || ev.ch == L'р' || ev.ch == L'Р')) {
+		if (ev.action == ACT_ALT_F11 || ev.action == ACT_CTRL_L) {
 			int was_term = terminal_mode;
 			if (was_term) { reset_prog_mode(); refresh(); }
 			char picked[65536] = {0};
@@ -1029,18 +1190,42 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_ALT_F2) { quick_search_reset(); ui_drive_menu(&right_panel, 1); }
 		else if (ev.action == ACT_F3 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (!cur->is_dir && strcmp(cur->name, "..") != 0) { char fp[MAX_PATH * 2]; snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name); ui_view_file(fp); }
+			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
+				char fp[MAX_PATH * 2];
+				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
+				file_history_add_entry(NULL, "View", 0, 0, fp);
+				file_history_save();
+				ui_view_file(fp);
+			}
 		} else if (ev.action == ACT_F4 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
 				char fp[MAX_PATH * 2];
 				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
 				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", cur->name);
-				ui_edit_file(fp);
+				int start_ln = 1, start_cl = 1;
+				file_history_get_pos(fp, &start_ln, &start_cl);
+				int end_ln = start_ln, end_cl = start_cl;
+				ui_edit_file_ex(fp, start_ln, start_cl, &end_ln, &end_cl);
+				file_history_add_entry(NULL, "Edit", end_ln, end_cl, fp);
+				file_history_save();
 				load_directory(&left_panel);
 				load_directory(&right_panel);
 			}
-		} else if (ev.action == ACT_SHIFT_F4) { if (create_and_edit_file(active_panel) > 0) { reload_panels_keep_cursor(); } }
+		} else if (ev.action == ACT_SHIFT_F4) {
+			if (create_and_edit_file(active_panel) > 0) {
+				reload_panels_keep_cursor();
+				if (active_panel->count > 0 && active_panel->selected >= 0 && active_panel->selected < active_panel->count) {
+					FileEntry *ne = &active_panel->files[active_panel->selected];
+					if (!ne->is_dir && strcmp(ne->name, "..") != 0) {
+						char fp[MAX_PATH * 2];
+						snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, ne->name);
+						file_history_add_entry(NULL, "Edit", 1, 1, fp);
+						file_history_save();
+					}
+				}
+			}
+		}
 		else if (ev.action == ACT_F5) {
 			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
 			char keep_name[MAX_FILENAME] = "";
@@ -1117,6 +1302,7 @@ int main(int argc, char **argv) {
 	}
 	history_save();
 	dir_history_save();
+	file_history_save();
 	state_save();
 	input_restore_sane();
 	endwin();

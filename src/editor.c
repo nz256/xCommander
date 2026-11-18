@@ -1362,6 +1362,10 @@ void ui_edit_file(const char *filepath) {
 }
 
 void ui_edit_file_at(const char *filepath, int start_line, int start_col) {
+	ui_edit_file_ex(filepath, start_line, start_col, NULL, NULL);
+}
+
+void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *out_line, int *out_col) {
 	EditorState ed;
 	memset(&ed, 0, sizeof(ed));
 	ed_load_file(&ed, filepath);
@@ -1639,6 +1643,8 @@ void ui_edit_file_at(const char *filepath, int start_line, int start_col) {
 		}
 	}
 
+	if (out_line) *out_line = ed.cur_y + 1;
+	if (out_col) *out_col = ed.cur_x + 1;
 	curs_set(0);
 	ed_free(&ed);
 	touchwin(stdscr);
