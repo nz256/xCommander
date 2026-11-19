@@ -4,6 +4,8 @@
 
 A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Manager and Midnight Commander, written in pure C with `ncurses`. Primarily developed, tested, and used daily on **Arch Linux** with the **Kitty** terminal emulator.
 
+![xCommander Screenshot](docs/screenshot.png)
+
 ## Features
 
 - **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6`), and drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount.
