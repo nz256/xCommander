@@ -816,26 +816,52 @@ static void ed_insert_newline(EditorState *ed) {
 	EditorLine *ln = &ed->lines[ed->cur_y];
 	if (ed->cur_x > ln->len) ed->cur_x = ln->len;
 
-	int indent = 0;
+	int indent = 0, extra_tab = 0, split_brace = 0;
 	if (ed->auto_indent) {
 		while (indent < ed->cur_x && (ln->text[indent] == L' ' || ln->text[indent] == L'\t')) indent++;
+		int prev = ed->cur_x - 1;
+		while (prev >= indent && (ln->text[prev] == L' ' || ln->text[prev] == L'\t')) prev--;
+		if (prev >= indent && (ln->text[prev] == L'{' || ln->text[prev] == L':')) {
+			extra_tab = 1;
+			int next = ed->cur_x;
+			while (next < ln->len && (ln->text[next] == L' ' || ln->text[next] == L'\t')) next++;
+			if (ln->text[prev] == L'{' && next < ln->len && ln->text[next] == L'}') {
+				split_brace = 1;
+			}
+		}
 	}
 
 	int tail_len = ln->len - ed->cur_x;
-	wchar_t *new_buf = malloc((size_t)(indent + tail_len + 16) * sizeof(wchar_t));
+	int new_ind = indent + extra_tab;
+	wchar_t *new_buf = malloc((size_t)(new_ind + (split_brace ? 0 : tail_len) + 16) * sizeof(wchar_t));
 	if (!new_buf) return;
 	if (indent > 0) wmemcpy(new_buf, ln->text, (size_t)indent);
-	if (tail_len > 0) wmemcpy(new_buf + indent, ln->text + ed->cur_x, (size_t)tail_len);
-	new_buf[indent + tail_len] = L'\0';
+	if (extra_tab) new_buf[indent] = L'\t';
+	if (!split_brace && tail_len > 0) wmemcpy(new_buf + new_ind, ln->text + ed->cur_x, (size_t)tail_len);
+	new_buf[new_ind + (split_brace ? 0 : tail_len)] = L'\0';
+
+	wchar_t *brace_buf = NULL;
+	if (split_brace) {
+		brace_buf = malloc((size_t)(indent + tail_len + 16) * sizeof(wchar_t));
+		if (brace_buf) {
+			if (indent > 0) wmemcpy(brace_buf, ln->text, (size_t)indent);
+			if (tail_len > 0) wmemcpy(brace_buf + indent, ln->text + ed->cur_x, (size_t)tail_len);
+			brace_buf[indent + tail_len] = L'\0';
+		}
+	}
 
 	ln->text[ed->cur_x] = L'\0';
 	ln->len = ed->cur_x;
 
-	ed_insert_line(ed, ed->cur_y + 1, new_buf, indent + tail_len);
+	ed_insert_line(ed, ed->cur_y + 1, new_buf, new_ind + (split_brace ? 0 : tail_len));
 	free(new_buf);
+	if (split_brace && brace_buf) {
+		ed_insert_line(ed, ed->cur_y + 2, brace_buf, indent + tail_len);
+		free(brace_buf);
+	}
 
 	ed->cur_y++;
-	ed->cur_x = indent;
+	ed->cur_x = new_ind;
 	ed->modified = 1;
 }
 
@@ -898,6 +924,264 @@ static void ed_update_sel(EditorState *ed, int old_y, int old_x) {
 	if (ed->sel_start_y == ed->sel_end_y && ed->sel_start_x == ed->sel_end_x) {
 		ed->sel_active = 0;
 	}
+}
+
+static void ed_indent_lines(EditorState *ed, int dir) {
+	if (!ed || ed->line_count <= 0) return;
+	int first_line = ed->cur_y, last_line = ed->cur_y;
+	if (ed->sel_active) {
+		int sy, sx, ey, ex;
+		ed_norm_sel(ed, &sy, &sx, &ey, &ex);
+		first_line = sy;
+		last_line = (ey > sy && ex == 0) ? (ey - 1) : ey;
+	}
+	if (first_line < 0) first_line = 0;
+	if (last_line >= ed->line_count) last_line = ed->line_count - 1;
+
+	ed_push_undo(ed);
+	for (int y = first_line; y <= last_line; y++) {
+		EditorLine *ln = &ed->lines[y];
+		if (dir > 0) {
+			if (ln->len == 0 && first_line != last_line) continue;
+			ed_line_ensure(ln, ln->len + 1);
+			wmemmove(ln->text + 1, ln->text, (size_t)(ln->len + 1));
+			ln->text[0] = L'\t';
+			ln->len++;
+			if (y == ed->cur_y) ed->cur_x++;
+			if (ed->sel_active && y == ed->sel_start_y && ed->sel_start_x > 0) ed->sel_start_x++;
+			if (ed->sel_active && y == ed->sel_end_y && ed->sel_end_x > 0) ed->sel_end_x++;
+		} else {
+			int rm = 0;
+			if (ln->len > 0 && ln->text[0] == L'\t') rm = 1;
+			else {
+				while (rm < 4 && rm < ln->len && ln->text[rm] == L' ') rm++;
+			}
+			if (rm > 0) {
+				wmemmove(ln->text, ln->text + rm, (size_t)(ln->len - rm + 1));
+				ln->len -= rm;
+				if (y == ed->cur_y) ed->cur_x = (ed->cur_x > rm) ? (ed->cur_x - rm) : 0;
+				if (ed->sel_active && y == ed->sel_start_y) ed->sel_start_x = (ed->sel_start_x > rm) ? (ed->sel_start_x - rm) : 0;
+				if (ed->sel_active && y == ed->sel_end_y) ed->sel_end_x = (ed->sel_end_x > rm) ? (ed->sel_end_x - rm) : 0;
+			}
+		}
+	}
+	ed->modified = 1;
+}
+
+static void ed_toggle_comment(EditorState *ed) {
+	if (!ed || ed->line_count <= 0) return;
+	const char *cmt_utf = (ed->syntax && ed->syntax->line_comment && ed->syntax->line_comment[0])
+	                      ? ed->syntax->line_comment : "//";
+	wchar_t wcmt[16] = {0};
+	int clen = (int)mbstowcs(wcmt, cmt_utf, 15);
+	if (clen <= 0) { wcscpy(wcmt, L"//"); clen = 2; }
+
+	int first_line = ed->cur_y, last_line = ed->cur_y;
+	if (ed->sel_active) {
+		int sy, sx, ey, ex;
+		ed_norm_sel(ed, &sy, &sx, &ey, &ex);
+		first_line = sy;
+		last_line = (ey > sy && ex == 0) ? (ey - 1) : ey;
+	}
+	if (first_line < 0) first_line = 0;
+	if (last_line >= ed->line_count) last_line = ed->line_count - 1;
+
+	int non_blank = 0, all_commented = 1, min_indent = -1;
+	for (int y = first_line; y <= last_line; y++) {
+		const EditorLine *ln = &ed->lines[y];
+		int ind = 0;
+		while (ind < ln->len && (ln->text[ind] == L' ' || ln->text[ind] == L'\t')) ind++;
+		if (ind >= ln->len) continue;
+		non_blank++;
+		if (min_indent < 0 || ind < min_indent) min_indent = ind;
+		if (ln->len - ind < clen || wcsncmp(ln->text + ind, wcmt, (size_t)clen) != 0) {
+			all_commented = 0;
+		}
+	}
+
+	ed_push_undo(ed);
+	if (non_blank > 0 && all_commented) {
+		for (int y = first_line; y <= last_line; y++) {
+			EditorLine *ln = &ed->lines[y];
+			int ind = 0;
+			while (ind < ln->len && (ln->text[ind] == L' ' || ln->text[ind] == L'\t')) ind++;
+			if (ind >= ln->len) continue;
+			if (ln->len - ind >= clen && wcsncmp(ln->text + ind, wcmt, (size_t)clen) == 0) {
+				int rm = clen;
+				if (ind + rm < ln->len && ln->text[ind + rm] == L' ') rm++;
+				wmemmove(ln->text + ind, ln->text + ind + rm, (size_t)(ln->len - (ind + rm) + 1));
+				ln->len -= rm;
+				if (y == ed->cur_y && ed->cur_x > ind) {
+					ed->cur_x = (ed->cur_x - rm >= ind) ? (ed->cur_x - rm) : ind;
+				}
+			}
+		}
+	} else {
+		if (min_indent < 0) min_indent = 0;
+		for (int y = first_line; y <= last_line; y++) {
+			EditorLine *ln = &ed->lines[y];
+			int ind = 0;
+			while (ind < ln->len && (ln->text[ind] == L' ' || ln->text[ind] == L'\t')) ind++;
+			if (ind >= ln->len && non_blank > 0) continue;
+			int ins_pos = (non_blank > 0) ? min_indent : ind;
+			if (ins_pos > ln->len) ins_pos = ln->len;
+			int add = clen + 1;
+			ed_line_ensure(ln, ln->len + add);
+			wmemmove(ln->text + ins_pos + add, ln->text + ins_pos, (size_t)(ln->len - ins_pos + 1));
+			wmemcpy(ln->text + ins_pos, wcmt, (size_t)clen);
+			ln->text[ins_pos + clen] = L' ';
+			ln->len += add;
+			if (y == ed->cur_y && ed->cur_x >= ins_pos) ed->cur_x += add;
+		}
+	}
+	ed->modified = 1;
+}
+
+static void ed_move_lines(EditorState *ed, int dir) {
+	if (!ed || ed->line_count <= 1) return;
+	int first_line = ed->cur_y, last_line = ed->cur_y;
+	if (ed->sel_active) {
+		int sy, sx, ey, ex;
+		ed_norm_sel(ed, &sy, &sx, &ey, &ex);
+		first_line = sy;
+		last_line = (ey > sy && ex == 0) ? (ey - 1) : ey;
+	}
+	if (dir < 0 && first_line <= 0) return;
+	if (dir > 0 && last_line >= ed->line_count - 1) return;
+
+	ed_push_undo(ed);
+	if (dir < 0) {
+		EditorLine tmp = ed->lines[first_line - 1];
+		memmove(&ed->lines[first_line - 1], &ed->lines[first_line],
+		        (size_t)(last_line - first_line + 1) * sizeof(EditorLine));
+		ed->lines[last_line] = tmp;
+		ed->cur_y--;
+		if (ed->sel_active) { ed->sel_start_y--; ed->sel_end_y--; }
+	} else {
+		EditorLine tmp = ed->lines[last_line + 1];
+		memmove(&ed->lines[first_line + 1], &ed->lines[first_line],
+		        (size_t)(last_line - first_line + 1) * sizeof(EditorLine));
+		ed->lines[first_line] = tmp;
+		ed->cur_y++;
+		if (ed->sel_active) { ed->sel_start_y++; ed->sel_end_y++; }
+	}
+	ed->modified = 1;
+}
+
+static void ed_duplicate_line_or_sel(EditorState *ed) {
+	if (!ed || ed->line_count <= 0) return;
+	ed_push_undo(ed);
+
+	if (!ed->sel_active) {
+		EditorLine *cur = &ed->lines[ed->cur_y];
+		int clen = cur->len;
+		wchar_t *copy = malloc((size_t)(clen + 1) * sizeof(wchar_t));
+		if (!copy) return;
+		if (clen > 0 && cur->text) wmemcpy(copy, cur->text, (size_t)clen);
+		copy[clen] = L'\0';
+		ed_insert_line(ed, ed->cur_y + 1, copy, clen);
+		free(copy);
+		ed->cur_y++;
+		if (ed->cur_x > ed->lines[ed->cur_y].len) ed->cur_x = ed->lines[ed->cur_y].len;
+		ed->modified = 1;
+		return;
+	}
+
+	int sy, sx, ey, ex;
+	ed_norm_sel(ed, &sy, &sx, &ey, &ex);
+	if (sy == ey && sx == ex) {
+		ed->sel_active = 0;
+		return;
+	}
+
+	if (sy == ey) {
+		EditorLine *ln = &ed->lines[sy];
+		if (sx < 0) sx = 0;
+		if (ex > ln->len) ex = ln->len;
+		int flen = ex - sx;
+		if (flen <= 0) return;
+		wchar_t *frag = malloc((size_t)flen * sizeof(wchar_t));
+		if (!frag) return;
+		wmemcpy(frag, ln->text + sx, (size_t)flen);
+		ed_line_ensure(ln, ln->len + flen);
+		wmemmove(ln->text + ex + flen, ln->text + ex, (size_t)(ln->len - ex + 1));
+		wmemcpy(ln->text + ex, frag, (size_t)flen);
+		ln->len += flen;
+		free(frag);
+		ed->sel_start_y = sy; ed->sel_start_x = ex;
+		ed->sel_end_y = sy;   ed->sel_end_x = ex + flen;
+		ed->cur_y = sy;       ed->cur_x = ex + flen;
+		ed->modified = 1;
+		return;
+	}
+
+	/* Многострочное выделение (sy < ey) */
+	int span = ey - sy;
+	EditorLine *first = &ed->lines[sy];
+	EditorLine *last = &ed->lines[ey];
+	if (sx > first->len) sx = first->len;
+	if (ex > last->len) ex = last->len;
+
+	int head_len = first->len - sx;
+	wchar_t *head_copy = malloc((size_t)(head_len + 1) * sizeof(wchar_t));
+	if (!head_copy) return;
+	if (head_len > 0 && first->text) wmemcpy(head_copy, first->text + sx, (size_t)head_len);
+	head_copy[head_len] = L'\0';
+
+	wchar_t **mid_copies = calloc((size_t)span, sizeof(wchar_t *));
+	int *mid_lens = calloc((size_t)span, sizeof(int));
+	if (!mid_copies || !mid_lens) { free(head_copy); free(mid_copies); free(mid_lens); return; }
+	for (int k = 1; k < span; k++) {
+		EditorLine *ml = &ed->lines[sy + k];
+		mid_lens[k] = ml->len;
+		mid_copies[k] = malloc((size_t)(ml->len + 1) * sizeof(wchar_t));
+		if (mid_copies[k]) {
+			if (ml->len > 0 && ml->text) wmemcpy(mid_copies[k], ml->text, (size_t)ml->len);
+			mid_copies[k][ml->len] = L'\0';
+		}
+	}
+
+	int tail_after_len = last->len - ex;
+	wchar_t *tail_after = malloc((size_t)(tail_after_len + 1) * sizeof(wchar_t));
+	if (!tail_after) {
+		free(head_copy);
+		for (int k = 1; k < span; k++) free(mid_copies[k]);
+		free(mid_copies); free(mid_lens);
+		return;
+	}
+	if (tail_after_len > 0 && last->text) wmemcpy(tail_after, last->text + ex, (size_t)tail_after_len);
+	tail_after[tail_after_len] = L'\0';
+
+	/* В точке (ey, ex) дописываем начало первой выделенной строки */
+	ed_line_ensure(&ed->lines[ey], ex + head_len);
+	if (head_len > 0) wmemcpy(ed->lines[ey].text + ex, head_copy, (size_t)head_len);
+	ed->lines[ey].len = ex + head_len;
+	ed->lines[ey].text[ed->lines[ey].len] = L'\0';
+	free(head_copy);
+
+	/* Вставляем промежуточные строки */
+	for (int k = 1; k < span; k++) {
+		ed_insert_line(ed, ey + k, mid_copies[k] ? mid_copies[k] : L"", mid_lens[k]);
+		free(mid_copies[k]);
+	}
+	free(mid_copies); free(mid_lens);
+
+	/* Вставляем конечную строку выделения + остаток оригинальной строки */
+	int new_ey = ey + span;
+	wchar_t *final_buf = malloc((size_t)(ex + tail_after_len + 1) * sizeof(wchar_t));
+	if (final_buf) {
+		if (ex > 0 && ed->lines[ey].text) wmemcpy(final_buf, ed->lines[ey].text, (size_t)ex);
+		if (tail_after_len > 0) wmemcpy(final_buf + ex, tail_after, (size_t)tail_after_len);
+		final_buf[ex + tail_after_len] = L'\0';
+		ed_insert_line(ed, new_ey, final_buf, ex + tail_after_len);
+		free(final_buf);
+	}
+	free(tail_after);
+
+	ed->sel_start_y = ey;     ed->sel_start_x = ex;
+	ed->sel_end_y = new_ey;   ed->sel_end_x = ex;
+	ed->cur_y = new_ey;       ed->cur_x = ex;
+	ed->modified = 1;
 }
 
 static void ed_delete_selection(EditorState *ed) {
@@ -975,6 +1259,40 @@ static void ed_copy_selection(const EditorState *ed) {
 	}
 	if (out && len > 0) clipboard_copy(out);
 	free(out);
+}
+
+static void ed_copy_current_line(const EditorState *ed) {
+	if (!ed || ed->cur_y < 0 || ed->cur_y >= ed->line_count) return;
+	const EditorLine *ln = &ed->lines[ed->cur_y];
+	size_t mbsz = (size_t)ln->len * 4 + 4;
+	char *mb = malloc(mbsz);
+	if (!mb) return;
+	size_t bl = 0;
+	if (ln->len > 0 && ln->text) {
+		size_t r = wcstombs(mb, ln->text, mbsz - 2);
+		if (r != (size_t)-1) bl = r;
+	}
+	mb[bl++] = '\n';
+	mb[bl] = '\0';
+	clipboard_copy(mb);
+	free(mb);
+}
+
+static void ed_cut_current_line(EditorState *ed) {
+	if (!ed || ed->cur_y < 0 || ed->cur_y >= ed->line_count) return;
+	ed_push_undo(ed);
+	ed_copy_current_line(ed);
+	if (ed->line_count > 1) {
+		ed_delete_line(ed, ed->cur_y);
+		if (ed->cur_y >= ed->line_count) ed->cur_y = ed->line_count - 1;
+		if (ed->cur_x > ed->lines[ed->cur_y].len) ed->cur_x = ed->lines[ed->cur_y].len;
+	} else {
+		EditorLine *ln = &ed->lines[0];
+		if (ln->text) ln->text[0] = L'\0';
+		ln->len = 0;
+		ed->cur_x = 0;
+	}
+	ed->modified = 1;
 }
 
 static void ed_paste_clipboard(EditorState *ed) {
@@ -1479,12 +1797,15 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		} else if (ev.action == ACT_F5) {
 			ed.show_whitespace = !ed.show_whitespace;
 		} else if (ev.action == ACT_CTRL_C) {
-			ed_copy_selection(&ed);
+			if (ed.sel_active) ed_copy_selection(&ed);
+			else ed_copy_current_line(&ed);
 		} else if (ev.action == ACT_F6 || ev.action == ACT_CTRL_X) {
 			if (ed.sel_active) {
 				ed_push_undo(&ed);
 				ed_copy_selection(&ed);
 				ed_delete_selection(&ed);
+			} else {
+				ed_cut_current_line(&ed);
 			}
 		} else if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
 			ed_push_undo(&ed);
@@ -1620,6 +1941,14 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		} else if (ev.action == ACT_SHIFT_END) {
 			ed.cur_x = ed.lines[ed.cur_y].len;
 			ed_update_sel(&ed, old_y, old_x);
+		} else if (ev.action == ACT_TOGGLE_COMMENT) {
+			ed_toggle_comment(&ed);
+		} else if (ev.action == ACT_MOVE_LINES_UP) {
+			ed_move_lines(&ed, -1);
+		} else if (ev.action == ACT_MOVE_LINES_DOWN) {
+			ed_move_lines(&ed, 1);
+		} else if (ev.action == ACT_CTRL_SHIFT_D) {
+			ed_duplicate_line_or_sel(&ed);
 		} else if (ev.action == ACT_ENTER) {
 			ed_push_undo(&ed);
 			if (ed.sel_active) ed_delete_selection(&ed);
@@ -1633,9 +1962,14 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			if (ed.sel_active) ed_delete_selection(&ed);
 			else ed_delete_char(&ed);
 		} else if (ev.action == ACT_TAB) {
-			ed_push_undo(&ed);
-			if (ed.sel_active) ed_delete_selection(&ed);
-			ed_insert_char(&ed, L'\t');
+			if (ed.sel_active) {
+				ed_indent_lines(&ed, 1);
+			} else {
+				ed_push_undo(&ed);
+				ed_insert_char(&ed, L'\t');
+			}
+		} else if (ev.action == ACT_SHIFT_TAB) {
+			ed_indent_lines(&ed, -1);
 		} else if (ev.action == ACT_CHAR && iswprint(ev.ch)) {
 			ed_push_undo(&ed);
 			if (ed.sel_active) ed_delete_selection(&ed);

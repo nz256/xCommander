@@ -977,7 +977,7 @@ void ui_help(void) {
 		"  Home / End / Ctrl+A Jump to start / end of command line",
 		"  Ctrl+Left / Right  Jump cursor by words in command line",
 		"  Shift+Arrows       Select characters in command line",
-		"  Alt+Shift+Arrows   Select whole words (also Ctrl+Shift+Arrows)",
+		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
 		"  Alt+F11 / Ctrl+L   Multiline Script History (Enter:Run F4:Edit F8:Delete)",
 		"  Alt+F8 / Ctrl+H    Command History (512 items; filter, Run/Insert/Jump)",
 		"  Alt+F9 / Ctrl+G    File History (512 items + cursor pos; Edit/View/Jump)",

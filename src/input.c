@@ -121,6 +121,10 @@ static KeyAction map_modified_code(int code, int mod) {
 	if ((code == 93 || code == 125 || code == 1098 || code == 1066) && has_shift && (has_ctrl || has_alt)) return ACT_SELECT_MATCHING_BLOCK;
 	if (code == 93 && (has_ctrl || has_alt)) return ACT_INSERT_RIGHT_PATH;
 
+	if (has_ctrl && has_shift && !has_alt) {
+		if (code == 'd' || code == 'D' || code == 1074 || code == 1042) return ACT_CTRL_SHIFT_D;
+	}
+	if (has_ctrl && !has_alt && (code == '/' || code == '?' || code == '.' || code == 31)) return ACT_TOGGLE_COMMENT;
 	if (has_ctrl && !has_alt && !has_shift) {
 		if (code == 'a' || code == 'A') return ACT_CTRL_A;
 		if (code == 'b' || code == 'B') return ACT_CTRL_B;
@@ -202,7 +206,7 @@ static KeyAction parse_csi(const char *seq) {
 		g_mod_alt   = (m & 2) ? 1 : 0;
 		g_mod_ctrl  = (m & 4) ? 1 : 0;
 
-		if (code == 9) return ACT_TAB;
+		if (code == 9) return g_mod_shift ? ACT_SHIFT_TAB : ACT_TAB;
 		if (code == 13 || code == 10) { if (g_mod_ctrl || g_mod_alt) return ACT_INSERT_NAME; if (g_mod_shift) return ACT_SHIFT_ENTER; return ACT_ENTER; }
 		if (code == 27) return ACT_ESC;
 		if (code >= 57371 && code <= 57382) {
@@ -250,8 +254,9 @@ static KeyAction parse_csi(const char *seq) {
 		else if (sscanf(seq, "%d;%d", &p1, &mod) != 2) sscanf(seq, "%d", &p1);
 	}
 
-	if (final == 'A') return (mod == 2) ? ACT_SHIFT_UP : ACT_UP;
-	if (final == 'B') return (mod == 2) ? ACT_SHIFT_DOWN : ACT_DOWN;
+	if (final == 'Z') return ACT_SHIFT_TAB;
+	if (final == 'A') { if (mod == 6) return ACT_MOVE_LINES_UP; return (mod == 2) ? ACT_SHIFT_UP : ACT_UP; }
+	if (final == 'B') { if (mod == 6) return ACT_MOVE_LINES_DOWN; return (mod == 2) ? ACT_SHIFT_DOWN : ACT_DOWN; }
 	if (final == 'C') {
 		if (mod == 2) return ACT_SHIFT_RIGHT;
 		if (mod == 5) return ACT_CTRL_RIGHT;
@@ -473,6 +478,7 @@ InputEvent input_read(void) {
 	if (b == 25) { ev.action = ACT_CTRL_Y; return ev; }
 	if (b == 26) { ev.action = ACT_CTRL_Z; return ev; }
 	if (b == 29) { ev.action = ACT_INSERT_RIGHT_PATH; return ev; }
+	if (b == 31) { ev.action = ACT_TOGGLE_COMMENT; return ev; }
 
 	if (b >= 32) {
 		char utf[8] = {0};
