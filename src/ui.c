@@ -17,6 +17,61 @@
 #include "input.h"
 #include "editor.h"
 
+int g_auto_colorize = 0;
+
+static void get_color_state_path(char *out, size_t out_sz) {
+	const char *state_home = getenv("XDG_STATE_HOME");
+	char base[MAX_PATH];
+	if (state_home && *state_home) {
+		snprintf(base, sizeof(base), "%s/xcommander", state_home);
+	} else {
+		const char *home = getenv("HOME");
+		if (!home || !*home) home = "/tmp";
+		char tmp[MAX_PATH];
+		snprintf(tmp, sizeof(tmp), "%s/.local", home); mkdir(tmp, 0755);
+		snprintf(tmp, sizeof(tmp), "%s/.local/state", home); mkdir(tmp, 0755);
+		snprintf(base, sizeof(base), "%s/.local/state/xcommander", home);
+	}
+	mkdir(base, 0755);
+	snprintf(out, out_sz, "%s/colors.state", base);
+}
+
+static void ui_load_color_state(void) {
+	char path[MAX_PATH + 32];
+	get_color_state_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	int val = 0;
+	if (fscanf(f, "auto_color=%d", &val) == 1) g_auto_colorize = val ? 1 : 0;
+	fclose(f);
+}
+
+void ui_toggle_auto_colorize(void) {
+	g_auto_colorize = !g_auto_colorize;
+	char path[MAX_PATH + 32];
+	get_color_state_path(path, sizeof(path));
+	FILE *f = fopen(path, "w");
+	if (f) {
+		fprintf(f, "auto_color=%d\n", g_auto_colorize);
+		fclose(f);
+	}
+}
+
+static int auto_ext_color_attr(const char *name, int on_cursor) {
+	if (!g_auto_colorize || !name || !*name) return 0;
+	const char *dot = strrchr(name, '.');
+	if (!dot || dot == name || *(dot + 1) == '\0') return 0;
+	unsigned int h = 2166136261u;
+	for (const char *p = dot + 1; *p; p++) {
+		unsigned char c = (unsigned char)tolower((unsigned char)*p);
+		h ^= c;
+		h *= 16777619u;
+	}
+	int idx = (int)(h % 32u);
+	return COLOR_PAIR((on_cursor ? 52 : 20) + idx);
+}
+
+
 static int build_cmd_prompt(char *out, int out_size, int max_cols) {
 	const char *path = (active_panel && *active_panel->current_path) ? active_panel->current_path : ".";
 	wchar_t wpath[MAX_PATH];
@@ -145,6 +200,31 @@ void ui_init(void) {
 		init_pair(17, 231, 160); /* Непарная скобка (белый на красном) */
 		init_pair(18, 213, 18);  /* Синтаксис: директивы и константы (ярко-пурпурный) */
 		init_pair(19, 118, 18);  /* Синтаксис: операторы и скобки (ярко-салатовый) */
+		static const short ext_fg[32] = {
+			196,  46,  51, 201,  88,  22,  23,  53,
+			208, 118,  45, 199, 130,  28,  24,  89,
+			214,  84,  39, 135,  94,  29, 232,  54,
+			202,  48,  75, 205, 124,  34,  30, 126
+		};
+		static const short neon_rgb[32][3] = {
+			{1000,  150,  150}, { 250, 1000,  250}, {   0, 1000, 1000}, {1000,  150, 1000},
+			{ 450,    0,    0}, {   0,  380,    0}, {   0,  360,  420}, { 420,    0,  450},
+			{1000,  450,    0}, { 600, 1000,  150}, {   0,  750, 1000}, {1000,  200,  750},
+			{ 520,  220,    0}, {   0,  550,  180}, {   0,  480,  620}, { 580,    0,  380},
+			{1000,  650,  100}, { 200, 1000,  600}, { 250,  600, 1000}, { 750,  300, 1000},
+			{ 360,  160,   40}, {   0,  420,  300}, {  40,   40,   40}, { 340,  120,  520},
+			{1000,  300,  100}, {   0,  850,  450}, { 450,  750, 1000}, {1000,  400,  850},
+			{ 680,   80,   80}, { 180,  720,  180}, {   0,  620,  680}, { 720,  120,  650}
+		};
+		for (int ci = 0; ci < 32; ci++) {
+			short cidx = ext_fg[ci];
+			if (can_change_color()) {
+				cidx = (short)(100 + ci);
+				init_color(cidx, neon_rgb[ci][0], neon_rgb[ci][1], neon_rgb[ci][2]);
+			}
+			init_pair(20 + ci, cidx, 18);
+			init_pair(52 + ci, cidx, 37);
+		}
 	} else {
 		init_pair(12, COLOR_BLUE, COLOR_WHITE);
 		init_pair(1, COLOR_CYAN, COLOR_BLUE);
@@ -165,9 +245,17 @@ void ui_init(void) {
 		init_pair(17, COLOR_WHITE, COLOR_RED);
 		init_pair(18, COLOR_MAGENTA, COLOR_BLUE);
 		init_pair(19, COLOR_GREEN, COLOR_BLUE);
+		static const short ext_fg8[16] = {
+			COLOR_MAGENTA, COLOR_YELLOW, COLOR_CYAN, COLOR_GREEN,
+			COLOR_WHITE, COLOR_CYAN, COLOR_YELLOW, COLOR_RED,
+			COLOR_YELLOW, COLOR_GREEN, COLOR_MAGENTA, COLOR_CYAN,
+			COLOR_WHITE, COLOR_GREEN, COLOR_RED, COLOR_CYAN
+		};
+		for (int ci = 0; ci < 32; ci++) { init_pair(20 + ci, ext_fg8[ci % 16], COLOR_BLUE); init_pair(52 + ci, ext_fg8[ci % 16], COLOR_CYAN); }
 		init_pair(12, COLOR_YELLOW, COLOR_WHITE);
 	}
 
+	ui_load_color_state();
 	bkgd(COLOR_PAIR(1));
 }
 
@@ -188,7 +276,7 @@ void draw_fkey_bar(int y, int width) {
 		labels[8] = "FileH";
 		labels[9] = "DirH";
 		labels[10] = "ScrH";
-		labels[11] = "";
+		labels[11] = "Color";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
 		labels[0] = "Pack";
 		labels[1] = "";
@@ -317,7 +405,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	else if (p->sort_mode == SORT_NONE) s_name = "None";
 
 	char sort_info[32];
-	snprintf(sort_info, sizeof(sort_info), "[%s%s]", s_name, p->sort_desc ? "↓" : "↑");
+	snprintf(sort_info, sizeof(sort_info), "[%s%s]%s", s_name, p->sort_desc ? "↓" : "↑", g_auto_colorize ? "[Clr]" : "");
 	int sort_cols = (int)mbstowcs(NULL, sort_info, 0);
 	if (sort_cols < 0) sort_cols = (int)strlen(sort_info);
 
@@ -371,12 +459,18 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 				if (is_marked) item_attr = cur_mark_attr;
 				else if (is_dir) item_attr = cur_dir_attr;
 				else if (is_exec) item_attr = cur_exec_attr;
-				else item_attr = cur_normal_attr;
+				else {
+					int auto_attr = (file_idx < p->count) ? auto_ext_color_attr(p->files[file_idx].name, 1) : 0;
+					item_attr = auto_attr ? auto_attr : cur_normal_attr;
+				}
 			} else {
 				if (is_marked) item_attr = mark_attr;
 				else if (is_dir) item_attr = dir_attr;
 				else if (is_exec) item_attr = exec_attr;
-				else item_attr = normal_attr;
+				else {
+					int auto_attr = (file_idx < p->count) ? auto_ext_color_attr(p->files[file_idx].name, 0) : 0;
+					item_attr = auto_attr ? auto_attr : normal_attr;
+				}
 			}
 
 			attrset(item_attr);
@@ -969,6 +1063,7 @@ void ui_help(void) {
 		"  F4                 Built-in TUI Editor (F1 inside editor for keys)",
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
+		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
 		"  F7 / F8            Create directory / Delete selected items",
 		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Insert)",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
@@ -985,6 +1080,7 @@ void ui_help(void) {
 		"  Shift+Arrows       Select characters in command line",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
 		"  Alt+F11 / Ctrl+L   Multiline Script History (Enter:Run F4:Edit F8:Delete)",
+		"  Alt+F12            Toggle 32-color auto file colorization by extension",
 		"  Alt+F8 / Ctrl+H    Command History (512 items; filter, Run/Insert/Jump)",
 		"  Alt+F9 / Ctrl+G    File History (512 items + cursor pos; Edit/View/Jump)",
 		"  Ctrl+E / Ctrl+X    Step through command history inline",

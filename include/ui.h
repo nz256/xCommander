@@ -28,3 +28,6 @@ void ui_user_menu(void);
 void ui_drive_menu(Panel *target_panel, int is_right);
 
 #endif
+
+extern int g_auto_colorize;
+void ui_toggle_auto_colorize(void);

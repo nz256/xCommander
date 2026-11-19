@@ -8,7 +8,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
 
 ## Features
 
-- **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6`), and drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount.
+- **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6` with left-aligned header indicator), drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount, and toggleable 32-color auto file colorization by extension (`Alt+F12`).
 - **File Search by Mask & Content (`Alt+F7`)**: Fast recursive search supporting multi-masks (`*.c;*.h`), case-sensitive/insensitive text search with line numbers, and instant actions (`Enter` Go to, `F3` View, `F4` Edit at matched line, `Ctrl+J` Insert path).
 - **Virtual Archive VFS**: Enter archives seamlessly (`Enter` or `Ctrl+PgDn` on `.zip`, `.jar`, `.apk`, `.whl`, `.epub`, `.docx`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.7z`, `.rar`), view (`F3`), edit with auto-update (`F4`), extract (`F5`), delete inside archives (`F8`), and pack files (`Shift+F1` / `Alt+F5`).
 - **Built-in Viewer & IDE-like TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with syntax highlighting, cursor position memory per file, line/block duplication (`Ctrl+Shift+D`), moving lines up/down (`Ctrl+Shift+Up/Down`), line/block commenting (`Ctrl+/`), smart auto-indent (`Enter`) & block indent (`Tab` / `Shift+Tab`), and full-line copy/cut without selection (`Ctrl+C` / `Ctrl+X`).
@@ -45,7 +45,7 @@ make
 | `Ctrl+R` | Force reload both panels |
 | `Ctrl+F3`..`Ctrl+F6` | Sort active panel by Name, Extension, Time, Size (repeat to reverse) |
 | `Alt+F1` / `Alt+F2` | Drive & bookmarks menu for Left / Right panel (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
-| `Insert` / `Ctrl+Shift+Arrows` | Select / deselect files, ranges, or whole words in editor |
+| `Insert` / `Shift+Arrows` | Select / deselect files, ranges, or whole words in editor |
 | `+` / `-` / `*` | Select by mask / Deselect by mask / Invert selection |
 | `Alt+<char>` | Quick search by filename prefix (auto EN/RU layout) |
 | `F1` | Open Help guide with live search filter |
@@ -56,6 +56,7 @@ make
 | `Ctrl+Shift+Up` / `Down` | Move current line or selected block up / down in editor |
 | `Tab` / `Shift+Tab` | Indent / unindent selected block (or current line) in editor |
 | `F5` / `F6` | Copy (or extract from archive) / Move or rename (supports relative paths) |
+| `Shift+F5` / `Shift+F6` | Copy / Rename single file in-place (prefills filename only; group unchanged) |
 | `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
 | `F7` / `F8` | Create directory / Delete selected items (works inside `.zip`/`.7z` archives) |
 | `Alt+F7` | Find files by mask & content (`Enter` Go to, `F3` View, `F4` Edit at line, `Ctrl+J` Insert) |
@@ -63,6 +64,7 @@ make
 | `Alt+F9` / `Ctrl+G` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
 | `Alt+F10` / `Ctrl+D` | Open Folder History (filter, Go / Other / Insert / Delete) |
 | `Alt+F11` / `Ctrl+L` | Open Multiline Script History (Run / Edit / Delete) |
+| `Alt+F12` | Toggle 32-color auto file colorization by extension (persistent) |
 | `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
 | `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
 | `Alt+Enter` / `Ctrl+J` | Insert filename under cursor into command line |

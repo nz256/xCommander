@@ -215,16 +215,22 @@ static void resolve_dest_path(const Panel *src_panel, char *dest, size_t dest_sz
 	}
 }
 
-int copy_items(const Panel *src_panel, const Panel *dst_panel) {
+static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inplace) {
 	if (!src_panel || !dst_panel || src_panel->count == 0) return 0;
 
 	int marked = panel_marked_count(src_panel);
-	if (marked == 0) {
-		const FileEntry *item = &src_panel->files[src_panel->selected];
+	if (marked == 0 || (inplace && marked == 1)) {
+		int sel_idx = src_panel->selected;
+		if (inplace && marked == 1) {
+			for (int i = 0; i < src_panel->count; i++) {
+				if (src_panel->files[i].is_selected && strcmp(src_panel->files[i].name, "..") != 0) { sel_idx = i; break; }
+			}
+		}
+		const FileEntry *item = &src_panel->files[sel_idx];
 		if (strcmp(item->name, "..") == 0) return 0;
 
 		char dest_input[MAX_PATH * 2];
-		if (strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
+		if (inplace || strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
 			snprintf(dest_input, sizeof(dest_input), "%s", item->name);
 		} else {
 			build_full_path(dest_input, sizeof(dest_input), dst_panel->current_path, item->name);
@@ -233,7 +239,7 @@ int copy_items(const Panel *src_panel, const Panel *dst_panel) {
 		char prompt[MAX_FILENAME + 64];
 		snprintf(prompt, sizeof(prompt), "Copy \"%s\" to:", item->name);
 
-		if (!ui_input("Copy (F5)", prompt, dest_input, sizeof(dest_input))) return 0;
+		if (!ui_input(inplace ? "Copy (Shift+F5)" : "Copy (F5)", prompt, dest_input, sizeof(dest_input))) return 0;
 		if (strlen(dest_input) == 0) return 0;
 
 		char src_full[MAX_PATH * 2];
@@ -303,16 +309,25 @@ int copy_items(const Panel *src_panel, const Panel *dst_panel) {
 	return 1;
 }
 
-int move_items(const Panel *src_panel, const Panel *dst_panel) {
+int copy_items(const Panel *src_panel, const Panel *dst_panel) { return copy_items_ex(src_panel, dst_panel, 0); }
+int copy_items_inplace(const Panel *src_panel, const Panel *dst_panel) { return copy_items_ex(src_panel, dst_panel, 1); }
+
+static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inplace) {
 	if (!src_panel || !dst_panel || src_panel->count == 0) return 0;
 
 	int marked = panel_marked_count(src_panel);
-	if (marked == 0) {
-		const FileEntry *item = &src_panel->files[src_panel->selected];
+	if (marked == 0 || (inplace && marked == 1)) {
+		int sel_idx = src_panel->selected;
+		if (inplace && marked == 1) {
+			for (int i = 0; i < src_panel->count; i++) {
+				if (src_panel->files[i].is_selected && strcmp(src_panel->files[i].name, "..") != 0) { sel_idx = i; break; }
+			}
+		}
+		const FileEntry *item = &src_panel->files[sel_idx];
 		if (strcmp(item->name, "..") == 0) return 0;
 
 		char dest_input[MAX_PATH * 2];
-		if (strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
+		if (inplace || strcmp(src_panel->current_path, dst_panel->current_path) == 0) {
 			snprintf(dest_input, sizeof(dest_input), "%s", item->name);
 		} else {
 			build_full_path(dest_input, sizeof(dest_input), dst_panel->current_path, item->name);
@@ -321,7 +336,7 @@ int move_items(const Panel *src_panel, const Panel *dst_panel) {
 		char prompt[MAX_FILENAME + 64];
 		snprintf(prompt, sizeof(prompt), "Move or rename \"%s\" to:", item->name);
 
-		if (!ui_input("Move / Rename (F6)", prompt, dest_input, sizeof(dest_input))) return 0;
+		if (!ui_input(inplace ? "Rename / Move (Shift+F6)" : "Move / Rename (F6)", prompt, dest_input, sizeof(dest_input))) return 0;
 		if (strlen(dest_input) == 0) return 0;
 
 		char src_full[MAX_PATH * 2];
@@ -745,3 +760,6 @@ int clipboard_paste_files(Panel *dst_panel) {
 	}
 	return ok_count > 0 ? 1 : 0;
 }
+
+int move_items(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 0); }
+int move_items_inplace(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 1); }

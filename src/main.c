@@ -491,9 +491,11 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 			if (idx == 1) return ACT_ALT_F2;
 			if (idx == 7) return ACT_ALT_F8;
 			if (idx == 8) return ACT_ALT_F11;
-			if (idx == 9) return ACT_ALT_F12;
+			if (idx == 11) return ACT_ALT_F12;
 		} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
 			if (idx == 3) return ACT_SHIFT_F4;
+			if (idx == 4) return ACT_SHIFT_F5;
+			if (idx == 5) return ACT_SHIFT_F6;
 		} else if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
 			if (idx == 2) return ACT_CTRL_F3;
 			if (idx == 3) return ACT_CTRL_F4;
@@ -1170,6 +1172,7 @@ int main(int argc, char **argv) {
 		if (terminal_mode) {
 			continue;
 		}
+		if (ev.action == ACT_ALT_F12) { ui_toggle_auto_colorize(); draw_screen(); refresh(); continue; }
 		if (ev.action == ACT_TAB) active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
 		else if (ev.action == ACT_CTRL_R) { reload_panels_keep_cursor(); }
 				else if (ev.action == ACT_CTRL_F3 || ev.action == ACT_CTRL_F4 || ev.action == ACT_CTRL_F5 || ev.action == ACT_CTRL_F6) {
@@ -1266,6 +1269,27 @@ int main(int argc, char **argv) {
 						file_history_save();
 					}
 				}
+			}
+		}
+		else if (ev.action == ACT_SHIFT_F5) {
+			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			char keep_name[MAX_FILENAME] = "";
+			if (active_panel->count > 0) snprintf(keep_name, sizeof(keep_name), "%s", active_panel->files[active_panel->selected].name);
+			if (copy_items_inplace(active_panel, oth) > 0) {
+				for (int i = 0; i < active_panel->count; i++) active_panel->files[i].is_selected = 0;
+				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", keep_name);
+				load_directory(&left_panel);
+				load_directory(&right_panel);
+			}
+		}
+		else if (ev.action == ACT_SHIFT_F6) {
+			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			int ps = active_panel->selected;
+			if (move_items_inplace(active_panel, oth) > 0) {
+				for (int i = 0; i < active_panel->count; i++) active_panel->files[i].is_selected = 0;
+				load_directory(&left_panel);
+				load_directory(&right_panel);
+				if (active_panel->count > 0) active_panel->selected = (ps < active_panel->count) ? ps : (active_panel->count - 1);
 			}
 		}
 		else if (ev.action == ACT_F5) {

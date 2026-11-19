@@ -209,6 +209,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (code == 9) return g_mod_shift ? ACT_SHIFT_TAB : ACT_TAB;
 		if (code == 13 || code == 10) { if (g_mod_ctrl || g_mod_alt) return ACT_INSERT_NAME; if (g_mod_shift) return ACT_SHIFT_ENTER; return ACT_ENTER; }
 		if (code == 27) return ACT_ESC;
+		if (code == 57375 && ((mod == 3) || g_mod_alt)) return ACT_ALT_F12;
 		if (code >= 57371 && code <= 57382) {
 			int f_idx = code - 57370;
 			if (f_idx == 1) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
@@ -216,8 +217,8 @@ static KeyAction parse_csi(const char *seq) {
 			if (f_idx == 8) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 			if (f_idx == 3) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 			if (f_idx == 4) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
-			if (f_idx == 5) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : ACT_F5);
-			if (f_idx == 6) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
+			if (f_idx == 5) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F5 : ACT_F5));
+			if (f_idx == 6) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F6 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F6 : ACT_F6);
 			if (f_idx == 7) return ACT_F7;
 			if (f_idx == 8) return ACT_F8;
 			if (f_idx == 9) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F9 : ACT_F9;
@@ -287,8 +288,8 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 12) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
 		if (p1 == 13) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 		if (p1 == 14) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
-		if (p1 == 15) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : ACT_F5);
-		if (p1 == 17) return (mod == 5) ? ACT_CTRL_F6 : ACT_F6;
+		if (p1 == 15) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F5 : ACT_F5));
+		if (p1 == 17) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F6 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F6 : ACT_F6);
 		if (p1 == 18) { if ((mod == 3) || g_mod_alt) return ACT_ALT_F7; if ((mod == 2) || g_mod_shift) return ACT_SHIFT_F7; if ((mod == 5) || g_mod_ctrl) return ACT_CTRL_F7; return ACT_F7; }
 		if (p1 == 19) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 		if (p1 == 20) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F9 : ACT_F9;
