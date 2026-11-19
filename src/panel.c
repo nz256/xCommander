@@ -87,11 +87,29 @@ void load_directory(Panel *p) {
 		p->archive_file[0] = '\0';
 		p->archive_dir[0] = '\0';
 	}
+	static Panel *tracked_p[4] = {0};
+	static char tracked_dir[4][MAX_PATH] = {{0}};
+	int slot = -1;
+	for (int k = 0; k < 4; k++) {
+		if (tracked_p[k] == p) { slot = k; break; }
+		if (slot < 0 && tracked_p[k] == NULL) slot = k;
+	}
+	int same_dir = 0;
+	if (slot >= 0 && tracked_p[slot] == p && strcmp(tracked_dir[slot], p->current_path) == 0) {
+		same_dir = 1;
+	}
+	if (slot >= 0) {
+		tracked_p[slot] = p;
+		snprintf(tracked_dir[slot], MAX_PATH, "%s", p->current_path);
+	}
+
 	char marked_names[MAX_FILES][MAX_FILENAME];
 	int marked_cnt = 0;
-	for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
-		if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
-			snprintf(marked_names[marked_cnt++], MAX_FILENAME, "%s", p->files[i].name);
+	if (same_dir) {
+		for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
+			if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
+				snprintf(marked_names[marked_cnt++], MAX_FILENAME, "%s", p->files[i].name);
+			}
 		}
 	}
 

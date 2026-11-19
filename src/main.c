@@ -803,6 +803,7 @@ int main(int argc, char **argv) {
 			}
 			continue;
 		}
+		if (ev.action != ACT_SHIFT_LEFT && ev.action != ACT_SHIFT_RIGHT && ev.action != ACT_NONE) { /* reset lr chain */ }
 		if (ev.action == ACT_MOD_CHANGE) {
 			if (!terminal_mode) { draw_screen(); refresh(); }
 			continue;
@@ -1350,17 +1351,21 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_SHIFT_LEFT && active_panel->count > 0) {
 			int h, w; getmaxyx(stdscr, h, w); (void)w;
 			int vis = h - 6; if (vis < 1) vis = 1;
-			int target = active_panel->selected - vis;
+			int cur = active_panel->selected;
+			int target = cur - vis;
 			if (target < 0) target = 0;
-			for (int i = active_panel->selected; i >= target; i--) panel_toggle_mark(active_panel, i);
+			int stop = (target == 0) ? 0 : (target + 1);
+			for (int i = cur; i >= stop; i--) panel_toggle_mark(active_panel, i);
 			active_panel->selected = target;
 		}
 		else if (ev.action == ACT_SHIFT_RIGHT && active_panel->count > 0) {
 			int h, w; getmaxyx(stdscr, h, w); (void)w;
 			int vis = h - 6; if (vis < 1) vis = 1;
-			int target = active_panel->selected + vis;
+			int cur = active_panel->selected;
+			int target = cur + vis;
 			if (target >= active_panel->count) target = active_panel->count - 1;
-			for (int i = active_panel->selected; i <= target; i++) panel_toggle_mark(active_panel, i);
+			int stop = (target == active_panel->count - 1) ? target : (target - 1);
+			for (int i = cur; i <= stop; i++) panel_toggle_mark(active_panel, i);
 			active_panel->selected = target;
 		}
 		else if (ev.action == ACT_UP && active_panel->selected > 0) active_panel->selected--;

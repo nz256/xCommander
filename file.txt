@@ -1,0 +1,67 @@
+include/input.h-10-	ACT_CTRL_PGUP, ACT_CTRL_PGDN,
+include/input.h-11-	ACT_SHIFT_UP, ACT_SHIFT_DOWN, ACT_SHIFT_LEFT, ACT_SHIFT_RIGHT,
+include/input.h-12-	ACT_CTRL_LEFT, ACT_CTRL_RIGHT,
+include/input.h-13-	ACT_WORD_SEL_LEFT, ACT_WORD_SEL_RIGHT, ACT_MOVE_LINES_UP, ACT_MOVE_LINES_DOWN,
+include/input.h-14-	ACT_INSERT, ACT_SHIFT_INSERT, ACT_DELETE, ACT_BACKSPACE, ACT_ALT_BACKSPACE, ACT_ALT_SHIFT_BACKSPACE,
+include/input.h:15:	ACT_TAB, ACT_SHIFT_TAB, ACT_ENTER, ACT_SHIFT_ENTER,
+include/input.h-16-	ACT_INSERT_NAME, ACT_INSERT_LEFT_PATH, ACT_INSERT_RIGHT_PATH, ACT_SELECT_MATCHING_BLOCK, ACT_TOGGLE_COMMENT,
+include/input.h-17-	ACT_ESC,
+include/input.h-18-	ACT_F1, ACT_ALT_F1, ACT_SHIFT_F1, ACT_F2, ACT_ALT_F2, ACT_ALT_F8, ACT_ALT_F9, ACT_ALT_F10, ACT_ALT_F11, ACT_ALT_F12, ACT_F3, ACT_CTRL_F3, ACT_F4, ACT_CTRL_F4, ACT_SHIFT_F4,
+include/input.h-19-	ACT_F5, ACT_CTRL_F5, ACT_ALT_F5, ACT_F6, ACT_CTRL_F6, ACT_F7, ACT_ALT_F7, ACT_SHIFT_F7, ACT_CTRL_F7, ACT_F8, ACT_SHIFT_F8, ACT_CTRL_F8, ACT_F9, ACT_F10, ACT_F11, ACT_F12,
+include/input.h-20-	ACT_CTRL_A, ACT_CTRL_B, ACT_CTRL_C, ACT_CTRL_D, ACT_CTRL_SHIFT_D, ACT_CTRL_E, ACT_CTRL_F, ACT_CTRL_G, ACT_CTRL_H, ACT_CTRL_L,
+--
+src/input.c-204-		int m = mod - 1;
+src/input.c-205-		g_mod_shift = (m & 1) ? 1 : 0;
+src/input.c-206-		g_mod_alt   = (m & 2) ? 1 : 0;
+src/input.c-207-		g_mod_ctrl  = (m & 4) ? 1 : 0;
+src/input.c-208-
+src/input.c:209:		if (code == 9) return g_mod_shift ? ACT_SHIFT_TAB : ACT_TAB;
+src/input.c-210-		if (code == 13 || code == 10) { if (g_mod_ctrl || g_mod_alt) return ACT_INSERT_NAME; if (g_mod_shift) return ACT_SHIFT_ENTER; return ACT_ENTER; }
+src/input.c-211-		if (code == 27) return ACT_ESC;
+src/input.c-212-		if (code >= 57371 && code <= 57382) {
+src/input.c-213-			int f_idx = code - 57370;
+src/input.c-214-			if (f_idx == 1) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
+--
+src/input.c-464-	if (b == 2)  { ev.action = ACT_CTRL_B; return ev; }
+src/input.c-465-	if (b == 3)  { ev.action = ACT_CTRL_C; return ev; }
+src/input.c-466-	if (b == 5)  { ev.action = ACT_CTRL_E; return ev; }
+src/input.c-467-	if (b == 6)  { ev.action = ACT_CTRL_F; return ev; }
+src/input.c-468-	if (b == 8 || b == 127) { ev.action = ACT_BACKSPACE; return ev; }
+src/input.c:469:	if (b == 9)  { ev.action = ACT_TAB; return ev; }
+src/input.c-470-	if (b == 10) { ev.action = ACT_INSERT_NAME; return ev; }
+src/input.c-471-	if (b == 13) { ev.action = ACT_ENTER; return ev; }
+src/input.c-472-	if (b == 15) { ev.action = ACT_CTRL_O; return ev; }
+src/input.c-473-	if (b == 17) { ev.action = ACT_CTRL_Q; return ev; }
+src/input.c-474-	if (b == 18) { ev.action = ACT_CTRL_R; return ev; }
+static void ed_insert_newline(EditorState *ed) {
+	if (ed->cur_y < 0 || ed->cur_y >= ed->line_count) return;
+	EditorLine *ln = &ed->lines[ed->cur_y];
+	if (ed->cur_x > ln->len) ed->cur_x = ln->len;
+
+	int indent = 0, extra_tab = 0, split_brace = 0;
+	if (ed->auto_indent) {
+		while (indent < ed->cur_x && (ln->text[indent] == L' ' || ln->text[indent] == L'\t')) indent++;
+		int prev = ed->cur_x - 1;
+		while (prev >= indent && (ln->text[prev] == L' ' || ln->text[prev] == L'\t')) prev--;
+		if (prev >= indent && (ln->text[prev] == L'{' || ln->text[prev] == L':')) {
+			extra_tab = 1;
+			int next = ed->cur_x;
+			while (next < ln->len && (ln->text[next] == L' ' || ln->text[next] == L'\t')) next++;
+			if (ln->text[prev] == L'{' && next < ln->len && ln->text[next] == L'}') {
+				split_brace = 1;
+			}
+		}
+	}
+
+	int tail_len = ln->len - ed->cur_x;
+	int new_ind = indent + extra_tab;
+	wchar_t *new_buf = malloc((size_t)(new_ind + (split_brace ? 0 : tail_len) + 16) * sizeof(wchar_t));
+	if (!new_buf) return;
+	if (indent > 0) wmemcpy(new_buf, ln->text, (size_t)indent);
+	if (extra_tab) new_buf[indent] = L'\t';
+	if (!split_brace && tail_len > 0) wmemcpy(new_buf + new_ind, ln->text + ed->cur_x, (size_t)tail_len);
+	new_buf[new_ind + (split_brace ? 0 : tail_len)] = L'\0';
+
+	wchar_t *brace_buf = NULL;
+	if (split_brace) {
+		brace_buf = malloc((size_t)(indent + tail_len + 16) * sizeof(wchar_t));

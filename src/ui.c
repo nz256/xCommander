@@ -309,8 +309,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	mvaddstr(start_y + height - 1, start_x, "└");
 	mvaddstr(start_y + height - 1, start_x + width - 1, "┘");
 
-	/* Заголовок пути в верхней рамке */
-	// Определяем суффикс сортировки
+	/* Заголовок в верхней рамке: тип сортировки максимально налево, путь сразу после него */
 	const char *s_name = "Name";
 	if (p->sort_mode == SORT_EXT) s_name = "Ext";
 	else if (p->sort_mode == SORT_SIZE) s_name = "Size";
@@ -318,22 +317,29 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	else if (p->sort_mode == SORT_NONE) s_name = "None";
 
 	char sort_info[32];
-	snprintf(sort_info, sizeof(sort_info), " [%s%s] ", s_name, p->sort_desc ? "↓" : "↑");
-
-	int max_path_len = width - 6 - (int)strlen(sort_info);
-	if (max_path_len < 1) max_path_len = 1;
-	char short_path[MAX_PATH];
-	snprintf(short_path, (size_t)max_path_len + 1, "%s%s", disp_path, sort_info);
-
-	int path_len = (int)mbstowcs(NULL, short_path, 0);
-	if (path_len < 0) path_len = (int)strlen(short_path);
-
-	int title_w = path_len + 2;
-	int title_x = start_x + (width - title_w) / 2;
-	if (title_x < start_x + 1) title_x = start_x + 1;
+	snprintf(sort_info, sizeof(sort_info), "[%s%s]", s_name, p->sort_desc ? "↓" : "↑");
+	int sort_cols = (int)mbstowcs(NULL, sort_info, 0);
+	if (sort_cols < 0) sort_cols = (int)strlen(sort_info);
 
 	attrset(is_active ? (A_NORMAL | COLOR_PAIR(2)) : (attr_t)normal_attr);
-	mvprintw(start_y, title_x, " %s ", short_path);
+	mvprintw(start_y, start_x + 1, "%s", sort_info);
+
+	int path_x = start_x + 1 + sort_cols;
+	int max_path_cols = (start_x + width - 1) - path_x - 2;
+	if (max_path_cols > 0) {
+		wchar_t wpath[MAX_PATH * 2] = {0};
+		size_t wlen = mbstowcs(wpath, disp_path, MAX_PATH * 2 - 1);
+		if (wlen == (size_t)-1) {
+			mvprintw(start_y, path_x, " %.*s ", max_path_cols, disp_path);
+		} else if ((int)wlen <= max_path_cols) {
+			mvprintw(start_y, path_x, " %ls ", wpath);
+		} else if (max_path_cols > 3) {
+			wchar_t *tail = wpath + ((int)wlen - (max_path_cols - 3));
+			mvprintw(start_y, path_x, " ...%ls ", tail);
+		} else {
+			mvprintw(start_y, path_x, " %.*ls ", max_path_cols, wpath);
+		}
+	}
 	attrset(normal_attr);
 
 	int visible_lines = height - 4;
