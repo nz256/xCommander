@@ -15,6 +15,7 @@
 #include "archive.h"
 #include "find.h"
 #include "ui.h"
+#include "widgets.h"
 #include "exec.h"
 #include "input.h"
 #include "viewer.h"
@@ -622,6 +623,48 @@ static void reload_panels_keep_cursor(void) {
 	}
 }
 
+static void run_command_to_editor(const char *cmd) {
+	if (!cmd || *cmd == '\0') return;
+	char tmp_out[128] = "/tmp/xc_cmd_out_XXXXXX";
+	int fd = mkstemp(tmp_out);
+	if (fd < 0) return;
+	close(fd);
+
+	int was_term = terminal_mode;
+	if (was_term) { reset_prog_mode(); input_set_mouse(1); refresh(); }
+	else {
+		int h, w; getmaxyx(stdscr, h, w);
+		attrset(g_ui_theme.win_bg);
+		mvprintw(h / 2, (w - 22) / 2, " Running command... ");
+		refresh();
+	}
+
+	char sh_cmd[CMD_MAX_LEN + 256];
+	snprintf(sh_cmd, sizeof(sh_cmd), "( %s ) > \"%s\" 2>&1", cmd, tmp_out);
+	int chd = 0;
+	char old_cwd[MAX_PATH] = "";
+	if (active_panel && active_panel->current_path[0] && getcwd(old_cwd, sizeof(old_cwd))) {
+		if (chdir(active_panel->current_path) == 0) chd = 1;
+	}
+	int rc = system(sh_cmd);
+	(void)rc;
+	if (chd && old_cwd[0]) { int r2 = chdir(old_cwd); (void)r2; }
+
+	int end_ln = 1, end_cl = 1;
+	ui_edit_file_ex(tmp_out, 1, 1, &end_ln, &end_cl);
+	unlink(tmp_out);
+
+	if (was_term) {
+		endwin();
+		input_enable_raw();
+		input_set_mouse(0);
+	} else {
+		reload_panels_keep_cursor();
+		draw_screen();
+		refresh();
+	}
+}
+
 static void run_multiline_script(const char *script, int was_term) {
 	if (!script || !*script) return;
 	ml_history_add(active_panel ? active_panel->current_path : ".", script);
@@ -1157,6 +1200,20 @@ int main(int argc, char **argv) {
 				history_apply();
 				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
 			}
+			continue;
+		}
+		int is_cmd_to_ed = (cmd_len > 0 && (ev.action == ACT_SHIFT_ENTER ||
+			(ev.action == ACT_ALT_CHAR && (ev.ch == L'o' || ev.ch == L'O' || ev.ch == L'щ' || ev.ch == L'Щ'))));
+		if (is_cmd_to_ed) {
+			char full_cmd[CMD_MAX_LEN];
+			cmdline_get_utf8(full_cmd, sizeof(full_cmd));
+			history_add(full_cmd);
+			history_idx = history_count;
+			history_save();
+			cmdline_clear();
+			cmd_suggest_reset();
+			run_command_to_editor(full_cmd);
+			if (terminal_mode) print_term_prompt_ex(cmd_wbuf, 1);
 			continue;
 		}
 		if (cmd_len > 0 && ev.action == ACT_ENTER) {

@@ -489,6 +489,7 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 	if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
 		labels[6] = "Replac";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+		labels[1] = "SaveAs";
 		labels[6] = "Next";
 	}
 	attrset(COLOR_PAIR(6));
@@ -1738,7 +1739,7 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 				int col_w = width / 10; if (col_w < 3) col_w = 3;
 				int idx = ev.mouse_x / col_w; if (idx > 9) idx = 9;
 				const KeyAction fk[10] = {
-					ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_F5,
+					ACT_F1, g_mod_shift ? ACT_SHIFT_F2 : ACT_F2, ACT_F3, ACT_F4, ACT_F5,
 					ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10
 				};
 				ev.action = fk[idx];
@@ -1776,6 +1777,27 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			ui_editor_help();
 		} else if (ev.action == ACT_F2) {
 			ed_save_file(&ed);
+		} else if (ev.action == ACT_SHIFT_F2) {
+			curs_set(0);
+			char new_path[MAX_PATH];
+			snprintf(new_path, sizeof(new_path), "%s", ed.filepath);
+			if (ui_input("Save As", "Enter new file name or path:", new_path, sizeof(new_path)) && new_path[0] != '\0') {
+				char resolved[MAX_PATH];
+				if (new_path[0] != '/' && active_panel && active_panel->current_path[0] != '\0') {
+					snprintf(resolved, sizeof(resolved), "%s/%s", active_panel->current_path, new_path);
+				} else {
+					snprintf(resolved, sizeof(resolved), "%s", new_path);
+				}
+				char old_path[MAX_PATH];
+				snprintf(old_path, sizeof(old_path), "%s", ed.filepath);
+				snprintf(ed.filepath, sizeof(ed.filepath), "%s", resolved);
+				if (ed_save_file(&ed)) {
+					ed.syntax = ed_detect_syntax(ed.filepath);
+					ed.syntax_enabled = (ed.syntax != NULL) ? 1 : 0;
+				} else {
+					snprintf(ed.filepath, sizeof(ed.filepath), "%s", old_path);
+				}
+			}
 		} else if (ev.action == ACT_F4) {
 			if (!ed.syntax) ed.syntax = &SYNTAX_LANGS[0];
 			ed.syntax_enabled = !ed.syntax_enabled;

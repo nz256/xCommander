@@ -213,7 +213,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (code >= 57371 && code <= 57382) {
 			int f_idx = code - 57370;
 			if (f_idx == 1) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
-			if (f_idx == 2) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
+			if (f_idx == 2) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F2 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F2 : ACT_F2);
 			if (f_idx == 8) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F8 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F8 : (((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F8 : ACT_F8));
 			if (f_idx == 3) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 			if (f_idx == 4) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
@@ -273,7 +273,7 @@ static KeyAction parse_csi(const char *seq) {
 	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
 	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
 	if (final == 'P') return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
-	if (final == 'Q') return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
+	if (final == 'Q') return ((mod == 3) || g_mod_alt) ? ACT_ALT_F2 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F2 : ACT_F2);
 	if (final == 'R') return ACT_F3;
 	if (final == 'S') return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 
@@ -285,7 +285,7 @@ static KeyAction parse_csi(const char *seq) {
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;
 		if (p1 == 6) return (mod == 5) ? ACT_CTRL_PGDN : ACT_PGDN;
 		if (p1 == 11) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
-		if (p1 == 12) return (mod == 3) ? ACT_ALT_F2 : ACT_F2;
+		if (p1 == 12) return ((mod == 3) || g_mod_alt) ? ACT_ALT_F2 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F2 : ACT_F2);
 		if (p1 == 13) return (mod == 5) ? ACT_CTRL_F3 : ACT_F3;
 		if (p1 == 14) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 		if (p1 == 15) return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F5 : (((mod == 3) || g_mod_alt) ? ACT_ALT_F5 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F5 : ACT_F5));
@@ -342,6 +342,10 @@ static int poll_stdin_or_inotify(void) {
 }
 
 InputEvent input_read(void) {
+	struct termios cur_t;
+	if (tcgetattr(STDIN_FILENO, &cur_t) == 0 && (cur_t.c_lflag & (ICANON | ECHO))) {
+		input_enable_raw();
+	}
 	InputEvent ev = {ACT_NONE, 0, -1, -1};
 	if (g_resized) { g_resized = 0; ev.action = ACT_RESIZE; return ev; }
 	int pr = poll_stdin_or_inotify();
@@ -365,13 +369,13 @@ InputEvent input_read(void) {
 		if (!read_byte(&b2)) { ev.action = ACT_ESC; return ev; }
 
 		if (b2 == 91) {
-			if (!wait_byte(5)) { ev.action = ACT_INSERT_LEFT_PATH; return ev; }
-			char seq[32] = {0};
+			if (!wait_byte(35)) { ev.action = ACT_INSERT_LEFT_PATH; return ev; }
+			char seq[64] = {0};
 			int idx = 0;
 			unsigned char c = 0;
 			if (read_byte(&c)) {
 				if (c == 91) {
-					if (wait_byte(10) && read_byte(&c)) {
+					if (wait_byte(35) && read_byte(&c)) {
 						if (c == 'A') ev.action = ACT_F1;
 						else if (c == 'B') ev.action = ACT_F2;
 						else if (c == 'C') ev.action = ACT_F3;
@@ -381,8 +385,8 @@ InputEvent input_read(void) {
 					return ev;
 				}
 				seq[idx++] = (char)c;
-				while (idx < 30 && !(c >= 0x40 && c <= 0x7E)) {
-					if (!wait_byte(10) || !read_byte(&c)) break;
+				while (idx < 62 && !(c >= 0x40 && c <= 0x7E)) {
+					if (!wait_byte(35) || !read_byte(&c)) break;
 					seq[idx++] = (char)c;
 				}
 				seq[idx] = '\0';
