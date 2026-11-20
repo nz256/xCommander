@@ -279,7 +279,9 @@ void ui_view_file(const char *filepath) {
 		if (vs.hex_mode) viewer_draw_hex(&vs, height, width);
 		else viewer_draw_text(&vs, height, width);
 		viewer_draw_bars(&vs, filepath, height, width);
-		refresh();
+		printf("\033[?2026h"); fflush(stdout);
+		wnoutrefresh(stdscr); doupdate();
+		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_WHEEL_UP) { vs.top_line -= 3; if (vs.top_line < 0) vs.top_line = 0; continue; }

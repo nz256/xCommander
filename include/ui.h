@@ -27,6 +27,17 @@ void ui_editor_help(void);
 void ui_user_menu(void);
 void ui_drive_menu(Panel *target_panel, int is_right);
 
+
+#define CMD_SUGGEST_MAX 6
+extern CmdHistoryEntry cmd_history[MAX_HISTORY];
+extern int history_count;
+extern int cmd_suggest_idx[CMD_SUGGEST_MAX];
+extern int cmd_suggest_count;
+extern int cmd_suggest_sel;
+extern int cmd_suggest_dismissed;
+extern int cmd_suggest_y, cmd_suggest_x, cmd_suggest_w, cmd_suggest_h;
+void cmd_suggest_reset(void);
+
 #endif
 
 extern int g_auto_colorize;

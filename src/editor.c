@@ -1715,7 +1715,9 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		ed_draw(&ed, &sy, &sx);
 		move(sy, sx);
 		curs_set(1);
-		refresh();
+		printf("\033[?2026h"); fflush(stdout);
+		wnoutrefresh(stdscr); doupdate();
+		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_NONE) continue;

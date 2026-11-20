@@ -517,6 +517,38 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 	int p_start_x = (mx < panel_w) ? 0 : panel_w;
 	int p_width = (mx < panel_w) ? panel_w : (width - panel_w);
 
+	if (cmd_suggest_count > 0 && cmd_suggest_w > 0 && cmd_suggest_h > 0) {
+		int in_box = (ev.mouse_y >= cmd_suggest_y && ev.mouse_y < cmd_suggest_y + cmd_suggest_h &&
+		              ev.mouse_x >= cmd_suggest_x && ev.mouse_x < cmd_suggest_x + cmd_suggest_w);
+		if (in_box) {
+			if (ev.action == ACT_MOUSE_WHEEL_UP) {
+				if (cmd_suggest_sel < 0) cmd_suggest_sel = (cmd_suggest_count > 1) ? (cmd_suggest_count - 2) : 0;
+				else cmd_suggest_sel = (cmd_suggest_sel > 0) ? (cmd_suggest_sel - 1) : (cmd_suggest_count - 1);
+				draw_screen(); refresh();
+				return ACT_NONE;
+			}
+			if (ev.action == ACT_MOUSE_WHEEL_DOWN) {
+				if (cmd_suggest_sel < 0) cmd_suggest_sel = 0;
+				else cmd_suggest_sel = (cmd_suggest_sel + 1) % cmd_suggest_count;
+				draw_screen(); refresh();
+				return ACT_NONE;
+			}
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int row = ev.mouse_y - (cmd_suggest_y + 1);
+				if (row >= 0 && row < cmd_suggest_count) {
+					cmdline_set_text(cmd_history[cmd_suggest_idx[row]].cmd);
+					cmd_suggest_reset();
+					draw_screen(); refresh();
+				}
+				return ACT_NONE;
+			}
+		} else if (ev.action == ACT_MOUSE_LEFT && ev.mouse_y < cmd_suggest_y + cmd_suggest_h) {
+			cmd_suggest_dismissed = 1;
+			cmd_suggest_count = 0;
+			cmd_suggest_sel = -1;
+		}
+	}
+
 	if (ev.action == ACT_MOUSE_WHEEL_UP || ev.action == ACT_MOUSE_WHEEL_DOWN) {
 		int step = 3;
 		if (ev.action == ACT_MOUSE_WHEEL_UP) {
@@ -1163,9 +1195,42 @@ int main(int argc, char **argv) {
 			refresh();
 			continue;
 		}
+		if (!terminal_mode && cmd_suggest_count > 0) {
+			if (ev.action == ACT_ESC) {
+				cmd_suggest_dismissed = 1;
+				cmd_suggest_count = 0;
+				cmd_suggest_sel = -1;
+				draw_screen(); refresh();
+				continue;
+			}
+			if (ev.action == ACT_UP) {
+				if (cmd_suggest_sel < 0) cmd_suggest_sel = (cmd_suggest_count > 1) ? (cmd_suggest_count - 2) : 0;
+				else cmd_suggest_sel = (cmd_suggest_sel > 0) ? (cmd_suggest_sel - 1) : (cmd_suggest_count - 1);
+				draw_screen(); refresh();
+				continue;
+			}
+			if (ev.action == ACT_DOWN) {
+				if (cmd_suggest_sel < 0) cmd_suggest_sel = 0;
+				else cmd_suggest_sel = (cmd_suggest_sel + 1) % cmd_suggest_count;
+				draw_screen(); refresh();
+				continue;
+			}
+			if (ev.action == ACT_RIGHT && cmd_pos == cmd_len) {
+				int pick = (cmd_suggest_sel >= 0 && cmd_suggest_sel < cmd_suggest_count) ? cmd_suggest_sel : (cmd_suggest_count - 1);
+				cmdline_set_text(cmd_history[cmd_suggest_idx[pick]].cmd);
+				cmd_suggest_reset();
+				draw_screen(); refresh();
+				continue;
+			}
+			if (ev.action == ACT_ENTER && cmd_suggest_sel >= 0 && cmd_suggest_sel < cmd_suggest_count) {
+				cmdline_set_text(cmd_history[cmd_suggest_idx[cmd_suggest_sel]].cmd);
+				cmd_suggest_reset();
+			}
+		}
 		int ed_res = cmdline_handle_edit_key(ev, terminal_mode);
 		if (ed_res > 0) {
-			if (ed_res == 2) history_idx = history_count;
+			if (ed_res == 2) { history_idx = history_count; cmd_suggest_dismissed = 0; cmd_suggest_sel = -1; }
+			if (cmd_len == 0) cmd_suggest_reset();
 			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
 			continue;
 		}

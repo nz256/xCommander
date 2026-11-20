@@ -201,6 +201,8 @@ void ui_init(void) {
 		init_pair(17, 231, 160); /* Непарная скобка (белый на красном) */
 		init_pair(18, 213, 18);  /* Синтаксис: директивы и константы (ярко-пурпурный) */
 		init_pair(19, 118, 18);  /* Синтаксис: операторы и скобки (ярко-салатовый) */
+		init_pair(84, 67, 18);   /* Скрытые файлы/папки (приглушённый голубой на тёмно-синем) */
+		init_pair(85, 18, 37);   /* Скрытые файлы/папки под курсором */
 		static const short ext_fg[32] = {
 			196,  46,  51, 201,  88,  22,  23,  53,
 			208, 118,  45, 199, 130,  28,  24,  89,
@@ -246,6 +248,8 @@ void ui_init(void) {
 		init_pair(17, COLOR_WHITE, COLOR_RED);
 		init_pair(18, COLOR_MAGENTA, COLOR_BLUE);
 		init_pair(19, COLOR_GREEN, COLOR_BLUE);
+		init_pair(84, COLOR_BLUE, COLOR_BLUE);
+		init_pair(85, COLOR_BLACK, COLOR_CYAN);
 		static const short ext_fg8[16] = {
 			COLOR_MAGENTA, COLOR_YELLOW, COLOR_CYAN, COLOR_GREEN,
 			COLOR_WHITE, COLOR_CYAN, COLOR_YELLOW, COLOR_RED,
@@ -369,6 +373,8 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	int cur_dir_attr = COLOR_PAIR(9);
 	int cur_exec_attr = COLOR_PAIR(10);
 	int cur_mark_attr = COLOR_PAIR(4);
+	int hidden_attr = (COLORS >= 256) ? COLOR_PAIR(84) : (COLOR_PAIR(84) | A_BOLD);
+	int cur_hidden_attr = (COLORS >= 256) ? COLOR_PAIR(85) : (COLOR_PAIR(85) | A_BOLD);
 
 	attrset(normal_attr);
 
@@ -455,10 +461,12 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 			int is_marked = (file_idx < p->count && p->files[file_idx].is_selected);
 			int is_dir = (file_idx < p->count && p->files[file_idx].is_dir);
 			int is_exec = (file_idx < p->count && p->files[file_idx].is_exec);
+			int is_hidden = (file_idx < p->count && p->files[file_idx].name[0] == '.' && strcmp(p->files[file_idx].name, "..") != 0);
 			int item_attr = normal_attr;
 
 			if (is_cursor) {
 				if (is_marked) item_attr = cur_mark_attr;
+				else if (is_hidden) item_attr = cur_hidden_attr;
 				else if (is_dir) item_attr = cur_dir_attr;
 				else if (is_exec) item_attr = cur_exec_attr;
 				else {
@@ -467,6 +475,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 				}
 			} else {
 				if (is_marked) item_attr = mark_attr;
+				else if (is_hidden) item_attr = hidden_attr;
 				else if (is_dir) item_attr = dir_attr;
 				else if (is_exec) item_attr = exec_attr;
 				else {
@@ -536,6 +545,96 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	attrset(A_NORMAL);
 }
 
+int cmd_suggest_idx[CMD_SUGGEST_MAX];
+int cmd_suggest_count = 0;
+int cmd_suggest_sel = -1;
+int cmd_suggest_dismissed = 0;
+int cmd_suggest_y = 0, cmd_suggest_x = 0, cmd_suggest_w = 0, cmd_suggest_h = 0;
+
+void cmd_suggest_reset(void) {
+	cmd_suggest_count = 0;
+	cmd_suggest_sel = -1;
+	cmd_suggest_dismissed = 0;
+	cmd_suggest_y = cmd_suggest_x = cmd_suggest_w = cmd_suggest_h = 0;
+}
+
+static void ui_draw_cmd_suggest(int height, int width, int prompt_cols) {
+	if (cmd_len <= 0 || cmd_suggest_dismissed || history_count <= 0 || height < 6 || width < 20) {
+		cmd_suggest_count = 0;
+		cmd_suggest_sel = -1;
+		return;
+	}
+	size_t blen = strlen(cmd_buffer);
+	if (blen == 0) { cmd_suggest_count = 0; return; }
+
+	int found[CMD_SUGGEST_MAX];
+	int fcnt = 0;
+	for (int i = history_count - 1; i >= 0 && fcnt < CMD_SUGGEST_MAX; i--) {
+		const char *c = cmd_history[i].cmd;
+		if (strncmp(c, cmd_buffer, blen) == 0 && strcmp(c, cmd_buffer) != 0) {
+			int dup = 0;
+			for (int k = 0; k < fcnt; k++) {
+				if (strcmp(cmd_history[found[k]].cmd, c) == 0) { dup = 1; break; }
+			}
+			if (!dup) found[fcnt++] = i;
+		}
+	}
+	if (fcnt == 0) {
+		cmd_suggest_count = 0;
+		cmd_suggest_sel = -1;
+		return;
+	}
+
+	/* Самый свежий вариант — в самом низу (ближе к командной строке) */
+	for (int i = 0; i < fcnt; i++) cmd_suggest_idx[i] = found[fcnt - 1 - i];
+	cmd_suggest_count = fcnt;
+	if (cmd_suggest_sel >= fcnt) cmd_suggest_sel = fcnt - 1;
+
+	int max_cols = 18;
+	for (int i = 0; i < fcnt; i++) {
+		int cols = (int)mbstowcs(NULL, cmd_history[cmd_suggest_idx[i]].cmd, 0);
+		if (cols < 0) cols = (int)strlen(cmd_history[cmd_suggest_idx[i]].cmd);
+		if (cols > max_cols) max_cols = cols;
+	}
+
+	int bw = max_cols + 4;
+	if (bw > width - 2) bw = width - 2;
+	if (bw < 16) bw = 16;
+	int bh = fcnt + 2;
+	int sx = prompt_cols;
+	if (sx + bw > width) sx = width - bw;
+	if (sx < 0) sx = 0;
+	int sy = height - 2 - bh;
+	if (sy < 1) sy = 1;
+
+	cmd_suggest_y = sy; cmd_suggest_x = sx; cmd_suggest_w = bw; cmd_suggest_h = bh;
+
+	attrset(g_ui_theme.win_bg);
+	mvaddstr(sy, sx, "┌");
+	for (int x = 1; x < bw - 1; x++) mvaddstr(sy, sx + x, "─");
+	mvaddstr(sy, sx + bw - 1, "┐");
+	const char *hdr = " History (Right: fill) ";
+	int hlen = (int)strlen(hdr);
+	if (bw > hlen + 3) mvprintw(sy, sx + 2, "%s", hdr);
+
+	for (int i = 0; i < fcnt; i++) {
+		int row_y = sy + 1 + i;
+		attrset(g_ui_theme.win_bg);
+		mvaddstr(row_y, sx, "│");
+		mvaddstr(row_y, sx + bw - 1, "│");
+		int is_hl = (cmd_suggest_sel >= 0) ? (i == cmd_suggest_sel) : (i == fcnt - 1);
+		attrset(is_hl ? g_ui_theme.btn_focus : g_ui_theme.win_bg);
+		mvhline(row_y, sx + 1, ' ', bw - 2);
+		mvwprint_utf8(stdscr, row_y, sx + 2, bw - 4, cmd_history[cmd_suggest_idx[i]].cmd);
+	}
+
+	attrset(g_ui_theme.win_bg);
+	mvaddstr(sy + bh - 1, sx, "└");
+	for (int x = 1; x < bw - 1; x++) mvaddstr(sy + bh - 1, sx + x, "─");
+	mvaddstr(sy + bh - 1, sx + bw - 1, "┘");
+	attrset(A_NORMAL);
+}
+
 void draw_screen(void) {
 	erase();
 	int height, width;
@@ -576,6 +675,8 @@ void draw_screen(void) {
 	attrset(A_NORMAL);
 
 	draw_fkey_bar(height - 1, width);
+
+	ui_draw_cmd_suggest(height, width, prompt_cols);
 
 	int cursor_x = prompt_cols + (cmd_pos - cmd_scroll);
 	if (cursor_x >= width) cursor_x = width - 1;
@@ -1009,7 +1110,7 @@ void ui_editor_help(void) {
 		"",
 		"=== 3. EDITING, SEARCH & FILE CONTROL ===",
 		"  Enter              Split line (with auto-indent if enabled)",
-		"  Tab                Insert tabulation character",
+		"  Tab / Shift+Tab    Insert tab or indent / unindent selected block",
 		"  Insert             Toggle Insert (INS) / Overwrite (OVR) mode",
 		"  Ctrl+Z / Ctrl+R    Undo / Redo changes (up to 64 steps)",
 		"  Ctrl+Y             Delete entire current line",
