@@ -203,11 +203,32 @@ int ui_tf_handle_event(UiTextField *tf, const InputEvent *ev) {
 void ui_btns_draw(const UiButtonRow *br, WINDOW *win) {
 	int x = br->start_x;
 	for (int i = 0; i < br->count; i++) {
-		int attr = (br->focus_idx == i) ? g_ui_theme.btn_focus : g_ui_theme.btn_normal;
-		wattron(win, attr);
-		mvwprintw(win, br->y, x, "%s", br->labels[i]);
-		wattroff(win, attr);
-		x += (int)strlen(br->labels[i]) + br->gap;
+		const char *lbl = br->labels[i];
+		int len = (int)strlen(lbl);
+		int focused = (br->focus_idx == i);
+		int attr = focused ? g_ui_theme.btn_focus : g_ui_theme.btn_normal;
+		int hk_idx = -1;
+		for (int k = 0; k < len; k++) {
+			if ((lbl[k] >= 'A' && lbl[k] <= 'Z') || (lbl[k] >= 'a' && lbl[k] <= 'z')) { hk_idx = k; break; }
+		}
+		for (int k = 0; k < len; k++) {
+			char ch = lbl[k];
+			if (focused && k == 0 && ch == '[') ch = '{';
+			else if (focused && k == len - 1 && ch == ']') ch = '}';
+			if (k == hk_idx) {
+				short fg, bg, ycol = (COLORS >= 16) ? 11 : COLOR_YELLOW;
+				int pid = focused ? 29 : 28;
+				pair_content(PAIR_NUMBER(attr), &fg, &bg);
+				init_pair((short)pid, ycol, bg);
+				wattrset(win, COLOR_PAIR(pid) | A_BOLD);
+				mvwaddch(win, br->y, x + k, (unsigned char)ch);
+			} else {
+				wattrset(win, attr);
+				mvwaddch(win, br->y, x + k, (unsigned char)ch);
+			}
+		}
+		wattrset(win, A_NORMAL);
+		x += len + br->gap;
 	}
 }
 

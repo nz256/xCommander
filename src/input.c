@@ -124,7 +124,8 @@ static KeyAction map_modified_code(int code, int mod) {
 	if (has_ctrl && has_shift && !has_alt) {
 		if (code == 'd' || code == 'D' || code == 1074 || code == 1042) return ACT_CTRL_SHIFT_D;
 	}
-	if (has_ctrl && !has_alt && (code == '/' || code == '?' || code == '.' || code == 31)) return ACT_TOGGLE_COMMENT;
+	if (has_ctrl && !has_alt && !has_shift && code == '.') return ACT_MACRO_REC;
+	if (has_ctrl && !has_alt && (code == '/' || code == '?' || code == 31)) return ACT_TOGGLE_COMMENT;
 	if (has_ctrl && !has_alt && !has_shift) {
 		if (code == 'a' || code == 'A') return ACT_CTRL_A;
 		if (code == 'b' || code == 'B') return ACT_CTRL_B;
@@ -153,6 +154,10 @@ static KeyAction map_modified_code(int code, int mod) {
 	if (has_alt && !has_ctrl && code >= 32) {
 		g_mod_ch = (wchar_t)code;
 		return ACT_ALT_CHAR;
+	}
+	if (has_ctrl && !has_alt && code >= 32 && code < 57344) {
+		g_mod_ch = (wchar_t)towlower((wint_t)code);
+		return ACT_CTRL_CHAR;
 	}
 	return ACT_NONE;
 }
@@ -407,7 +412,7 @@ InputEvent input_read(void) {
 					}
 					return ev;
 				}
-				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR || ev.action == ACT_CHAR) ev.ch = g_mod_ch;
+				ev.action = parse_csi(seq); if (ev.action == ACT_ALT_CHAR || ev.action == ACT_CTRL_CHAR || ev.action == ACT_CHAR) ev.ch = g_mod_ch;
 				return ev;
 			}
 		} else if (b2 == 127 || b2 == 8) { ev.action = ACT_ALT_BACKSPACE; return ev; }

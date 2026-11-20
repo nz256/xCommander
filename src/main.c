@@ -421,10 +421,14 @@ static void state_save(void) {
 	get_state_path(path, sizeof(path));
 	FILE *f = fopen(path, "w");
 	if (!f) return;
-	fprintf(f, "%s\n%s\n%d\n",
+	fprintf(f, "%s\n%s\n%d\n%d\n%d\n%s\n%s\n",
 		left_panel.current_path,
 		right_panel.current_path,
-		(active_panel == &right_panel) ? 1 : 0);
+		(active_panel == &right_panel) ? 1 : 0,
+		g_ed_last_case,
+		g_ed_last_regex,
+		g_ed_last_search,
+		g_ed_last_replace);
 	fclose(f);
 }
 
@@ -436,6 +440,17 @@ static int state_load(char *lpath, size_t lsize, char *rpath, size_t rsize, int 
 	char b1[MAX_PATH] = {0}, b2[MAX_PATH] = {0}, b3[32] = {0};
 	if (!fgets(b1, sizeof(b1), f) || !fgets(b2, sizeof(b2), f)) { fclose(f); return 0; }
 	if (fgets(b3, sizeof(b3), f)) *act_right = (atoi(b3) == 1) ? 1 : 0;
+	char b4[32] = {0}, b5[32] = {0}, b6[128] = {0}, b7[128] = {0};
+	if (fgets(b4, sizeof(b4), f)) g_ed_last_case = (atoi(b4) == 1) ? 1 : 0;
+	if (fgets(b5, sizeof(b5), f)) g_ed_last_regex = (atoi(b5) == 1) ? 1 : 0;
+	if (fgets(b6, sizeof(b6), f)) {
+		size_t l = strlen(b6); while (l > 0 && (b6[l - 1] == '\n' || b6[l - 1] == '\r')) b6[--l] = '\0';
+		snprintf(g_ed_last_search, sizeof(g_ed_last_search), "%s", b6);
+	}
+	if (fgets(b7, sizeof(b7), f)) {
+		size_t l = strlen(b7); while (l > 0 && (b7[l - 1] == '\n' || b7[l - 1] == '\r')) b7[--l] = '\0';
+		snprintf(g_ed_last_replace, sizeof(g_ed_last_replace), "%s", b7);
+	}
 	fclose(f);
 	size_t l1 = strlen(b1); while (l1 > 0 && (b1[l1 - 1] == '\n' || b1[l1 - 1] == '\r')) b1[--l1] = '\0';
 	size_t l2 = strlen(b2); while (l2 > 0 && (b2[l2 - 1] == '\n' || b2[l2 - 1] == '\r')) b2[--l2] = '\0';

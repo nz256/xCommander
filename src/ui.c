@@ -1038,7 +1038,7 @@ void ui_help(void) {
 		"  F1                 Open this Help guide (type to live-filter)",
 		"  F2                 Open User Menu (submenus { } & hotkeys)",
 		"  F3                 Built-in Text / Hex viewer (F2:Wrap F4:Hex F7:Find)",
-		"  F4                 Built-in TUI Editor (F1 inside editor for keys)",
+		"  F4                 Built-in TUI Editor (F1 inside editor; Ctrl+. macros)",
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
@@ -1120,6 +1120,7 @@ void ui_editor_help(void) {
 		"  F7                 Find text (Case sensitive & RegExp options)",
 		"  Shift+F7           Find next match",
 		"  Ctrl+F7            Interactive Replace (Case sensitive, RegExp, \\t, \\1..\\9)",
+		"  Ctrl+.             Record / Stop keyboard macro (assign any hotkey)",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
 		"  F1                 Open this Editor Help",
 		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"
@@ -2150,9 +2151,23 @@ int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid
 
 	int sel = 0, res = 0;
 	while (1) {
+		char s_disp[256], r_disp[256];
+		const char *srcs[2] = { search_str, replace_str };
+		char *dsts[2] = { s_disp, r_disp };
+		for (int k = 0; k < 2; k++) {
+			size_t j = 0;
+			for (size_t i = 0; srcs[k][i] && j + 3 < 255; i++) {
+				unsigned char c = (unsigned char)srcs[k][i];
+				if (c == '\n') { dsts[k][j++] = '\\'; dsts[k][j++] = 'n'; }
+				else if (c == '\t') { dsts[k][j++] = '\\'; dsts[k][j++] = 't'; }
+				else if (c == '\r') { dsts[k][j++] = '\\'; dsts[k][j++] = 'r'; }
+				else dsts[k][j++] = (char)c;
+			}
+			dsts[k][j] = '\0';
+		}
 		werase(win); draw_win_box(win); mvwprintw(win, 0, (bw - 9) / 2, " Replace ");
-		mvwprintw(win, 1, (bw - 7) / 2, "Replace"); mvwprint_utf8(win, 2, 4, bw - 8, search_str);
-		mvwprintw(win, 3, (bw - 4) / 2, "with"); mvwprint_utf8(win, 4, 4, bw - 8, replace_str);
+		mvwprintw(win, 1, (bw - 7) / 2, "Replace"); mvwprint_utf8(win, 2, 4, bw - 8, s_disp);
+		mvwprintw(win, 3, (bw - 4) / 2, "with"); mvwprint_utf8(win, 4, 4, bw - 8, r_disp);
 
 		btns.focus_idx = sel;
 		ui_btns_draw(&btns, win);
@@ -2170,12 +2185,12 @@ int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid
 		if (ev.action == ACT_LEFT || ev.action == ACT_SHIFT_TAB) sel = (sel + 3) % 4;
 		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 4;
 		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 3) ? 0 : (sel + 1); break; }
-		else if (ev.action == ACT_CHAR) {
+		else if (ev.action == ACT_CHAR || ev.action == ACT_ALT_CHAR) {
 			wchar_t ch = towlower(ev.ch);
-			if (ch == L'r' || ch == L'y') { res = 1; break; }
-			if (ch == L'a') { res = 2; break; }
-			if (ch == L's' || ch == L'n') { res = 3; break; }
-			if (ch == L'c') break;
+			if (ch == L'r' || ch == L'y' || ch == L'к' || ch == L'н') { res = 1; break; }
+			if (ch == L'a' || ch == L'ф') { res = 2; break; }
+			if (ch == L's' || ch == L'n' || ch == L'ы' || ch == L'т') { res = 3; break; }
+			if (ch == L'c' || ch == L'с') break;
 		}
 	}
 	delwin(win); touchwin(stdscr); return res;

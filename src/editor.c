@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
-#include <regex.h>
 #include <ncurses.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <wchar.h>
@@ -455,6 +455,140 @@ static int ed_is_selected(const EditorState *ed, int y, int x) {
 	return 1;
 }
 
+#define ED_MACRO_MAX 32
+#define ED_MACRO_LEN 512
+typedef struct {
+	int used;
+	KeyAction key_action;
+	wchar_t key_ch;
+	InputEvent events[ED_MACRO_LEN];
+	int count;
+} EdMacro;
+
+static EdMacro g_ed_macros[ED_MACRO_MAX];
+static int g_ed_macro_rec = 0;
+static InputEvent g_ed_rec_buf[ED_MACRO_LEN];
+static int g_ed_rec_len = 0;
+
+static int g_ed_macros_loaded = 0;
+
+static void ed_macros_get_path(char *out, size_t sz) {
+	const char *home = getenv("HOME");
+	if (!home || !home[0]) home = "/tmp";
+	char dir[MAX_PATH];
+	snprintf(dir, sizeof(dir), "%s/.config", home);
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), "%s/.config/xcommander", home);
+	mkdir(dir, 0755);
+	snprintf(out, sz, "%s/.config/xcommander/editor_macros.conf", home);
+}
+
+static void ed_macros_save(void) {
+	char path[MAX_PATH];
+	ed_macros_get_path(path, sizeof(path));
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	for (int i = 0; i < ED_MACRO_MAX; i++) {
+		if (!g_ed_macros[i].used || g_ed_macros[i].count <= 0) continue;
+		fprintf(f, "MACRO %d %u %d\n", (int)g_ed_macros[i].key_action,
+			(unsigned int)g_ed_macros[i].key_ch, g_ed_macros[i].count);
+		for (int j = 0; j < g_ed_macros[i].count; j++) {
+			fprintf(f, "EV %d %u\n", (int)g_ed_macros[i].events[j].action,
+				(unsigned int)g_ed_macros[i].events[j].ch);
+		}
+	}
+	fclose(f);
+}
+
+static void ed_macros_load(void) {
+	if (g_ed_macros_loaded) return;
+	g_ed_macros_loaded = 1;
+	char path[MAX_PATH];
+	ed_macros_get_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (!f) return;
+	char line[128];
+	int cur = -1, exp = 0, got = 0;
+	while (fgets(line, sizeof(line), f)) {
+		int act = 0, cnt = 0;
+		unsigned int ch = 0;
+		if (sscanf(line, "MACRO %d %u %d", &act, &ch, &cnt) == 3) {
+			if (cur >= 0 && got == 0) g_ed_macros[cur].used = 0;
+			cur = -1;
+			for (int i = 0; i < ED_MACRO_MAX; i++) {
+				if (!g_ed_macros[i].used) { cur = i; break; }
+			}
+			if (cur >= 0 && cnt > 0 && cnt <= ED_MACRO_LEN) {
+				memset(&g_ed_macros[cur], 0, sizeof(EdMacro));
+				g_ed_macros[cur].used = 1;
+				g_ed_macros[cur].key_action = (KeyAction)act;
+				g_ed_macros[cur].key_ch = (wchar_t)ch;
+				exp = cnt;
+				got = 0;
+			} else {
+				cur = -1;
+			}
+		} else if (cur >= 0 && got < exp && sscanf(line, "EV %d %u", &act, &ch) == 2) {
+			g_ed_macros[cur].events[got].action = (KeyAction)act;
+			g_ed_macros[cur].events[got].ch = (wchar_t)ch;
+			got++;
+			g_ed_macros[cur].count = got;
+		}
+	}
+	fclose(f);
+}
+
+static int ed_macro_is_recordable(KeyAction a) {
+	if (a == ACT_NONE || a == ACT_MOD_CHANGE || a == ACT_RESIZE || a == ACT_MACRO_REC) return 0;
+	if (a == ACT_MOUSE_LEFT || a == ACT_MOUSE_DBL || a == ACT_MOUSE_RIGHT ||
+	    a == ACT_MOUSE_WHEEL_UP || a == ACT_MOUSE_WHEEL_DOWN) return 0;
+	return 1;
+}
+
+static KeyAction ed_macro_prompt_key(void) {
+	int h = 5, w = 52;
+	int y = (LINES - h) / 2, x = (COLS - w) / 2;
+	if (y < 0) y = 0;
+	if (x < 0) x = 0;
+	WINDOW *win = newwin(h, w, y, x);
+	wbkgd(win, COLOR_PAIR(4));
+	box(win, 0, 0);
+	mvwprintw(win, 1, 2, "Save Macro (%d steps)", g_ed_rec_len);
+	mvwprintw(win, 2, 2, "Press hotkey to assign (Esc = cancel)...");
+	wrefresh(win);
+	curs_set(0);
+	InputEvent kev;
+	while (1) {
+		kev = input_read();
+		if (kev.action == ACT_NONE || kev.action == ACT_MOD_CHANGE || kev.action == ACT_RESIZE) continue;
+		if (kev.action == ACT_MOUSE_LEFT || kev.action == ACT_MOUSE_DBL || kev.action == ACT_MOUSE_RIGHT ||
+		    kev.action == ACT_MOUSE_WHEEL_UP || kev.action == ACT_MOUSE_WHEEL_DOWN) continue;
+		break;
+	}
+	delwin(win);
+	touchwin(stdscr);
+	if (kev.action == ACT_ESC || kev.action == ACT_MACRO_REC) return ACT_NONE;
+	int slot = -1;
+	for (int i = 0; i < ED_MACRO_MAX; i++) {
+		if (g_ed_macros[i].used && g_ed_macros[i].key_action == kev.action && g_ed_macros[i].key_ch == kev.ch) {
+			slot = i; break;
+		}
+	}
+	if (slot < 0) {
+		for (int i = 0; i < ED_MACRO_MAX; i++) {
+			if (!g_ed_macros[i].used) { slot = i; break; }
+		}
+	}
+	if (slot < 0) slot = 0;
+	g_ed_macros[slot].used = 1;
+	g_ed_macros[slot].key_action = kev.action;
+	g_ed_macros[slot].key_ch = kev.ch;
+	g_ed_macros[slot].count = g_ed_rec_len;
+	memcpy(g_ed_macros[slot].events, g_ed_rec_buf, sizeof(InputEvent) * (size_t)g_ed_rec_len);
+	ed_macros_save();
+	return kev.action;
+}
+
 static void ed_draw_bars(const EditorState *ed, int height, int width) {
 	attrset(COLOR_PAIR(2));
 	mvhline(0, 0, ' ', width);
@@ -474,9 +608,15 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 		(unsigned int)cur_ch, ed->overwrite_mode ? "OVR" : "INS");
 
 	int rlen = (int)strlen(right_info);
-	int name_space = width - rlen - 4;
+	int rec_w = g_ed_macro_rec ? 6 : 0;
+	int name_space = width - rlen - rec_w - 4;
 	if (name_space > 0) {
 		mvprintw(0, 1, "%s%.*s", ed->modified ? "*" : "", name_space, base);
+	}
+	if (g_ed_macro_rec && width > rlen + rec_w) {
+		attrset(COLOR_PAIR(17) | A_BOLD);
+		mvprintw(0, width - rlen - rec_w, " REC ");
+		attrset(COLOR_PAIR(2));
 	}
 	if (width > rlen) {
 		mvprintw(0, width - rlen, "%s", right_info);
@@ -1322,137 +1462,167 @@ static void ed_paste_clipboard(EditorState *ed) {
 	free(wbuf);
 }
 
-static void ed_unescape_tabs(const char *src, char *dst, size_t dst_sz) {
-	size_t j = 0;
-	for (size_t i = 0; src[i] != '\0' && j + 1 < dst_sz; i++) {
-		if (src[i] == '\\' && src[i + 1] == 't') {
-			dst[j++] = '\t';
-			i++;
-		} else {
-			dst[j++] = src[i];
+typedef enum { PAT_LIT, PAT_ANY, PAT_DIGIT, PAT_NDIGIT, PAT_WORD, PAT_NWORD, PAT_SPACE, PAT_NSPACE, PAT_BOL, PAT_EOL, PAT_GO, PAT_GC } PatOp;
+typedef struct { PatOp op; wchar_t ch; int min_r, max_r, lazy, gid; } PatNode;
+typedef struct { PatNode n[256]; int cnt, gcnt, cs; } XcPat;
+typedef struct { int s, e; } XcCap;
+
+static int xc_pat_compile(XcPat *p, const wchar_t *w, int cs, char *err, size_t esz) {
+	memset(p, 0, sizeof(*p)); p->cs = cs;
+	int gs[16], sp = 0;
+	for (size_t i = 0; w[i]; i++) {
+		if (p->cnt >= 250) { snprintf(err, esz, "Too long"); return 0; }
+		wchar_t c = w[i]; PatNode nd = { PAT_LIT, c, 1, 1, 0, 0 };
+		if (c == L'\\') {
+			wchar_t x = w[++i];
+			if (!x) { snprintf(err, esz, "Trailing \\"); return 0; }
+			if (x==L'n') nd.ch=L'\n'; else if (x==L't') nd.ch=L'\t'; else if (x==L'r') nd.ch=L'\r';
+			else if (x==L'd') nd.op=PAT_DIGIT; else if (x==L'D') nd.op=PAT_NDIGIT;
+			else if (x==L'w') nd.op=PAT_WORD; else if (x==L'W') nd.op=PAT_NWORD;
+			else if (x==L's') nd.op=PAT_SPACE; else if (x==L'S') nd.op=PAT_NSPACE;
+			else nd.ch = x;
+		} else if (c==L'.') nd.op=PAT_ANY;
+		else if (c==L'^') nd.op=PAT_BOL;
+		else if (c==L'$') nd.op=PAT_EOL;
+		else if (c==L'(') { if (p->gcnt>=9||sp>=16) { snprintf(err, esz, "Max 9 groups"); return 0; } nd.op=PAT_GO; nd.gid=++p->gcnt; gs[sp++]=nd.gid; p->n[p->cnt++]=nd; continue; }
+		else if (c==L')') { if (sp<=0) { snprintf(err, esz, "Unmatched )"); return 0; } nd.op=PAT_GC; nd.gid=gs[--sp]; p->n[p->cnt++]=nd; continue; }
+		else if (c==L'*'||c==L'+'||c==L'?') { snprintf(err, esz, "Bad quantifier"); return 0; }
+		wchar_t q = w[i+1];
+		if (q==L'*'||q==L'+'||q==L'?') {
+			i++; nd.min_r = (q==L'+')?1:0; nd.max_r = (q==L'?')?1:-1;
+			if (w[i+1]==L'?') { nd.lazy=1; i++; }
+		}
+		p->n[p->cnt++] = nd;
+	}
+	if (sp) { snprintf(err, esz, "Unclosed ("); return 0; }
+	return 1;
+}
+
+static int xc_mch(const XcPat *p, const PatNode *nd, wchar_t c) {
+	switch (nd->op) {
+		case PAT_LIT: return p->cs ? (c==nd->ch) : (towlower((wint_t)c)==towlower((wint_t)nd->ch));
+		case PAT_ANY: return c != L'\n';
+		case PAT_DIGIT: return c>=L'0' && c<=L'9';
+		case PAT_NDIGIT: return c!=L'\n' && !(c>=L'0' && c<=L'9');
+		case PAT_WORD: return iswalnum((wint_t)c) || c==L'_';
+		case PAT_NWORD: return c!=L'\n' && !(iswalnum((wint_t)c) || c==L'_');
+		case PAT_SPACE: return c==L' ' || c==L'\t';
+		case PAT_NSPACE: return c!=L'\n' && c!=L' ' && c!=L'\t';
+		default: return 0;
+	}
+}
+
+static int xc_match(const XcPat *p, int ni, const wchar_t *b, int len, int pos, XcCap *cap, int *endp) {
+	if (ni >= p->cnt) { *endp = pos; return 1; }
+	const PatNode *nd = &p->n[ni];
+	if (nd->op == PAT_BOL) return (pos==0 || b[pos-1]==L'\n') ? xc_match(p,ni+1,b,len,pos,cap,endp) : 0;
+	if (nd->op == PAT_EOL) return (pos==len || b[pos]==L'\n') ? xc_match(p,ni+1,b,len,pos,cap,endp) : 0;
+	if (nd->op == PAT_GO) { int o=cap[nd->gid].s; cap[nd->gid].s=pos; if (xc_match(p,ni+1,b,len,pos,cap,endp)) return 1; cap[nd->gid].s=o; return 0; }
+	if (nd->op == PAT_GC) { int o=cap[nd->gid].e; cap[nd->gid].e=pos; if (xc_match(p,ni+1,b,len,pos,cap,endp)) return 1; cap[nd->gid].e=o; return 0; }
+	int mx = 0;
+	while (pos+mx < len && (nd->max_r < 0 || mx < nd->max_r) && xc_mch(p, nd, b[pos+mx])) mx++;
+	if (mx < nd->min_r) return 0;
+	if (nd->lazy) { for (int k=nd->min_r; k<=mx; k++) if (xc_match(p,ni+1,b,len,pos+k,cap,endp)) return 1; }
+	else { for (int k=mx; k>=nd->min_r; k--) if (xc_match(p,ni+1,b,len,pos+k,cap,endp)) return 1; }
+	return 0;
+}
+
+static wchar_t *ed_flat(const EditorState *ed, int *olen, int **ost) {
+	int tot = 0, *st = malloc((size_t)(ed->line_count + 1) * sizeof(int));
+	if (!st) return NULL;
+	for (int y = 0; y < ed->line_count; y++) { st[y] = tot; tot += ed->lines[y].len + (y + 1 < ed->line_count ? 1 : 0); }
+	st[ed->line_count] = tot;
+	wchar_t *b = malloc((size_t)(tot + 1) * sizeof(wchar_t));
+	if (!b) { free(st); return NULL; }
+	int k = 0;
+	for (int y = 0; y < ed->line_count; y++) {
+		if (ed->lines[y].len > 0) { wmemcpy(b + k, ed->lines[y].text, (size_t)ed->lines[y].len); k += ed->lines[y].len; }
+		if (y + 1 < ed->line_count) b[k++] = L'\n';
+	}
+	b[k] = L'\0'; *olen = tot; *ost = st; return b;
+}
+
+static void ed_yx(const int *st, int lc, int pos, int *oy, int *ox) {
+	int lo = 0, hi = lc - 1, a = 0;
+	while (lo <= hi) { int m = (lo + hi) / 2; if (st[m] <= pos) { a = m; lo = m + 1; } else hi = m - 1; }
+	*oy = a; *ox = pos - st[a];
+}
+
+static void ed_unflat(EditorState *ed, const wchar_t *b, int len) {
+	for (int i = 0; i < ed->line_count; i++) free(ed->lines[i].text);
+	free(ed->lines); ed->lines = NULL; ed->line_count = 0; ed->line_cap = 0;
+	int st = 0;
+	for (int i = 0; i <= len; i++) {
+		if (i == len || b[i] == L'\n') {
+			int l = i - st; if (l > 0 && b[st + l - 1] == L'\r') l--;
+			ed_insert_line(ed, ed->line_count, b + st, l); st = i + 1;
 		}
 	}
-	dst[j] = '\0';
+	if (ed->line_count == 0) ed_insert_line(ed, 0, L"", 0);
 }
 
-static int ed_line_to_utf8(const EditorLine *ln, char **out_utf, int **out_b2w) {
-	int wlen = ln->len;
-	size_t cap = (size_t)wlen * 4 + 8;
-	char *utf = malloc(cap);
-	int *b2w = malloc(cap * sizeof(int));
-	if (!utf || !b2w) { free(utf); free(b2w); return -1; }
-	size_t bpos = 0;
-	for (int i = 0; i < wlen; i++) {
-		char mb[8];
-		int bl = wctomb(mb, ln->text[i]);
-		if (bl <= 0) { mb[0] = '?'; bl = 1; }
-		for (int k = 0; k < bl; k++) {
-			utf[bpos] = mb[k];
-			b2w[bpos] = i;
-			bpos++;
-		}
-	}
-	utf[bpos] = '\0';
-	b2w[bpos] = wlen;
-	*out_utf = utf;
-	*out_b2w = b2w;
-	return (int)bpos;
-}
-
-static int ed_widx_to_byte(const int *b2w, int blen, int widx) {
-	for (int b = 0; b <= blen; b++) {
-		if (b2w[b] >= widx) return b;
-	}
-	return blen;
-}
-
-static void ed_build_regex_repl(const char *repl_tmpl, const char *line_utf, const regmatch_t *pm, int nmatch, char *out, size_t out_sz) {
-	size_t j = 0;
-	for (size_t i = 0; repl_tmpl[i] != '\0' && j + 1 < out_sz; i++) {
-		if (repl_tmpl[i] == '\\' && repl_tmpl[i + 1] != '\0') {
-			char nx = repl_tmpl[i + 1];
-			if (nx == 't') { out[j++] = '\t'; i++; continue; }
-			if (nx == 'n') { out[j++] = '\n'; i++; continue; }
-			if (nx == '\\') { out[j++] = '\\'; i++; continue; }
-			if (nx >= '0' && nx <= '9') {
-				int grp = nx - '0';
-				if (grp < nmatch && pm[grp].rm_so >= 0 && pm[grp].rm_eo >= pm[grp].rm_so) {
-					size_t gl = (size_t)(pm[grp].rm_eo - pm[grp].rm_so);
-					if (j + gl >= out_sz) gl = out_sz - 1 - j;
-					memcpy(out + j, line_utf + pm[grp].rm_so, gl);
+static wchar_t *ed_brepl(const wchar_t *wr, const wchar_t *b, const XcCap *cap, int *olen) {
+	size_t c = wcslen(wr) * 2 + 256, j = 0;
+	wchar_t *o = malloc(c * sizeof(wchar_t));
+	if (!o) return NULL;
+	for (size_t i = 0; wr[i]; i++) {
+		if (j + 16 >= c) { c *= 2; wchar_t *nb = realloc(o, c * sizeof(wchar_t)); if (!nb) { free(o); return NULL; } o = nb; }
+		if (wr[i] == L'\\' && wr[i + 1]) {
+			wchar_t x = wr[++i];
+			if (x == L'n') { o[j++] = L'\n'; continue; }
+			if (x == L't') { o[j++] = L'\t'; continue; }
+			if (x == L'r') { o[j++] = L'\r'; continue; }
+			if (x == L'\\') { o[j++] = L'\\'; continue; }
+			if (x >= L'0' && x <= L'9') {
+				int g = x - L'0';
+				if (cap[g].s >= 0 && cap[g].e >= cap[g].s) {
+					size_t gl = (size_t)(cap[g].e - cap[g].s);
+					if (j + gl + 16 >= c) { c = j + gl + 256; wchar_t *nb = realloc(o, c * sizeof(wchar_t)); if (!nb) { free(o); return NULL; } o = nb; }
+					if (gl > 0) wmemcpy(o + j, b + cap[g].s, gl);
 					j += gl;
 				}
-				i++;
 				continue;
 			}
 		}
-		out[j++] = repl_tmpl[i];
+		o[j++] = wr[i];
 	}
-	out[j] = '\0';
+	o[j] = L'\0'; *olen = (int)j; return o;
 }
 
 static int ed_find(EditorState *ed, int start_y, int start_x) {
 	if (ed->search_query[0] == '\0') return 0;
-
 	if (ed->search_use_regex) {
-		char pat[256];
-		ed_unescape_tabs(ed->search_query, pat, sizeof(pat));
-		regex_t re;
-		int cflags = REG_EXTENDED | (ed->search_case_sens ? 0 : REG_ICASE);
-		int rc = regcomp(&re, pat, cflags);
-		if (rc != 0) {
-			char err[128];
-			regerror(rc, &re, err, sizeof(err));
-			ui_message("RegExp Error", err);
-			return -1;
-		}
-		for (int y = start_y; y < ed->line_count; y++) {
-			const EditorLine *ln = &ed->lines[y];
-			int x0 = (y == start_y) ? start_x : 0;
-			if (x0 > ln->len) continue;
-			char *utf = NULL; int *b2w = NULL;
-			int blen = ed_line_to_utf8(ln, &utf, &b2w);
-			if (blen < 0) continue;
-			int boff = ed_widx_to_byte(b2w, blen, x0);
-			regmatch_t pm[1];
-			int eflags = (boff > 0) ? REG_NOTBOL : 0;
-			if (regexec(&re, utf + boff, 1, pm, eflags) == 0) {
-				int wx1 = b2w[boff + pm[0].rm_so];
-				int wx2 = b2w[boff + pm[0].rm_eo];
-				free(utf); free(b2w); regfree(&re);
-				ed->cur_y = y;
-				ed->cur_x = wx1;
-				ed->sel_active = 1;
-				ed->sel_start_y = y; ed->sel_start_x = wx1;
-				ed->sel_end_y = y;   ed->sel_end_x = wx2;
+		wchar_t wp[512]; size_t pl = mbstowcs(wp, ed->search_query, 511);
+		if (pl == (size_t)-1 || pl == 0) return 0;
+		wp[pl] = L'\0';
+		XcPat pat; char err[128];
+		if (!xc_pat_compile(&pat, wp, ed->search_case_sens, err, sizeof(err))) { ui_message("RegExp Error", err); return -1; }
+		int fl = 0, *st = NULL; wchar_t *fb = ed_flat(ed, &fl, &st);
+		if (!fb) return 0;
+		int sp = (start_y < ed->line_count) ? (st[start_y] + start_x) : fl;
+		if (sp < 0) sp = 0;
+		for (int pos = sp; pos <= fl; pos++) {
+			XcCap cap[10]; for (int g = 0; g < 10; g++) cap[g].s = cap[g].e = -1;
+			int ep = pos;
+			if (xc_match(&pat, 0, fb, fl, pos, cap, &ep)) {
+				int y1, x1, y2, x2; ed_yx(st, ed->line_count, pos, &y1, &x1); ed_yx(st, ed->line_count, ep, &y2, &x2);
+				free(fb); free(st);
+				ed->cur_y = y1; ed->cur_x = x1; ed->sel_active = 1;
+				ed->sel_start_y = y1; ed->sel_start_x = x1; ed->sel_end_y = y2; ed->sel_end_x = x2;
 				return 1;
 			}
-			free(utf); free(b2w);
 		}
-		regfree(&re);
-		return 0;
+		free(fb); free(st); return 0;
 	}
-
-	wchar_t wq[128];
-	size_t qlen = mbstowcs(wq, ed->search_query, 127);
+	wchar_t wq[128]; size_t qlen = mbstowcs(wq, ed->search_query, 127);
 	if (qlen == (size_t)-1 || qlen == 0) return 0;
 	wq[qlen] = L'\0';
-
 	for (int y = start_y; y < ed->line_count; y++) {
 		const EditorLine *ln = &ed->lines[y];
 		int x0 = (y == start_y) ? start_x : 0;
 		for (int x = x0; x + (int)qlen <= ln->len; x++) {
-			int eq = ed->search_case_sens
-			         ? (wcsncmp(ln->text + x, wq, qlen) == 0)
-			         : (wcsncasecmp(ln->text + x, wq, qlen) == 0);
-			if (eq) {
-				ed->cur_y = y;
-				ed->cur_x = x;
-				ed->sel_active = 1;
-				ed->sel_start_y = y; ed->sel_start_x = x;
-				ed->sel_end_y = y;   ed->sel_end_x = x + (int)qlen;
-				return 1;
-			}
+			int eq = ed->search_case_sens ? (wcsncmp(ln->text + x, wq, qlen) == 0) : (wcsncasecmp(ln->text + x, wq, qlen) == 0);
+			if (eq) { ed->cur_y = y; ed->cur_x = x; ed->sel_active = 1; ed->sel_start_y = y; ed->sel_start_x = x; ed->sel_end_y = y; ed->sel_end_x = x + (int)qlen; return 1; }
 		}
 	}
 	return 0;
@@ -1467,85 +1637,63 @@ static void ed_replace_match(EditorState *ed, int y, int x, int qlen, const wcha
 		if (rlen > 0) wmemcpy(ln->text + x, wr, (size_t)rlen);
 		ln->len += diff;
 	}
-	ed->cur_y = y;
-	ed->cur_x = x + rlen;
-	ed->modified = 1;
+	ed->cur_y = y; ed->cur_x = x + rlen; ed->modified = 1;
 }
 
 static int ed_interactive_replace(EditorState *ed) {
 	if (ed->search_query[0] == '\0') return 0;
-
 	if (ed->search_use_regex) {
-		char pat[256];
-		ed_unescape_tabs(ed->search_query, pat, sizeof(pat));
-		regex_t re;
-		int cflags = REG_EXTENDED | (ed->search_case_sens ? 0 : REG_ICASE);
-		int rc = regcomp(&re, pat, cflags);
-		if (rc != 0) {
-			char err[128];
-			regerror(rc, &re, err, sizeof(err));
-			ui_message("RegExp Error", err);
-			return 0;
-		}
-		int count = 0, replace_all = 0, saved_undo = 0;
-		int y = ed->cur_y, x = ed->cur_x;
-		while (y < ed->line_count) {
-			EditorLine *ln = &ed->lines[y];
-			if (x > ln->len) { y++; x = 0; continue; }
-			char *utf = NULL; int *b2w = NULL;
-			int blen = ed_line_to_utf8(ln, &utf, &b2w);
-			if (blen < 0) { y++; x = 0; continue; }
-			int boff = ed_widx_to_byte(b2w, blen, x);
-			regmatch_t pm[10];
-			int eflags = (boff > 0) ? REG_NOTBOL : 0;
-			if (regexec(&re, utf + boff, 10, pm, eflags) != 0) {
-				free(utf); free(b2w);
-				y++; x = 0;
-				continue;
-			}
-			for (int g = 0; g < 10; g++) {
-				if (pm[g].rm_so >= 0) { pm[g].rm_so += boff; pm[g].rm_eo += boff; }
-			}
-			int wx1 = b2w[pm[0].rm_so];
-			int wx2 = b2w[pm[0].rm_eo];
-			int mlen = wx2 - wx1;
-
-			char repl_utf[1024];
-			ed_build_regex_repl(ed->replace_query, utf, pm, 10, repl_utf, sizeof(repl_utf));
-			free(utf); free(b2w);
-
-			if (!replace_all) {
-				ed->cur_y = y; ed->cur_x = wx1;
-				ed->sel_active = 1;
-				ed->sel_start_y = y; ed->sel_start_x = wx1;
-				ed->sel_end_y = y;   ed->sel_end_x = wx2;
-				int sy = 1, sx = 0;
-				ed_draw(ed, &sy, &sx);
-				refresh();
-				int act = ui_replace_prompt(ed->search_query, repl_utf, sy);
+		wchar_t wp[512], wrp[512];
+		size_t pl = mbstowcs(wp, ed->search_query, 511), rl = mbstowcs(wrp, ed->replace_query, 511);
+		if (pl == (size_t)-1 || pl == 0 || rl == (size_t)-1) return 0;
+		wp[pl] = L'\0'; wrp[rl] = L'\0';
+		XcPat pat; char err[128];
+		if (!xc_pat_compile(&pat, wp, ed->search_case_sens, err, sizeof(err))) { ui_message("RegExp Error", err); return 0; }
+		int fl = 0, *st = NULL; wchar_t *fb = ed_flat(ed, &fl, &st);
+		if (!fb) return 0;
+		size_t fcap = (size_t)(fl + 1);
+		int pos = (ed->cur_y < ed->line_count) ? (st[ed->cur_y] + ed->cur_x) : fl;
+		if (pos < 0) pos = 0;
+		int cnt = 0, rall = 0, undo_ok = 0;
+		while (pos <= fl) {
+			XcCap cap[10]; for (int g = 0; g < 10; g++) cap[g].s = cap[g].e = -1;
+			int ep = pos;
+			if (!xc_match(&pat, 0, fb, fl, pos, cap, &ep)) { pos++; continue; }
+			cap[0].s = pos; cap[0].e = ep;
+			int mlen = ep - pos, rlen = 0;
+			wchar_t *wr = ed_brepl(wrp, fb, cap, &rlen);
+			if (!wr) break;
+			if (!rall) {
+				int y1, x1, y2, x2; ed_yx(st, ed->line_count, pos, &y1, &x1); ed_yx(st, ed->line_count, ep, &y2, &x2);
+				ed->cur_y = y1; ed->cur_x = x1; ed->sel_active = 1;
+				ed->sel_start_y = y1; ed->sel_start_x = x1; ed->sel_end_y = y2; ed->sel_end_x = x2;
+				int sy = 1, sx = 0; ed_draw(ed, &sy, &sx); refresh();
+				char pv[256]; size_t pvl = wcstombs(pv, wr, 255); pv[pvl == (size_t)-1 ? 0 : pvl] = '\0';
+				int act = ui_replace_prompt(ed->search_query, pv, sy);
 				ed_clear_sel(ed);
-				if (act == 0) break;
-				if (act == 3) { x = wx1 + (mlen > 0 ? 1 : 1); continue; }
-				if (act == 2) replace_all = 1;
+				if (act == 0) { free(wr); break; }
+				if (act == 3) { free(wr); pos++; continue; }
+				if (act == 2) rall = 1;
 			}
-
-			wchar_t wr[1024];
-			size_t rlen = mbstowcs(wr, repl_utf, 1023);
-			if (rlen == (size_t)-1) rlen = 0;
-			wr[rlen] = L'\0';
-
-			if (!saved_undo) { ed_push_undo(ed); saved_undo = 1; }
-			ed_replace_match(ed, y, wx1, mlen, wr, (int)rlen);
-			count++;
-			if (mlen == 0 && rlen == 0) x = wx1 + 1;
-			else if (mlen == 0) { x = wx1 + (int)rlen + 1; }
-			else x = wx1 + (int)rlen;
+			if (!undo_ok) { ed_push_undo(ed); undo_ok = 1; }
+			int diff = rlen - mlen;
+			if ((size_t)(fl + diff + 2) > fcap) { fcap = (size_t)(fl + diff + 1024); wchar_t *nb = realloc(fb, fcap * sizeof(wchar_t)); if (!nb) { free(wr); break; } fb = nb; }
+			wmemmove(fb + pos + rlen, fb + ep, (size_t)(fl - ep + 1));
+			if (rlen > 0) wmemcpy(fb + pos, wr, (size_t)rlen);
+			fl += diff; free(wr); cnt++;
+			if (!rall) {
+				ed_unflat(ed, fb, fl); free(st); st = malloc((size_t)(ed->line_count + 1) * sizeof(int)); if (!st) break;
+				int k = 0; for (int y = 0; y < ed->line_count; y++) { st[y] = k; k += ed->lines[y].len + (y + 1 < ed->line_count ? 1 : 0); } st[ed->line_count] = k;
+			}
+			pos += (mlen == 0 && rlen == 0) ? 1 : (mlen == 0 ? rlen + 1 : rlen);
 		}
-		regfree(&re);
-		ed_clear_sel(ed);
-		return count;
+		if (undo_ok) {
+			ed_unflat(ed, fb, fl); free(st); st = malloc((size_t)(ed->line_count + 1) * sizeof(int));
+			if (st) { int k = 0; for (int y = 0; y < ed->line_count; y++) { st[y] = k; k += ed->lines[y].len + (y + 1 < ed->line_count ? 1 : 0); } st[ed->line_count] = k; ed_yx(st, ed->line_count, pos > fl ? fl : pos, &ed->cur_y, &ed->cur_x); }
+			ed->modified = 1;
+		}
+		free(fb); free(st); ed_clear_sel(ed); return cnt;
 	}
-
 	wchar_t wq[128], wr[128];
 	size_t qlen = mbstowcs(wq, ed->search_query, 127);
 	size_t rlen = mbstowcs(wr, ed->replace_query, 127);
@@ -1684,9 +1832,19 @@ void ui_edit_file_at(const char *filepath, int start_line, int start_col) {
 	ui_edit_file_ex(filepath, start_line, start_col, NULL, NULL);
 }
 
+char g_ed_last_search[128] = "";
+char g_ed_last_replace[128] = "";
+int g_ed_last_case = 0;
+int g_ed_last_regex = 0;
+
 void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *out_line, int *out_col) {
+	ed_macros_load();
 	EditorState ed;
 	memset(&ed, 0, sizeof(ed));
+	snprintf(ed.search_query, sizeof(ed.search_query), "%s", g_ed_last_search);
+	snprintf(ed.replace_query, sizeof(ed.replace_query), "%s", g_ed_last_replace);
+	ed.search_case_sens = g_ed_last_case;
+	ed.search_use_regex = g_ed_last_regex;
 	ed_load_file(&ed, filepath);
 	if (ed.line_count > 0) {
 		if (start_line > 0) {
@@ -1701,6 +1859,7 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		}
 	}
 
+	int play_macro = -1, play_pos = 0;
 	while (1) {
 		int height, width;
 		getmaxyx(stdscr, height, width);
@@ -1720,8 +1879,50 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		wnoutrefresh(stdscr); doupdate();
 		printf("\033[?2026l"); fflush(stdout);
 
-		InputEvent ev = input_read();
+		InputEvent ev;
+		int from_macro = 0;
+		if (play_macro >= 0) {
+			if (play_pos < g_ed_macros[play_macro].count) {
+				ev = g_ed_macros[play_macro].events[play_pos++];
+				from_macro = 1;
+			} else {
+				play_macro = -1;
+				play_pos = 0;
+				continue;
+			}
+		} else {
+			ev = input_read();
+		}
 		if (ev.action == ACT_NONE) continue;
+		if (!from_macro && ev.action == ACT_MACRO_REC) {
+			if (!g_ed_macro_rec) {
+				g_ed_macro_rec = 1;
+				g_ed_rec_len = 0;
+			} else {
+				g_ed_macro_rec = 0;
+				if (g_ed_rec_len > 0) {
+					ed_macro_prompt_key();
+				}
+			}
+			continue;
+		}
+		if (!from_macro && g_ed_macro_rec && ed_macro_is_recordable(ev.action)) {
+			if (g_ed_rec_len < ED_MACRO_LEN) {
+				g_ed_rec_buf[g_ed_rec_len++] = ev;
+			}
+		} else if (!from_macro && !g_ed_macro_rec && ed_macro_is_recordable(ev.action)) {
+			int found = -1;
+			for (int i = 0; i < ED_MACRO_MAX; i++) {
+				if (g_ed_macros[i].used && g_ed_macros[i].key_action == ev.action && g_ed_macros[i].key_ch == ev.ch) {
+					found = i; break;
+				}
+			}
+			if (found >= 0 && g_ed_macros[found].count > 0) {
+				play_macro = found;
+				play_pos = 0;
+				continue;
+			}
+		}
 		if (ev.action == ACT_RESIZE) { endwin(); refresh(); clearok(stdscr, TRUE); continue; }
 
 		if (ev.action == ACT_MOUSE_WHEEL_UP) {
@@ -2003,6 +2204,10 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 
 	if (out_line) *out_line = ed.cur_y + 1;
 	if (out_col) *out_col = ed.cur_x + 1;
+	snprintf(g_ed_last_search, sizeof(g_ed_last_search), "%s", ed.search_query);
+	snprintf(g_ed_last_replace, sizeof(g_ed_last_replace), "%s", ed.replace_query);
+	g_ed_last_case = ed.search_case_sens;
+	g_ed_last_regex = ed.search_use_regex;
 	curs_set(0);
 	ed_free(&ed);
 	touchwin(stdscr);

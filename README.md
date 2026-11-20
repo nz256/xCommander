@@ -11,7 +11,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
 - **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6` with left-aligned header indicator), drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount, and toggleable 32-color auto file colorization by extension (`Alt+F12`).
 - **File Search by Mask & Content (`Alt+F7`)**: Fast recursive search supporting multi-masks (`*.c;*.h`), case-sensitive/insensitive text search with line numbers, and instant actions (`Enter` Go to, `F3` View, `F4` Edit at matched line, `Ctrl+J` Insert path).
 - **Virtual Archive VFS**: Enter archives seamlessly (`Enter` or `Ctrl+PgDn` on `.zip`, `.jar`, `.apk`, `.whl`, `.epub`, `.docx`, `.tar`, `.tgz`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.7z`, `.rar`), view (`F3`), edit with auto-update (`F4`), extract (`F5`), delete inside archives (`F8`), and pack files (`Shift+F1` / `Alt+F5`).
-- **Built-in Viewer & IDE-like TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with syntax highlighting, `Save As` (`Shift+F2`), cursor position memory per file, line/block duplication (`Ctrl+Shift+D`), moving lines up/down (`Ctrl+Shift+Up/Down`), line/block commenting (`Ctrl+/`), smart auto-indent (`Enter`) & block indent (`Tab` / `Shift+Tab`), and full-line copy/cut without selection (`Ctrl+C` / `Ctrl+X`).
+- **Built-in Viewer & IDE-like TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with syntax highlighting, `Save As` (`Shift+F2`), cursor position memory per file, line/block duplication (`Ctrl+Shift+D`), moving lines up/down (`Ctrl+Shift+Up/Down`), line/block commenting (`Ctrl+/`), smart auto-indent (`Enter`) & block indent (`Tab` / `Shift+Tab`), full-line copy/cut without selection (`Ctrl+C` / `Ctrl+X`), and FAR-style persistent keyboard macros (`Ctrl+.` to record/stop & assign any hotkey).
 - **4 Persistent History Journals & Dynamic 12-Key F-Bar**:
   - `Alt+F8` / `Ctrl+H`: Command History (512 items with timestamp & directory; live filter, Run / Insert / Jump / Delete)
   - `Alt+F9` / `Ctrl+G`: File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete)
@@ -56,6 +56,7 @@ make
 | `Ctrl+Shift+D` / `Ctrl+/` | Duplicate line/block / Toggle line or block comment in editor |
 | `Ctrl+Shift+Up` / `Down` | Move current line or selected block up / down in editor |
 | `Tab` / `Shift+Tab` | Indent / unindent selected block (or current line) in editor |
+| `Ctrl+.` | Record / stop keyboard macro in editor and assign any hotkey (persistent) |
 | `F5` / `F6` | Copy (or extract from archive) / Move or rename (supports relative paths) |
 | `Shift+F5` / `Shift+F6` | Copy / Rename single file in-place (prefills filename only; group unchanged) |
 | `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
