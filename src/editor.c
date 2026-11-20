@@ -8,6 +8,7 @@
 #include <wctype.h>
 #include "xc.h"
 #include "ui.h"
+#include "widgets.h"
 #include "exec.h"
 #include "input.h"
 #include "editor.h"
@@ -587,6 +588,198 @@ static KeyAction ed_macro_prompt_key(void) {
 	memcpy(g_ed_macros[slot].events, g_ed_rec_buf, sizeof(InputEvent) * (size_t)g_ed_rec_len);
 	ed_macros_save();
 	return kev.action;
+}
+
+static void ed_macro_key_name(KeyAction a, wchar_t ch, char *out, size_t sz) {
+	if (a == ACT_CTRL_CHAR) snprintf(out, sz, "Ctrl+%lc", (wint_t)towupper((wint_t)ch));
+	else if (a == ACT_ALT_CHAR) snprintf(out, sz, "Alt+%lc", (wint_t)towupper((wint_t)ch));
+	else if (a == ACT_CHAR) snprintf(out, sz, "'%lc'", (wint_t)ch);
+	else if (a == ACT_CTRL_A) snprintf(out, sz, "Ctrl+A");
+	else if (a == ACT_CTRL_B) snprintf(out, sz, "Ctrl+B");
+	else if (a == ACT_CTRL_E) snprintf(out, sz, "Ctrl+E");
+	else if (a == ACT_CTRL_G) snprintf(out, sz, "Ctrl+G");
+	else if (a == ACT_CTRL_H) snprintf(out, sz, "Ctrl+H");
+	else if (a == ACT_CTRL_L) snprintf(out, sz, "Ctrl+L");
+	else if (a == ACT_CTRL_O) snprintf(out, sz, "Ctrl+O");
+	else if (a == ACT_CTRL_U) snprintf(out, sz, "Ctrl+U");
+	else if (a == ACT_F11) snprintf(out, sz, "F11");
+	else if (a == ACT_F12) snprintf(out, sz, "F12");
+	else snprintf(out, sz, "Key#%d", (int)a);
+}
+
+static void ed_macro_preview(const EdMacro *m, char *out, size_t sz) {
+	size_t pos = 0;
+	out[0] = '\0';
+	for (int i = 0; i < m->count && pos + 20 < sz; i++) {
+		KeyAction a = m->events[i].action;
+		wchar_t c = m->events[i].ch;
+		const char *tag = NULL;
+		if (a == ACT_CHAR && c >= 32) {
+			pos += (size_t)snprintf(out + pos, sz - pos, "%lc", (wint_t)c);
+			continue;
+		}
+		switch (a) {
+			case ACT_ENTER: tag = "<Enter>"; break;
+			case ACT_TAB: tag = "<Tab>"; break;
+			case ACT_SHIFT_TAB: tag = "<ShTab>"; break;
+			case ACT_BACKSPACE: tag = "<BS>"; break;
+			case ACT_ALT_BACKSPACE: tag = "<Alt-BS>"; break;
+			case ACT_DELETE: tag = "<Del>"; break;
+			case ACT_UP: tag = "<Up>"; break;
+			case ACT_DOWN: tag = "<Down>"; break;
+			case ACT_LEFT: tag = "<Left>"; break;
+			case ACT_RIGHT: tag = "<Right>"; break;
+			case ACT_CTRL_LEFT: tag = "<C-Left>"; break;
+			case ACT_CTRL_RIGHT: tag = "<C-Right>"; break;
+			case ACT_SHIFT_UP: tag = "<Sel-Up>"; break;
+			case ACT_SHIFT_DOWN: tag = "<Sel-Down>"; break;
+			case ACT_SHIFT_LEFT: tag = "<Sel-Left>"; break;
+			case ACT_SHIFT_RIGHT: tag = "<Sel-Right>"; break;
+			case ACT_WORD_SEL_LEFT: tag = "<Sel-Word-L>"; break;
+			case ACT_WORD_SEL_RIGHT: tag = "<Sel-Word-R>"; break;
+			case ACT_SHIFT_HOME: tag = "<Sel-Home>"; break;
+			case ACT_SHIFT_END: tag = "<Sel-End>"; break;
+			case ACT_HOME: tag = "<Home>"; break;
+			case ACT_END: tag = "<End>"; break;
+			case ACT_CTRL_HOME: tag = "<C-Home>"; break;
+			case ACT_CTRL_END: tag = "<C-End>"; break;
+			case ACT_PGUP: tag = "<PgUp>"; break;
+			case ACT_PGDN: tag = "<PgDn>"; break;
+			case ACT_CTRL_A: tag = "<C-A>"; break;
+			case ACT_CTRL_C: tag = "<C-C>"; break;
+			case ACT_CTRL_D: tag = "<C-D>"; break;
+			case ACT_CTRL_SHIFT_D: tag = "<Dup>"; break;
+			case ACT_CTRL_R: tag = "<Redo>"; break;
+			case ACT_CTRL_V: tag = "<C-V>"; break;
+			case ACT_CTRL_X: tag = "<C-X>"; break;
+			case ACT_CTRL_Y: tag = "<DelLine>"; break;
+			case ACT_CTRL_Z: tag = "<Undo>"; break;
+			case ACT_TOGGLE_COMMENT: tag = "<Comment>"; break;
+			case ACT_SELECT_MATCHING_BLOCK: tag = "<SelBlock>"; break;
+			case ACT_MOVE_LINES_UP: tag = "<MoveUp>"; break;
+			case ACT_MOVE_LINES_DOWN: tag = "<MoveDn>"; break;
+			default: break;
+		}
+		if (tag) pos += (size_t)snprintf(out + pos, sz - pos, "%s", tag);
+		else pos += (size_t)snprintf(out + pos, sz - pos, "<#%d>", (int)a);
+	}
+}
+
+static int ed_macro_manager(void) {
+	int idx[ED_MACRO_MAX];
+	int cnt = 0;
+	for (int i = 0; i < ED_MACRO_MAX; i++) {
+		if (g_ed_macros[i].used && g_ed_macros[i].count > 0) idx[cnt++] = i;
+	}
+	if (cnt == 0) {
+		ui_message("Editor Macros", "No macros saved yet. Press Ctrl+. to record.");
+		return -1;
+	}
+	int h, w;
+	getmaxyx(stdscr, h, w);
+	int bw = (w - 6 > 92) ? 92 : (w - 6);
+	if (bw < 54) bw = w - 2;
+	int bh = (h - 4 > 22) ? 22 : (h - 4);
+	if (bh < 14) bh = h - 2;
+	int sy = (h - bh) / 2, sx = (w - bw) / 2;
+
+	curs_set(0);
+	WINDOW *win = newwin(bh, bw, sy, sx);
+	wbkgd(win, COLOR_PAIR(5));
+
+	const char *btns[3] = {"[ Run ]", "[ Delete ]", "[ Close ]"};
+	int total_bw = 7 + 2 + 10 + 2 + 9;
+	int sel = 0, top = 0, btn = 0, run_slot = -1;
+
+	while (1) {
+		int prev_rows = 5;
+		int lh = bh - (prev_rows + 4);
+		if (lh < 3) lh = 3;
+		if (sel >= cnt) sel = cnt - 1;
+		if (sel < 0) sel = 0;
+		if (sel < top) top = sel;
+		if (sel >= top + lh) top = sel - lh + 1;
+
+		werase(win);
+		box(win, 0, 0);
+		mvwprintw(win, 0, 2, " Editor Macros (%d/%d) ", cnt, ED_MACRO_MAX);
+
+		for (int r = 0; r < lh && top + r < cnt; r++) {
+			int mi = idx[top + r];
+			char kname[24], prev[256];
+			ed_macro_key_name(g_ed_macros[mi].key_action, g_ed_macros[mi].key_ch, kname, sizeof(kname));
+			ed_macro_preview(&g_ed_macros[mi], prev, sizeof(prev));
+			int max_p = bw - 28;
+			if (max_p < 8) max_p = 8;
+			wattron(win, (top + r == sel) ? COLOR_PAIR(2) : COLOR_PAIR(5));
+			mvwhline(win, 1 + r, 1, ' ', bw - 2);
+			mvwprintw(win, 1 + r, 2, "%-10s (%3d steps)  %.*s", kname, g_ed_macros[mi].count, max_p, prev);
+			wattroff(win, (top + r == sel) ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		}
+
+		int sep_y = 1 + lh;
+		mvwaddstr(win, sep_y, 0, "├");
+		for (int x = 1; x < bw - 1; x++) mvwaddstr(win, sep_y, x, "─");
+		mvwaddstr(win, sep_y, bw - 1, "┤");
+
+		char full_prev[2048];
+		wchar_t wprev[1024];
+		ed_macro_preview(&g_ed_macros[idx[sel]], full_prev, sizeof(full_prev));
+		int wlen = (int)mbstowcs(wprev, full_prev, 1023);
+		if (wlen < 0) wlen = 0;
+		wprev[wlen] = L'\0';
+		int inner_w = bw - 4;
+		for (int line = 0; line < prev_rows; line++) {
+			int off = line * inner_w;
+			if (off >= wlen) break;
+			mvwprintw(win, sep_y + 1 + line, 2, "%.*ls", inner_w, wprev + off);
+		}
+
+		int bx0 = (bw - total_bw < 2) ? 2 : (bw - total_bw) / 2;
+		UiButtonRow brow = { btns, 3, bh - 2, bx0, 2, btn };
+		ui_btns_draw(&brow, win);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_MOUSE_LEFT || ev.action == ACT_MOUSE_DBL) {
+			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
+			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < cnt) {
+				sel = top + wy - 1;
+				if (ev.action == ACT_MOUSE_DBL) { run_slot = idx[sel]; break; }
+				continue;
+			}
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) {
+				btn = hit;
+				if (hit == 0) { run_slot = idx[sel]; break; }
+				if (hit == 2) break;
+				if (hit == 1) ev.action = ACT_F8;
+			}
+		}
+		if (ev.action == ACT_ESC || ev.action == ACT_F10 || ev.action == ACT_CTRL_Q) break;
+		if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (sel > 0) sel--; }
+		else if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { if (sel + 1 < cnt) sel++; }
+		else if (ev.action == ACT_LEFT || ev.action == ACT_SHIFT_TAB) { btn = (btn + 2) % 3; }
+		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) { btn = (btn + 1) % 3; }
+		else if (ev.action == ACT_ENTER) {
+			if (btn == 0) { run_slot = idx[sel]; break; }
+			if (btn == 2) break;
+			if (btn == 1) ev.action = ACT_F8;
+		}
+		if (ev.action == ACT_F8 || ev.action == ACT_DELETE) {
+			g_ed_macros[idx[sel]].used = 0;
+			ed_macros_save();
+			cnt = 0;
+			for (int i = 0; i < ED_MACRO_MAX; i++) {
+				if (g_ed_macros[i].used && g_ed_macros[i].count > 0) idx[cnt++] = i;
+			}
+			if (cnt == 0) break;
+		}
+	}
+	delwin(win);
+	touchwin(stdscr);
+	return run_slot;
 }
 
 static void ed_draw_bars(const EditorState *ed, int height, int width) {
@@ -1910,6 +2103,10 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			if (g_ed_rec_len < ED_MACRO_LEN) {
 				g_ed_rec_buf[g_ed_rec_len++] = ev;
 			}
+		} else if (!from_macro && !g_ed_macro_rec && ev.action == ACT_CTRL_CHAR && ev.ch == L'm') {
+			int mslot = ed_macro_manager();
+			if (mslot >= 0) { play_macro = mslot; play_pos = 0; }
+			continue;
 		} else if (!from_macro && !g_ed_macro_rec && ed_macro_is_recordable(ev.action)) {
 			int found = -1;
 			for (int i = 0; i < ED_MACRO_MAX; i++) {

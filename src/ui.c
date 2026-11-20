@@ -289,9 +289,9 @@ void draw_fkey_bar(int y, int width) {
 		labels[2] = "";
 		labels[3] = "Create";
 		labels[4] = "";
-		labels[5] = "";
+		labels[5] = "RenInP";
 		labels[6] = "";
-		labels[7] = "";
+		labels[7] = "Erase!";
 		labels[8] = "";
 		labels[9] = "";
 	} else if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
@@ -1038,11 +1038,11 @@ void ui_help(void) {
 		"  F1                 Open this Help guide (type to live-filter)",
 		"  F2                 Open User Menu (submenus { } & hotkeys)",
 		"  F3                 Built-in Text / Hex viewer (F2:Wrap F4:Hex F7:Find)",
-		"  F4                 Built-in TUI Editor (F1 inside editor; Ctrl+. macros)",
+		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
-		"  F7 / F8            Create directory / Delete selected items",
+		"  F7 / F8 / Sh+F8    MkDir / Move to Trash / Permanent Delete",
 		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Insert)",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
 		"                       Inside: F3 View, F4 Edit+Upd, F5 Extract, F8 Del",
@@ -1120,7 +1120,7 @@ void ui_editor_help(void) {
 		"  F7                 Find text (Case sensitive & RegExp options)",
 		"  Shift+F7           Find next match",
 		"  Ctrl+F7            Interactive Replace (Case sensitive, RegExp, \\t, \\1..\\9)",
-		"  Ctrl+.             Record / Stop keyboard macro (assign any hotkey)",
+		"  Ctrl+. / Ctrl+M    Record/Stop macro / Manage & delete saved macros",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
 		"  F1                 Open this Editor Help",
 		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"

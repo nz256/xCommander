@@ -104,9 +104,10 @@ static int ru_to_en_key(int code) {
 
 static KeyAction map_modified_code(int code, int mod) {
 	g_mod_ch = 0;
-	int has_shift = (mod == 2 || mod == 4 || mod == 6 || mod == 8);
-	int has_alt   = (mod == 3 || mod == 4 || mod == 7 || mod == 8);
-	int has_ctrl  = (mod == 5 || mod == 6 || mod == 7 || mod == 8);
+	int m = (mod > 0) ? (mod - 1) : 0;
+	int has_shift = (m & 1) ? 1 : 0;
+	int has_alt   = (m & 2) ? 1 : 0;
+	int has_ctrl  = (m & 4) ? 1 : 0;
 	if ((has_ctrl || has_alt) && code >= 1024) {
 		code = ru_to_en_key(code);
 	}
@@ -260,6 +261,7 @@ static KeyAction parse_csi(const char *seq) {
 		else if (sscanf(seq, "%d;%d", &p1, &mod) != 2) sscanf(seq, "%d", &p1);
 	}
 
+	mod = ((mod > 0 ? (mod - 1) : 0) & 7) + 1;
 	if (final == 'Z') return ACT_SHIFT_TAB;
 	if (final == 'A') { if (mod == 6) return ACT_MOVE_LINES_UP; return (mod == 2) ? ACT_SHIFT_UP : ACT_UP; }
 	if (final == 'B') { if (mod == 6) return ACT_MOVE_LINES_DOWN; return (mod == 2) ? ACT_SHIFT_DOWN : ACT_DOWN; }

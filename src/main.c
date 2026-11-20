@@ -1491,6 +1491,11 @@ int main(int argc, char **argv) {
 				continue;
 			}
 			int ps = active_panel->selected;
+			if (trash_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; }
+		}
+		else if (ev.action == ACT_SHIFT_F8) {
+			if (active_panel->archive_file[0] != '\0') continue;
+			int ps = active_panel->selected;
 			if (delete_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; }
 		}
 		else if (ev.action == ACT_ALT_SHIFT_END && active_panel->count > 0) {

@@ -425,7 +425,70 @@ int make_directory(Panel *panel) {
 	return 1;
 }
 
-int delete_items(const Panel *panel) {
+static int is_protected_path(const char *path) {
+	char resolved[MAX_PATH];
+	if (!realpath(path, resolved)) {
+		snprintf(resolved, sizeof(resolved), "%s", path);
+	}
+	if (strcmp(resolved, "/") == 0 || strcmp(resolved, "/home") == 0 ||
+	    strcmp(resolved, "/etc") == 0 || strcmp(resolved, "/usr") == 0 ||
+	    strcmp(resolved, "/var") == 0 || strcmp(resolved, "/bin") == 0 ||
+	    strcmp(resolved, "/boot") == 0 || strcmp(resolved, "/dev") == 0 ||
+	    strcmp(resolved, "/proc") == 0 || strcmp(resolved, "/sys") == 0 ||
+	    strcmp(resolved, "/media") == 0 || strcmp(resolved, "/mnt") == 0) {
+		return 1;
+	}
+	const char *home = getenv("HOME");
+	if (home && home[0] && strcmp(resolved, home) == 0) return 1;
+	return 0;
+}
+
+static int move_one_to_trash(const char *full_path, const char *name) {
+	if (is_protected_path(full_path)) return -1;
+	char cmd[MAX_PATH * 3];
+	char esc[MAX_PATH * 2 + 64];
+	size_t j = 0;
+	esc[j++] = '\'';
+	for (size_t i = 0; full_path[i] && j + 6 < sizeof(esc); i++) {
+		if (full_path[i] == '\'') {
+			esc[j++] = '\''; esc[j++] = '\\'; esc[j++] = '\''; esc[j++] = '\'';
+		} else {
+			esc[j++] = full_path[i];
+		}
+	}
+	esc[j++] = '\'';
+	esc[j] = '\0';
+	snprintf(cmd, sizeof(cmd), "gio trash -- %s >/dev/null 2>&1", esc);
+	if (system(cmd) == 0) return 0;
+
+	const char *home = getenv("HOME");
+	if (!home || !home[0]) return -1;
+	char tbase[MAX_PATH], tfiles[MAX_PATH], tinfo[MAX_PATH];
+	snprintf(tbase, sizeof(tbase), "%s/.local/share/Trash", home);
+	mkdir(tbase, 0700);
+	snprintf(tfiles, sizeof(tfiles), "%s/files", tbase);
+	mkdir(tfiles, 0700);
+	snprintf(tinfo, sizeof(tinfo), "%s/info", tbase);
+	mkdir(tinfo, 0700);
+
+	char dst[MAX_PATH * 2], infop[MAX_PATH * 2];
+	snprintf(dst, sizeof(dst), "%s/%s", tfiles, name);
+	snprintf(infop, sizeof(infop), "%s/%s.trashinfo", tinfo, name);
+	struct stat st;
+	for (int n = 2; lstat(dst, &st) == 0 && n < 10000; n++) {
+		snprintf(dst, sizeof(dst), "%s/%s.%d", tfiles, name, n);
+		snprintf(infop, sizeof(infop), "%s/%s.%d.trashinfo", tinfo, name, n);
+	}
+	if (move_single_path(full_path, dst) != 0) return -1;
+	FILE *f = fopen(infop, "w");
+	if (f) {
+		fprintf(f, "[Trash Info]\nPath=%s\n", full_path);
+		fclose(f);
+	}
+	return 0;
+}
+
+int trash_items(const Panel *panel) {
 	if (!panel || panel->count == 0) return 0;
 
 	int marked = panel_marked_count(panel);
@@ -434,11 +497,56 @@ int delete_items(const Panel *panel) {
 		if (strcmp(item->name, "..") == 0) return 0;
 
 		char prompt[MAX_FILENAME + 64];
-		snprintf(prompt, sizeof(prompt), "Delete \"%s\"?", item->name);
-		if (!ui_confirm("Delete (F8)", prompt)) return 0;
+		snprintf(prompt, sizeof(prompt), "Move \"%s\" to Trash?", item->name);
+		if (!ui_confirm("Move to Trash (F8)", prompt)) return 0;
 
 		char full_path[MAX_PATH * 2];
 		build_full_path(full_path, sizeof(full_path), panel->current_path, item->name);
+
+		if (move_one_to_trash(full_path, item->name) != 0) {
+			ui_message("Error", "Failed to move item to Trash");
+			return -1;
+		}
+		return 1;
+	}
+
+	char prompt[64];
+	snprintf(prompt, sizeof(prompt), "Move selected items (%d items) to Trash?", marked);
+	if (!ui_confirm("Move Group to Trash (F8)", prompt)) return 0;
+
+	for (int i = 0; i < panel->count; i++) {
+		if (!panel->files[i].is_selected) continue;
+		if (strcmp(panel->files[i].name, "..") == 0) continue;
+
+		char full_path[MAX_PATH * 2];
+		build_full_path(full_path, sizeof(full_path), panel->current_path, panel->files[i].name);
+
+		if (move_one_to_trash(full_path, panel->files[i].name) != 0) {
+			ui_message("Error", "Error moving selected items to Trash");
+			return -1;
+		}
+	}
+	return 1;
+}
+
+int delete_items(const Panel *panel) {
+	if (!panel || panel->count == 0) return 0;
+
+	int marked = panel_marked_count(panel);
+	if (marked == 0) {
+		const FileEntry *item = &panel->files[panel->selected];
+		if (strcmp(item->name, "..") == 0) return 0;
+
+		char prompt[MAX_FILENAME + 96];
+		snprintf(prompt, sizeof(prompt), "Permanently delete \"%s\"? (Cannot be undone)", item->name);
+		if (!ui_confirm("Permanent Delete (Shift+F8)", prompt)) return 0;
+
+		char full_path[MAX_PATH * 2];
+		build_full_path(full_path, sizeof(full_path), panel->current_path, item->name);
+		if (is_protected_path(full_path)) {
+			ui_message("Protected", "Refusing to delete protected system/home path");
+			return -1;
+		}
 
 		if (delete_recursive(full_path) != 0) {
 			ui_message("Error", "Failed to delete item");
@@ -447,9 +555,9 @@ int delete_items(const Panel *panel) {
 		return 1;
 	}
 
-	char prompt[64];
-	snprintf(prompt, sizeof(prompt), "Delete selected items (%d items)?", marked);
-	if (!ui_confirm("Delete Group (F8)", prompt)) return 0;
+	char prompt[96];
+	snprintf(prompt, sizeof(prompt), "Permanently delete %d selected items? (Cannot be undone)", marked);
+	if (!ui_confirm("Permanent Delete Group (Shift+F8)", prompt)) return 0;
 
 	for (int i = 0; i < panel->count; i++) {
 		if (!panel->files[i].is_selected) continue;
@@ -457,6 +565,10 @@ int delete_items(const Panel *panel) {
 
 		char full_path[MAX_PATH * 2];
 		build_full_path(full_path, sizeof(full_path), panel->current_path, panel->files[i].name);
+		if (is_protected_path(full_path)) {
+			ui_message("Protected", "Refusing to delete protected system/home path");
+			return -1;
+		}
 
 		if (delete_recursive(full_path) != 0) {
 			ui_message("Error", "Error deleting selected items");
