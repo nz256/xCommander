@@ -194,7 +194,7 @@ static int jump_right(int pos) {
 int cmdline_handle_edit_key(InputEvent ev, int terminal_mode) {
 	int is_print = (ev.action == ACT_CHAR && iswprint(ev.ch) && !(cmd_len == 0 && ev.ch == L' '));
 	if (!terminal_mode && cmd_len == 0 && (ev.action == ACT_SHIFT_UP || ev.action == ACT_SHIFT_DOWN || ev.action == ACT_SHIFT_LEFT || ev.action == ACT_SHIFT_RIGHT)) return 0;
-	int is_move = (cmd_len > 0 && (ev.action == ACT_HOME || ev.action == ACT_END || ev.action == ACT_CTRL_A ||
+	int is_move = (cmd_len > 0 && (ev.action == ACT_HOME || ev.action == ACT_END || ev.action == ACT_SHIFT_HOME || ev.action == ACT_SHIFT_END || ev.action == ACT_CTRL_A ||
 		ev.action == ACT_SHIFT_LEFT || ev.action == ACT_SHIFT_RIGHT || ev.action == ACT_CTRL_LEFT ||
 		ev.action == ACT_CTRL_RIGHT || ev.action == ACT_WORD_SEL_LEFT || ev.action == ACT_WORD_SEL_RIGHT ||
 		ev.action == ACT_CTRL_B || ev.action == ACT_CTRL_F ||
@@ -208,6 +208,8 @@ int cmdline_handle_edit_key(InputEvent ev, int terminal_mode) {
 		else if (ev.action == ACT_END) { cmd_sel_anchor = -1; update_sel(); cmd_pos = cmd_len; }
 		else if (ev.action == ACT_SHIFT_LEFT) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; if (cmd_pos > 0) cmd_pos--; update_sel(); }
 		else if (ev.action == ACT_SHIFT_RIGHT) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; if (cmd_pos < cmd_len) cmd_pos++; update_sel(); }
+		else if (ev.action == ACT_SHIFT_HOME) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; cmd_pos = 0; update_sel(); }
+		else if (ev.action == ACT_SHIFT_END) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; cmd_pos = cmd_len; update_sel(); }
 		else if (ev.action == ACT_WORD_SEL_LEFT) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; cmd_pos = jump_left(cmd_pos); update_sel(); }
 		else if (ev.action == ACT_WORD_SEL_RIGHT) { if (cmd_sel_anchor == -1) cmd_sel_anchor = cmd_pos; cmd_pos = jump_right(cmd_pos); update_sel(); }
 		else if (ev.action == ACT_CTRL_LEFT) { cmd_sel_anchor = -1; update_sel(); cmd_pos = jump_left(cmd_pos); }

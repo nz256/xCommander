@@ -14,47 +14,11 @@
 #include "xc.h"
 #include "input.h"
 #include "ui.h"
+#include "widgets.h"
+#include "editor.h"
+#include "viewer.h"
 #include <wctype.h>
 #include "exec.h"
-
-static int find_is_word_sep(wchar_t ch) {
-	return iswspace(ch) || ch == L'/' || ch == L'-' || ch == L'_' || ch == L'.' || ch == L';';
-}
-
-static int find_word_left(const wchar_t *buf, int pos) {
-	while (pos > 0 && find_is_word_sep(buf[pos - 1])) pos--;
-	while (pos > 0 && !find_is_word_sep(buf[pos - 1])) pos--;
-	return pos;
-}
-
-static int find_word_right(const wchar_t *buf, int pos, int len) {
-	while (pos < len && !find_is_word_sep(buf[pos])) pos++;
-	while (pos < len && find_is_word_sep(buf[pos])) pos++;
-	return pos;
-}
-
-static void find_draw_input(WINDOW *win, int y, int x, int w, const wchar_t *buf, int pos, int anchor, int active) {
-	wattron(win, COLOR_PAIR(2));
-	mvwhline(win, y, x - 1, ' ', w + 2);
-	int off = (pos >= w) ? (pos - w + 1) : 0;
-	mvwaddnwstr(win, y, x, buf + off, w);
-	wattroff(win, COLOR_PAIR(2));
-
-	if (active && anchor != -1 && anchor != pos) {
-		int s1 = (anchor < pos) ? anchor : pos;
-		int s2 = (anchor > pos) ? anchor : pos;
-		if (s1 < off) s1 = off;
-		if (s2 > off + w) s2 = off + w;
-		if (s2 > s1) {
-			wattron(win, COLOR_PAIR(6));
-			mvwaddnwstr(win, y, x + (s1 - off), buf + s1, s2 - s1);
-			wattroff(win, COLOR_PAIR(6));
-		}
-	}
-}
-
-#include "viewer.h"
-#include "editor.h"
 
 #define MAX_FIND_RESULTS 2048
 
@@ -177,80 +141,65 @@ static void find_walk_dir(FindCtx *ctx, const char *abs_dir, const char *rel_pre
 	closedir(d);
 }
 
-static int __attribute__((unused)) wline_cols(const wchar_t *ws, int count) {
-	int cols = 0;
-	for (int i = 0; i < count && ws[i]; i++) {
-		int cw = wcwidth(ws[i]);
-		cols += (cw > 0) ? cw : 1;
-	}
-	return cols;
-}
-
 static int ui_find_prompt(FindCtx *ctx) {
 	int h, w; getmaxyx(stdscr, h, w);
 	int bw = (w - 10 > 48) ? 48 : (w - 4); if (bw < 38) bw = w - 2;
 	int bh = 11, sy = (h - bh) / 2, sx = (w - bw) / 2;
-	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
+	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, g_ui_theme.win_bg);
 
 	wchar_t wmask[128] = {0}, wtext[256] = {0};
 	mbstowcs(wmask, ctx->mask, 127);
 	mbstowcs(wtext, ctx->text, 255);
-	int field = 0, mpos = (int)wcslen(wmask), tpos = (int)wcslen(wtext);
-	int manchor = (mpos > 0) ? 0 : -1, tanchor = (tpos > 0) ? 0 : -1;
+
 	int field_w = (bw - 6 < 8) ? 8 : (bw - 6);
+	UiTextField tf_mask, tf_text;
+	ui_tf_init(&tf_mask, wmask, 127, 1);
+	ui_tf_set_bounds(&tf_mask, 2, 3, field_w);
+	ui_tf_init(&tf_text, wtext, 255, 1);
+	ui_tf_set_bounds(&tf_text, 4, 3, field_w);
+
+	const char *btn_labels[2] = { "[ Search ]", "[ Cancel ]" };
+	int btn_x = (bw - 22 < 2) ? 2 : (bw - 22) / 2;
+	UiButtonRow btns = { btn_labels, 2, 9, btn_x, 2, -1 };
+
+	int field = 0;
 
 	while (1) {
 		werase(win); box(win, 0, 0);
 		mvwprintw(win, 0, 2, " Find Files (Alt+F7) ");
 		mvwprintw(win, 1, 2, "File mask(s) (e.g. *.c;*.h):");
-		find_draw_input(win, 2, 3, field_w, wmask, mpos, manchor, field == 0);
+		ui_tf_draw(&tf_mask, win, field == 0);
 		mvwprintw(win, 3, 2, "Containing text (optional):");
-		find_draw_input(win, 4, 3, field_w, wtext, tpos, tanchor, field == 1);
+		ui_tf_draw(&tf_text, win, field == 1);
 
-		if (field == 2) wattron(win, COLOR_PAIR(3));
-		mvwprintw(win, 5, 2, "[%c] Recursive subdirectories", ctx->recursive ? 'x' : ' ');
-		if (field == 2) wattroff(win, COLOR_PAIR(3));
-		if (field == 3) wattron(win, COLOR_PAIR(3));
-		mvwprintw(win, 6, 2, "[%c] Case sensitive text", ctx->case_sens ? 'x' : ' ');
-		if (field == 3) wattroff(win, COLOR_PAIR(3));
-		if (field == 4) wattron(win, COLOR_PAIR(3));
-		mvwprintw(win, 7, 2, "[%c] Skip hidden files/dirs", ctx->skip_hidden ? 'x' : ' ');
-		if (field == 4) wattroff(win, COLOR_PAIR(3));
+		UiCheckbox cbs[3] = {
+			{ "Recursive subdirectories", &ctx->recursive, 5, 2 },
+			{ "Case sensitive text", &ctx->case_sens, 6, 2 },
+			{ "Skip hidden files/dirs", &ctx->skip_hidden, 7, 2 }
+		};
+		for (int c = 0; c < 3; c++) ui_cb_draw(&cbs[c], win, field == c + 2);
 
 		mvwhline(win, 8, 1, ACS_HLINE, bw - 2);
-		int btn_x = (bw - 22 < 2) ? 2 : (bw - 22) / 2;
-		wattron(win, (field == 5) ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 9, btn_x, "[ Search ]");
-		wattroff(win, (field == 5) ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, (field == 6) ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 9, btn_x + 12, "[ Cancel ]");
-		wattroff(win, (field == 6) ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		btns.focus_idx = (field == 5) ? 0 : ((field == 6) ? 1 : -1);
+		ui_btns_draw(&btns, win);
 
-		if (field == 0 || field == 1) {
-			curs_set(1);
-			int cur_p = (field == 0) ? mpos : tpos;
-			int off = (cur_p >= field_w) ? (cur_p - field_w + 1) : 0;
-			wmove(win, (field == 0) ? 2 : 4, 3 + (cur_p - off));
-		} else curs_set(0);
+		if (field == 0) ui_tf_place_cursor(&tf_mask, win);
+		else if (field == 1) ui_tf_place_cursor(&tf_text, win);
+		else curs_set(0);
 
 		printf("\033[?2026h"); fflush(stdout); wnoutrefresh(win); doupdate(); printf("\033[?2026l"); fflush(stdout);
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) { curs_set(0); delwin(win); touchwin(stdscr); return 0; }
-			if ((wy == 2 || wy == 4) && wx >= 2 && wx < bw - 2) {
-				field = (wy == 2) ? 0 : 1;
-				int *pp = (field == 0) ? &mpos : &tpos, *ap = (field == 0) ? &manchor : &tanchor;
-				int blen = (int)wcslen((field == 0) ? wmask : wtext);
-				int off = (*pp >= field_w) ? (*pp - field_w + 1) : 0;
-				int np = off + (wx - 3); if (np < 0) np = 0;
-				*pp = (np > blen) ? blen : np; *ap = -1; continue;
-			}
+			if (ui_tf_handle_mouse(&tf_mask, wy, wx)) { field = 0; continue; }
+			if (ui_tf_handle_mouse(&tf_text, wy, wx)) { field = 1; continue; }
 			if (wy == 5) { field = 2; ctx->recursive = !ctx->recursive; continue; }
 			if (wy == 6) { field = 3; ctx->case_sens = !ctx->case_sens; continue; }
 			if (wy == 7) { field = 4; ctx->skip_hidden = !ctx->skip_hidden; continue; }
-			if (wy == 9 && wx >= btn_x && wx < btn_x + 10) { field = 5; ev.action = ACT_ENTER; }
-			else if (wy == 9 && wx >= btn_x + 12 && wx < btn_x + 22) { curs_set(0); delwin(win); touchwin(stdscr); return 0; }
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { field = 5; ev.action = ACT_ENTER; }
+			else if (hit == 1) { curs_set(0); delwin(win); touchwin(stdscr); return 0; }
 			else continue;
 		}
 		if (ev.action == ACT_ESC) { curs_set(0); delwin(win); touchwin(stdscr); return 0; }
@@ -261,7 +210,7 @@ static int ui_find_prompt(FindCtx *ctx) {
 			curs_set(0); delwin(win); touchwin(stdscr); return 1;
 		}
 		if (ev.action == ACT_TAB || ev.action == ACT_DOWN) { field = (field + 1) % 7; continue; }
-		if (ev.action == ACT_UP) { field = (field + 6) % 7; continue; }
+		if (ev.action == ACT_UP || ev.action == ACT_SHIFT_TAB) { field = (field + 6) % 7; continue; }
 		if ((field == 5 || field == 6) && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT)) { field = (field == 5) ? 6 : 5; continue; }
 		if (field >= 2 && field <= 4 && ev.action == ACT_CHAR && ev.ch == ' ') {
 			if (field == 2) ctx->recursive = !ctx->recursive;
@@ -269,49 +218,8 @@ static int ui_find_prompt(FindCtx *ctx) {
 			else if (field == 4) ctx->skip_hidden = !ctx->skip_hidden;
 			continue;
 		}
-		if (field == 0 || field == 1) {
-			wchar_t *buf = (field == 0) ? wmask : wtext;
-			int max_c = (field == 0) ? 127 : 255, *pos = (field == 0) ? &mpos : &tpos, *anc = (field == 0) ? &manchor : &tanchor, len = (int)wcslen(buf);
-			if (ev.action == ACT_WORD_SEL_LEFT) { if (*anc == -1) *anc = *pos; *pos = find_word_left(buf, *pos); }
-			else if (ev.action == ACT_WORD_SEL_RIGHT) { if (*anc == -1) *anc = *pos; *pos = find_word_right(buf, *pos, len); }
-			else if (ev.action == ACT_SHIFT_LEFT) { if (*anc == -1) *anc = *pos; if (*pos > 0) (*pos)--; }
-			else if (ev.action == ACT_SHIFT_RIGHT) { if (*anc == -1) *anc = *pos; if (*pos < len) (*pos)++; }
-			else if (ev.action == ACT_SHIFT_HOME) { if (*anc == -1) *anc = *pos; *pos = 0; }
-			else if (ev.action == ACT_SHIFT_END) { if (*anc == -1) *anc = *pos; *pos = len; }
-			else if (ev.action == ACT_CTRL_LEFT) { *anc = -1; *pos = find_word_left(buf, *pos); }
-			else if (ev.action == ACT_CTRL_RIGHT) { *anc = -1; *pos = find_word_right(buf, *pos, len); }
-			else if (ev.action == ACT_LEFT) { *anc = -1; if (*pos > 0) (*pos)--; }
-			else if (ev.action == ACT_RIGHT) { *anc = -1; if (*pos < len) (*pos)++; }
-			else if (ev.action == ACT_HOME || ev.action == ACT_CTRL_A) { *anc = -1; *pos = 0; }
-			else if (ev.action == ACT_END) { *anc = -1; *pos = len; }
-			else if (ev.action == ACT_CTRL_U) { buf[0] = L'\0'; *pos = 0; *anc = -1; }
-			else if (ev.action == ACT_BACKSPACE || ev.action == ACT_DELETE) {
-				if (*anc != -1 && *anc != *pos) {
-					int s1 = (*anc < *pos) ? *anc : *pos, s2 = (*anc > *pos) ? *anc : *pos;
-					wmemmove(buf + s1, buf + s2, (size_t)(len - s2 + 1)); *pos = s1; *anc = -1;
-				} else if (ev.action == ACT_BACKSPACE && *pos > 0) { wmemmove(buf + *pos - 1, buf + *pos, (size_t)(len - *pos + 1)); (*pos)--; }
-				else if (ev.action == ACT_DELETE && *pos < len) { wmemmove(buf + *pos, buf + *pos + 1, (size_t)(len - *pos)); }
-			} else if (ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_Y || ev.action == ACT_CTRL_X) {
-				int s1 = (*anc != -1 && *anc != *pos) ? ((*anc < *pos) ? *anc : *pos) : 0;
-				int s2 = (*anc != -1 && *anc != *pos) ? ((*anc > *pos) ? *anc : *pos) : len;
-				if (s2 > s1) {
-					wchar_t wsub[256]; wmemcpy(wsub, buf + s1, (size_t)(s2 - s1)); wsub[s2 - s1] = L'\0';
-					char utf_sub[512];
-					if (wcstombs(utf_sub, wsub, sizeof(utf_sub)) != (size_t)-1) { utf_sub[sizeof(utf_sub) - 1] = '\0'; clipboard_copy(utf_sub); }
-					if (ev.action == ACT_CTRL_X && *anc != -1 && *anc != *pos) { wmemmove(buf + s1, buf + s2, (size_t)(len - s2 + 1)); *pos = s1; *anc = -1; }
-				}
-			} else if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
-				if (*anc != -1 && *anc != *pos) { int s1 = (*anc < *pos) ? *anc : *pos, s2 = (*anc > *pos) ? *anc : *pos; wmemmove(buf + s1, buf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); *pos = s1; *anc = -1; }
-				char raw[256] = {0};
-				if (clipboard_paste(raw, sizeof(raw)) > 0) {
-					wchar_t wadd[256]; size_t alen = mbstowcs(wadd, raw, 255);
-					if (alen != (size_t)-1 && alen > 0) { if (len + (int)alen > max_c) alen = (size_t)(max_c - len); wmemmove(buf + *pos + alen, buf + *pos, (size_t)(len - *pos + 1)); wmemcpy(buf + *pos, wadd, alen); *pos += (int)alen; }
-				}
-			} else if (ev.action == ACT_CHAR && iswprint(ev.ch)) {
-				if (*anc != -1 && *anc != *pos) { int s1 = (*anc < *pos) ? *anc : *pos, s2 = (*anc > *pos) ? *anc : *pos; wmemmove(buf + s1, buf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); *pos = s1; *anc = -1; }
-				if (len < max_c) { wmemmove(buf + *pos + 1, buf + *pos, (size_t)(len - *pos + 1)); buf[*pos] = ev.ch; (*pos)++; }
-			}
-		}
+		if (field == 0) ui_tf_handle_event(&tf_mask, &ev);
+		else if (field == 1) ui_tf_handle_event(&tf_text, &ev);
 	}
 }
 

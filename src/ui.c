@@ -12,6 +12,7 @@
 #include <wchar.h>
 #include <wctype.h>
 #include "ui.h"
+#include "widgets.h"
 #include "exec.h"
 #include "panel.h"
 #include "input.h"
@@ -255,6 +256,7 @@ void ui_init(void) {
 		init_pair(12, COLOR_YELLOW, COLOR_WHITE);
 	}
 
+	ui_theme_init_default();
 	ui_load_color_state();
 	bkgd(COLOR_PAIR(1));
 }
@@ -598,50 +600,33 @@ int ui_confirm(const char *title, const char *msg) {
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	keypad(win, TRUE);
-	wbkgd(win, COLOR_PAIR(5));
-	idlok(win, FALSE);
-	scrollok(win, FALSE);
+	wbkgd(win, g_ui_theme.win_bg);
 
-	int selected = 1;
-	int res = 0;
+	const char *blbls[2] = { "[ Yes ]", "[ No ]" };
+	int btn_x = (box_w - 16 < 2) ? 2 : (box_w - 16) / 2;
+	UiButtonRow btns = { blbls, 2, 3, btn_x, 3, 0 };
 
+	int selected = 1, res = 0;
 	while (1) {
 		draw_win_box(win);
 		mvwprintw(win, 0, 2, " %s ", title);
-
-		int msg_x = (box_w - msg_cols) / 2;
-		if (msg_x < 2) msg_x = 2;
+		int msg_x = (box_w - msg_cols < 4) ? 2 : (box_w - msg_cols) / 2;
 		mvwprint_utf8(win, 1, msg_x, box_w - 4, msg);
 
-		const char *btn_yes = "[ Yes ]";
-		const char *btn_no  = "[ No ]";
-		int total_btn_w = 7 + 3 + 6;
-		int btn_x = (box_w - total_btn_w) / 2;
-		if (btn_x < 2) btn_x = 2;
+		btns.focus_idx = selected ? 0 : 1;
+		ui_btns_draw(&btns, win);
 
-		wattron(win, selected == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 3, btn_x, "%s", btn_yes);
-		wattroff(win, selected == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-		wattron(win, selected == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 3, btn_x + 10, "%s", btn_no);
-		wattroff(win, selected == 0 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-		printf("\033[?2026h"); fflush(stdout);
-		wnoutrefresh(win); doupdate();
-		printf("\033[?2026l"); fflush(stdout);
-
+		printf("\033[?2026h"); fflush(stdout); wnoutrefresh(win); doupdate(); printf("\033[?2026l"); fflush(stdout);
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
 			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
-			if (wy == 3) {
-				if (wx >= btn_x && wx < btn_x + 7) { res = 1; break; }
-				if (wx >= btn_x + 10 && wx < btn_x + 16) { res = 0; break; }
-			}
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { res = 1; break; }
+			if (hit == 1) { res = 0; break; }
 			continue;
 		}
-		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB) selected = 1 - selected;
+		if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB || ev.action == ACT_SHIFT_TAB) selected = 1 - selected;
 		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = selected; break; }
 		else if (ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L'n' || ev.ch == L'N' || ev.ch == L'т' || ev.ch == L'Т'))) { res = 0; break; }
 		else if (ev.action == ACT_CHAR && (ev.ch == L'y' || ev.ch == L'Y' || ev.ch == L'н' || ev.ch == L'Н')) { res = 1; break; }
@@ -669,20 +654,17 @@ void ui_message(const char *title, const char *msg) {
 	curs_set(0);
 	wnoutrefresh(stdscr);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	wbkgd(win, COLOR_PAIR(5));
+	wbkgd(win, g_ui_theme.win_bg);
 	draw_win_box(win);
 
 	mvwprintw(win, 0, 2, " %s ", title);
-
-	int msg_x = (box_w - msg_cols) / 2;
-	if (msg_x < 2) msg_x = 2;
+	int msg_x = (box_w - msg_cols < 4) ? 2 : (box_w - msg_cols) / 2;
 	mvwprint_utf8(win, 1, msg_x, box_w - 4, msg);
 
-	const char *btn = "[ Enter ]";
-	int btn_x = (box_w - (int)strlen(btn)) / 2;
-	wattron(win, COLOR_PAIR(2));
-	mvwprintw(win, 3, btn_x, "%s", btn);
-	wattroff(win, COLOR_PAIR(2));
+	const char *blbls[1] = { "[ Enter ]" };
+	int btn_x = (box_w - 9 < 2) ? 2 : (box_w - 9) / 2;
+	UiButtonRow btns = { blbls, 1, 3, btn_x, 0, 0 };
+	ui_btns_draw(&btns, win);
 	wrefresh(win);
 
 	while (1) {
@@ -692,22 +674,6 @@ void ui_message(const char *title, const char *msg) {
 
 	delwin(win);
 	touchwin(stdscr);
-}
-
-static int ui_is_word_sep(wchar_t ch) {
-	return iswspace(ch) || ch == L'/' || ch == L'-' || ch == L'_' || ch == L'.';
-}
-
-static int ui_word_left(const wchar_t *buf, int pos) {
-	while (pos > 0 && ui_is_word_sep(buf[pos - 1])) pos--;
-	while (pos > 0 && !ui_is_word_sep(buf[pos - 1])) pos--;
-	return pos;
-}
-
-static int ui_word_right(const wchar_t *buf, int pos, int len) {
-	while (pos < len && !ui_is_word_sep(buf[pos])) pos++;
-	while (pos < len && ui_is_word_sep(buf[pos])) pos++;
-	return pos;
 }
 
 int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
@@ -724,18 +690,27 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
 	keypad(win, TRUE);
-	wbkgd(win, COLOR_PAIR(5));
+	wbkgd(win, g_ui_theme.win_bg);
 
 	wchar_t wbuf[MAX_PATH];
 	size_t conv = mbstowcs(wbuf, buf, MAX_PATH - 1);
 	int len = (conv == (size_t)-1) ? 0 : (int)conv;
 	wbuf[len] = L'\0';
-	int pos = len;
-	int sel_anchor = (len > 0) ? 0 : -1;
 
 	int field_w = box_w - 6;
+	UiTextField tf;
+	ui_tf_init(&tf, wbuf, MAX_PATH - 2, 1);
+	ui_tf_set_bounds(&tf, 2, 3, field_w);
+
+	const char *btn_labels[2] = { "[ OK ]", "[ Cancel ]" };
+	int total_btn_w = 6 + 4 + 10;
+	int btn_x = (box_w - total_btn_w) / 2;
+	if (btn_x < 2) btn_x = 2;
+
+	UiButtonRow btns = { btn_labels, 2, 4, btn_x, 4, -1 };
+
 	int res = 0;
-	int focus = 0;
+	int focus = 0; /* 0 = input, 1 = OK, 2 = Cancel */
 
 	while (1) {
 		werase(win);
@@ -743,48 +718,12 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 		mvwprintw(win, 0, 2, " %s ", title);
 		mvwprint_utf8(win, 1, 3, field_w, prompt);
 
-		wattron(win, COLOR_PAIR(2));
-		mvwhline(win, 2, 3, ' ', field_w);
+		ui_tf_draw(&tf, win, focus == 0);
+		btns.focus_idx = (focus == 1) ? 0 : ((focus == 2) ? 1 : -1);
+		ui_btns_draw(&btns, win);
 
-		int offset = 0;
-		if (pos >= field_w) {
-			offset = pos - field_w + 1;
-		}
-		mvwaddnwstr(win, 2, 3, wbuf + offset, field_w);
-		wattroff(win, COLOR_PAIR(2));
-
-		if (sel_anchor != -1 && sel_anchor != pos) {
-			int s1 = (sel_anchor < pos) ? sel_anchor : pos;
-			int s2 = (sel_anchor > pos) ? sel_anchor : pos;
-			if (s1 < offset) s1 = offset;
-			if (s2 > offset + field_w) s2 = offset + field_w;
-			if (s2 > s1) {
-				wattron(win, COLOR_PAIR(6));
-				mvwaddnwstr(win, 2, 3 + (s1 - offset), wbuf + s1, s2 - s1);
-				wattroff(win, COLOR_PAIR(6));
-			}
-		}
-
-		const char *btn_ok  = "[ OK ]";
-		const char *btn_can = "[ Cancel ]";
-		int total_btn_w = 6 + 4 + 10;
-		int btn_x = (box_w - total_btn_w) / 2;
-		if (btn_x < 2) btn_x = 2;
-
-		wattron(win, focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 4, btn_x, "%s", btn_ok);
-		wattroff(win, focus == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-		wattron(win, focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 4, btn_x + 10, "%s", btn_can);
-		wattroff(win, focus == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-
-		if (focus == 0) {
-			curs_set(1);
-			wmove(win, 2, 3 + (pos - offset));
-		} else {
-			curs_set(0);
-		}
+		if (focus == 0) ui_tf_place_cursor(&tf, win);
+		else curs_set(0);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
@@ -792,94 +731,30 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y;
 			int wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) {
-				res = 0;
-				break;
-			}
-			if (wy == 2 && wx >= 3 && wx < 3 + field_w) {
-				focus = 0;
-				sel_anchor = -1;
-				int new_pos = offset + (wx - 3);
-				pos = (new_pos > len) ? len : new_pos;
-				continue;
-			}
-			if (wy == 4) {
-				if (wx >= btn_x && wx < btn_x + 6) {
-					wcstombs(buf, wbuf, (size_t)max_len);
-					buf[max_len - 1] = '\0';
-					res = 1;
-					break;
-				}
-				if (wx >= btn_x + 10 && wx < btn_x + 20) {
-					res = 0;
-					break;
-				}
-			}
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
+			if (ui_tf_handle_mouse(&tf, wy, wx)) { focus = 0; continue; }
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; res = 1; break; }
+			if (hit == 1) { res = 0; break; }
 			continue;
 		}
-		if (ev.action == ACT_DOWN) focus = (focus == 0) ? 1 : 0;
-		else if (ev.action == ACT_UP) focus = 0;
-		else if (ev.action == ACT_WORD_SEL_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_left(wbuf, pos); }
-		else if (ev.action == ACT_WORD_SEL_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_right(wbuf, pos, len); }
-		else if (ev.action == ACT_SHIFT_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos > 0) pos--; }
-		else if (ev.action == ACT_SHIFT_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos < len) pos++; }
-		else if (ev.action == ACT_SHIFT_HOME) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = 0; }
-		else if (ev.action == ACT_SHIFT_END) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = len; }
-		else if (ev.action == ACT_CTRL_LEFT) { focus = 0; sel_anchor = -1; pos = ui_word_left(wbuf, pos); }
-		else if (ev.action == ACT_CTRL_RIGHT) { focus = 0; sel_anchor = -1; pos = ui_word_right(wbuf, pos, len); }
-		else if (ev.action == ACT_LEFT) { sel_anchor = -1; if (focus == 0 && pos > 0) pos--; else if (focus == 2) focus = 1; else if (focus == 1) focus = 2; }
-		else if (ev.action == ACT_RIGHT) { sel_anchor = -1; if (focus == 0 && pos < len) pos++; else if (focus == 1) focus = 2; else if (focus == 2) focus = 1; }
-		else if (ev.action == ACT_HOME || ev.action == ACT_CTRL_A) { focus = 0; sel_anchor = -1; pos = 0; }
-		else if (ev.action == ACT_END) { focus = 0; sel_anchor = -1; pos = len; }
-		else if (ev.action == ACT_BACKSPACE && focus == 0) {
-			if (sel_anchor != -1 && sel_anchor != pos) {
-				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
-				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
-			} else if (pos > 0) { wmemmove(wbuf + pos - 1, wbuf + pos, (size_t)(len - pos + 1)); pos--; len--; }
-		} else if (ev.action == ACT_DELETE && focus == 0) {
-			if (sel_anchor != -1 && sel_anchor != pos) {
-				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
-				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
-			} else if (pos < len) { wmemmove(wbuf + pos, wbuf + pos + 1, (size_t)(len - pos)); len--; }
-		} else if (ev.action == ACT_ESC) { res = 0; break; }
-		else if (ev.action == ACT_TAB) { focus = (focus + 1) % 3; }
-		else if (ev.action == ACT_ENTER) {
-			if (focus == 2) res = 0; else { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; res = 1; }
+		if (ev.action == ACT_ESC) { res = 0; break; }
+		if (ev.action == ACT_TAB) { focus = (focus + 1) % 3; continue; }
+		if (ev.action == ACT_SHIFT_TAB) { focus = (focus + 2) % 3; continue; }
+		if (ev.action == ACT_DOWN) { focus = (focus == 0) ? 1 : 0; continue; }
+		if (ev.action == ACT_UP) { focus = 0; continue; }
+		if (ev.action == ACT_ENTER || ((focus == 1 || focus == 2) && ev.action == ACT_CHAR && ev.ch == L' ')) {
+			if (focus == 2) res = 0;
+			else { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; res = 1; }
 			break;
-		} else if (ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_Y || ev.action == ACT_CTRL_X) {
-			int s1 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor < pos) ? sel_anchor : pos) : 0;
-			int s2 = (sel_anchor != -1 && sel_anchor != pos) ? ((sel_anchor > pos) ? sel_anchor : pos) : len;
-			if (s2 > s1) {
-				wchar_t wsub[MAX_PATH]; wmemcpy(wsub, wbuf + s1, (size_t)(s2 - s1)); wsub[s2 - s1] = L'\0';
-				char utf_sub[MAX_PATH];
-				if (wcstombs(utf_sub, wsub, sizeof(utf_sub)) != (size_t)-1) { utf_sub[sizeof(utf_sub) - 1] = '\0'; clipboard_copy(utf_sub); }
-				if (ev.action == ACT_CTRL_X && sel_anchor != -1 && sel_anchor != pos) {
-					wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
-				}
-			}
-		} else if (ev.action == ACT_CTRL_V || ev.action == ACT_SHIFT_INSERT) {
+		}
+		if (focus > 0 && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT)) {
+			focus = (focus == 1) ? 2 : 1;
+			continue;
+		}
+		if (ui_tf_handle_event(&tf, &ev)) {
 			focus = 0;
-			if (sel_anchor != -1 && sel_anchor != pos) {
-				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
-				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
-			}
-			char raw[MAX_PATH] = {0};
-			if (clipboard_paste(raw, sizeof(raw)) > 0) {
-				wchar_t wadd[MAX_PATH]; size_t alen = mbstowcs(wadd, raw, MAX_PATH - 1);
-				if (alen != (size_t)-1 && alen > 0) {
-					if (len + (int)alen >= MAX_PATH - 2) alen = (size_t)(MAX_PATH - 2 - len);
-					wmemmove(wbuf + pos + alen, wbuf + pos, (size_t)(len - pos + 1));
-					wmemcpy(wbuf + pos, wadd, alen); pos += (int)alen; len += (int)alen;
-				}
-			}
-		} else if (ev.action == ACT_CTRL_U) { focus = 0; len = 0; pos = 0; sel_anchor = -1; wbuf[0] = L'\0'; }
-		else if (ev.action == ACT_CHAR && iswprint(ev.ch) && len < MAX_PATH - 2) {
-			focus = 0;
-			if (sel_anchor != -1 && sel_anchor != pos) {
-				int s1 = (sel_anchor < pos) ? sel_anchor : pos, s2 = (sel_anchor > pos) ? sel_anchor : pos;
-				wmemmove(wbuf + s1, wbuf + s2, (size_t)(len - s2 + 1)); len -= (s2 - s1); pos = s1; sel_anchor = -1;
-			}
-			wmemmove(wbuf + pos + 1, wbuf + pos, (size_t)(len - pos + 1)); wbuf[pos++] = ev.ch; len++;
+			continue;
 		}
 	}
 
@@ -1944,109 +1819,71 @@ int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex
 	int h, w; getmaxyx(stdscr, h, w);
 	int bw = (w - 10 > 70) ? 70 : ((w - 10 < 44) ? 44 : w - 10), bh = 8;
 	int sy = (h - bh) / 2, sx = (w - bw) / 2;
-	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, COLOR_PAIR(5));
+	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, g_ui_theme.win_bg);
+
 	wchar_t wb[MAX_PATH];
 	size_t n = mbstowcs(wb, search_buf, MAX_PATH - 1);
-	int ln = (n == (size_t)-1) ? 0 : (int)n;
-	wb[ln] = 0;
-	int ps = ln, sel_all = (ln > 0) ? 1 : 0;
+	wb[(n == (size_t)-1) ? 0 : (int)n] = 0;
+
 	int cs = (case_sens && *case_sens) ? 1 : 0;
 	int rx = (use_regex && *use_regex) ? 1 : 0;
-	int fw = bw - 6, foc = 0, res = 0, bx = (bw - 24) / 2;
-	int cx1 = 3, cx2 = 24;
+	int fw = bw - 6, foc = 0, res = 0, cx1 = 3, cx2 = 24;
+
+	UiTextField tf;
+	ui_tf_init(&tf, wb, MAX_PATH - 2, 1);
+	ui_tf_set_bounds(&tf, 2, 3, fw);
+
+	const char *blbls[2] = { "[ Search ]", "[ Cancel ]" };
+	int bx = (bw - 24 < 2) ? 2 : (bw - 24) / 2;
+	UiButtonRow btns = { blbls, 2, 6, bx, 4, -1 };
+
 	while (1) {
-		werase(win); draw_win_box(win); mvwprintw(win, 0, 2, " Search (F7) ");
+		werase(win); draw_win_box(win); mvwprintw(win, 0, 2, " Find (F7) ");
 		mvwprint_utf8(win, 1, 3, fw, "Search for:");
-		int off = ps >= fw ? ps - fw + 1 : 0;
-		wattron(win, foc == 0 ? COLOR_PAIR(2) : COLOR_PAIR(6)); mvwhline(win, 2, 3, 32, fw);
-		mvwaddnwstr(win, 2, 3, wb + off, fw); wattroff(win, foc == 0 ? COLOR_PAIR(2) : COLOR_PAIR(6));
-		if (foc == 0 && sel_all && ln > 0) {
-			int vis_n = (ln - off > fw) ? fw : (ln - off);
-			if (vis_n > 0) {
-				wattron(win, COLOR_PAIR(6));
-				mvwaddnwstr(win, 2, 3, wb + off, vis_n);
-				wattroff(win, COLOR_PAIR(6));
-			}
-		}
-		wattron(win, foc == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 4, cx1, "[%c] Case sensitive", cs ? 'x' : ' ');
-		wattroff(win, foc == 1 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 4, cx2, "[%c] RegExp", rx ? 'x' : ' ');
-		wattroff(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		ui_tf_draw(&tf, win, foc == 0);
 
-		wattron(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, bx, "[ Search ]"); wattroff(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, bx + 14, "[ Cancel ]"); wattroff(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		UiCheckbox cb_cs = { "Case sensitive", &cs, 4, cx1 };
+		UiCheckbox cb_rx = { "RegExp", &rx, 4, cx2 };
+		ui_cb_draw(&cb_cs, win, foc == 1);
+		ui_cb_draw(&cb_rx, win, foc == 2);
 
-		if (foc == 0) { curs_set(1); wmove(win, 2, 3 + ps - off); } else curs_set(0);
-		wrefresh(win); InputEvent ev = input_read();
+		btns.focus_idx = (foc == 3) ? 0 : ((foc == 4) ? 1 : -1);
+		ui_btns_draw(&btns, win);
+
+		if (foc == 0) ui_tf_place_cursor(&tf, win);
+		else curs_set(0);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy == 2 && wx >= 3 && wx < 3 + fw) {
-				int np = off + (wx - 3);
-				foc = 0; sel_all = 0; ps = (np > ln) ? ln : np;
-				continue;
-			}
+			if (ui_tf_handle_mouse(&tf, wy, wx)) { foc = 0; continue; }
 			if (wy == 4) {
 				if (wx >= cx1 && wx < cx1 + 18) { foc = 1; cs = !cs; continue; }
 				if (wx >= cx2 && wx < cx2 + 10) { foc = 2; rx = !rx; continue; }
 			}
-			if (wy == 6) {
-				if (wx >= bx && wx < bx + 10) {
-					wcstombs(search_buf, wb, s_max);
-					if (case_sens) *case_sens = cs;
-					if (use_regex) *use_regex = rx;
-					res = 1; break;
-				}
-				if (wx >= bx + 14 && wx < bx + 24) break;
-			}
-			continue;
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { foc = 3; ev.action = ACT_ENTER; }
+			else if (hit == 1) break;
+			else continue;
 		}
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
-		if (ev.action == ACT_TAB) { foc = (foc + 1) % 5; sel_all = 0; continue; }
-		if (ev.action == ACT_DOWN) {
-			sel_all = 0;
-			if (foc == 0) foc = 1;
-			else if (foc == 1) foc = 3;
-			else if (foc == 2) foc = 4;
-			continue;
-		}
-		if (ev.action == ACT_UP) {
-			sel_all = 0;
-			if (foc == 1 || foc == 2) foc = 0;
-			else if (foc == 3) foc = 1;
-			else if (foc == 4) foc = 2;
-			continue;
-		}
-		if ((foc == 1 || foc == 2) && ev.action == ACT_CHAR && ev.ch == L' ') {
-			if (foc == 1) cs = !cs; else rx = !rx;
-			continue;
-		}
-		if (ev.action == ACT_ENTER) {
+		if (ev.action == ACT_TAB) { foc = (foc + 1) % 5; continue; }
+		if (ev.action == ACT_SHIFT_TAB) { foc = (foc + 4) % 5; continue; }
+		if (ev.action == ACT_DOWN) { foc = (foc == 0) ? 1 : ((foc == 1) ? 3 : ((foc == 2) ? 4 : foc)); continue; }
+		if (ev.action == ACT_UP) { foc = (foc == 1 || foc == 2) ? 0 : ((foc == 3) ? 1 : ((foc == 4) ? 2 : foc)); continue; }
+		if ((foc == 1 || foc == 2) && ev.action == ACT_CHAR && ev.ch == L' ') { if (foc == 1) cs = !cs; else rx = !rx; continue; }
+		if (ev.action == ACT_ENTER || ((foc == 3 || foc == 4) && ev.action == ACT_CHAR && ev.ch == L' ')) {
 			if (foc == 4) break;
-			wcstombs(search_buf, wb, s_max);
+			wcstombs(search_buf, wb, (size_t)s_max); search_buf[s_max - 1] = '\0';
 			if (case_sens) *case_sens = cs;
 			if (use_regex) *use_regex = rx;
 			res = 1; break;
 		}
 		if (foc == 1 || foc == 2) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 3 - foc; continue; }
 		if (foc >= 3) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 7 - foc; continue; }
-		if (ev.action == ACT_LEFT) { sel_all = 0; if (ps > 0) ps--; }
-		else if (ev.action == ACT_RIGHT) { sel_all = 0; if (ps < ln) ps++; }
-		else if (ev.action == ACT_HOME) { sel_all = 0; ps = 0; }
-		else if (ev.action == ACT_END) { sel_all = 0; ps = ln; }
-		else if (ev.action == ACT_CTRL_U) { sel_all = 0; ln = ps = 0; wb[0] = 0; }
-		else if (ev.action == ACT_BACKSPACE) {
-			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
-			else if (ps > 0) { wmemmove(wb + ps - 1, wb + ps, ln - ps + 1); ps--; ln--; }
-		} else if (ev.action == ACT_DELETE) {
-			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
-			else if (ps < ln) { wmemmove(wb + ps, wb + ps + 1, ln - ps); ln--; }
-		} else if (ev.action == ACT_CHAR && iswprint(ev.ch) && ln < MAX_PATH - 2) {
-			if (sel_all) { ln = ps = 0; wb[0] = 0; sel_all = 0; }
-			wmemmove(wb + ps + 1, wb + ps, ln - ps + 1); wb[ps++] = ev.ch; ln++;
-		}
+		if (ui_tf_handle_event(&tf, &ev)) { foc = 0; continue; }
 	}
 	curs_set(0); delwin(win); touchwin(stdscr); return res;
 }
@@ -2055,98 +1892,79 @@ int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max,
 	int h, w; getmaxyx(stdscr, h, w);
 	int bw = (w - 10 > 70) ? 70 : ((w - 10 < 44) ? 44 : w - 10), bh = 11;
 	int sy = (h - bh) / 2, sx = (w - bw) / 2;
-	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, COLOR_PAIR(5));
-	wchar_t wb[2][MAX_PATH]; int ln[2] = {0, 0}, ps[2] = {0, 0};
+	WINDOW *win = newwin(bh, bw, sy, sx); keypad(win, TRUE); wbkgd(win, g_ui_theme.win_bg);
+
+	wchar_t wb[2][MAX_PATH];
 	for (int f = 0; f < 2; f++) {
 		size_t n = mbstowcs(wb[f], f == 0 ? search_buf : replace_buf, MAX_PATH - 1);
-		ln[f] = (n == (size_t)-1) ? 0 : (int)n; wb[f][ln[f]] = 0; ps[f] = ln[f];
+		wb[f][(n == (size_t)-1) ? 0 : (int)n] = 0;
 	}
+
 	int cs = (case_sens && *case_sens) ? 1 : 0;
 	int rx = (use_regex && *use_regex) ? 1 : 0;
-	int fw = bw - 6, foc = 0, res = 0, bx = (bw - 25) / 2;
-	int cx1 = 3, cx2 = 24;
+	int fw = bw - 6, foc = 0, res = 0, cx1 = 3, cx2 = 24;
+
+	UiTextField tf[2];
+	ui_tf_init(&tf[0], wb[0], MAX_PATH - 2, 1);
+	ui_tf_set_bounds(&tf[0], 2, 3, fw);
+	ui_tf_init(&tf[1], wb[1], MAX_PATH - 2, 1);
+	ui_tf_set_bounds(&tf[1], 5, 3, fw);
+
+	const char *blbls[2] = { "[ Replace ]", "[ Cancel ]" };
+	int bx = (bw - 25 < 2) ? 2 : (bw - 25) / 2;
+	UiButtonRow btns = { blbls, 2, 9, bx, 4, -1 };
+
 	while (1) {
 		werase(win); draw_win_box(win); mvwprintw(win, 0, 2, " Replace (Ctrl+F7) ");
-		mvwprint_utf8(win, 1, 3, fw, "Search for:"); mvwprint_utf8(win, 4, 3, fw, "Replace with:");
-		for (int f = 0; f < 2; f++) {
-			int fy = f == 0 ? 2 : 5, off = ps[f] >= fw ? ps[f] - fw + 1 : 0;
-			wattron(win, foc == f ? COLOR_PAIR(2) : COLOR_PAIR(6)); mvwhline(win, fy, 3, 32, fw);
-			mvwaddnwstr(win, fy, 3, wb[f] + off, fw); wattroff(win, foc == f ? COLOR_PAIR(2) : COLOR_PAIR(6));
-		}
-		wattron(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 7, cx1, "[%c] Case sensitive", cs ? 'x' : ' ');
-		wattroff(win, foc == 2 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 7, cx2, "[%c] RegExp", rx ? 'x' : ' ');
-		wattroff(win, foc == 3 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprint_utf8(win, 1, 3, fw, "Search for:");
+		ui_tf_draw(&tf[0], win, foc == 0);
+		mvwprint_utf8(win, 4, 3, fw, "Replace with:");
+		ui_tf_draw(&tf[1], win, foc == 1);
 
-		wattron(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 9, bx, "[ Replace ]"); wattroff(win, foc == 4 ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		wattron(win, foc == 5 ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 9, bx + 15, "[ Cancel ]"); wattroff(win, foc == 5 ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		UiCheckbox cb_cs = { "Case sensitive", &cs, 7, cx1 };
+		UiCheckbox cb_rx = { "RegExp", &rx, 7, cx2 };
+		ui_cb_draw(&cb_cs, win, foc == 2);
+		ui_cb_draw(&cb_rx, win, foc == 3);
 
-		if (foc < 2) { curs_set(1); int off = ps[foc] >= fw ? ps[foc] - fw + 1 : 0; wmove(win, foc == 0 ? 2 : 5, 3 + ps[foc] - off); } else curs_set(0);
-		wrefresh(win); InputEvent ev = input_read();
+		btns.focus_idx = (foc == 4) ? 0 : ((foc == 5) ? 1 : -1);
+		ui_btns_draw(&btns, win);
+
+		if (foc < 2) ui_tf_place_cursor(&tf[foc], win);
+		else curs_set(0);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if ((wy == 2 || wy == 5) && wx >= 3 && wx < 3 + fw) {
-				int f = (wy == 2) ? 0 : 1;
-				int off = ps[f] >= fw ? ps[f] - fw + 1 : 0;
-				int np = off + (wx - 3);
-				foc = f;
-				ps[f] = (np > ln[f]) ? ln[f] : np;
-				continue;
-			}
+			if (ui_tf_handle_mouse(&tf[0], wy, wx)) { foc = 0; continue; }
+			if (ui_tf_handle_mouse(&tf[1], wy, wx)) { foc = 1; continue; }
 			if (wy == 7) {
 				if (wx >= cx1 && wx < cx1 + 18) { foc = 2; cs = !cs; continue; }
 				if (wx >= cx2 && wx < cx2 + 10) { foc = 3; rx = !rx; continue; }
 			}
-			if (wy == 9) {
-				if (wx >= bx && wx < bx + 11) {
-					wcstombs(search_buf, wb[0], s_max); wcstombs(replace_buf, wb[1], r_max);
-					if (case_sens) *case_sens = cs;
-					if (use_regex) *use_regex = rx;
-					res = 1; break;
-				}
-				if (wx >= bx + 15 && wx < bx + 25) break;
-			}
-			continue;
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { foc = 4; ev.action = ACT_ENTER; }
+			else if (hit == 1) break;
+			else continue;
 		}
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
 		if (ev.action == ACT_TAB) { foc = (foc + 1) % 6; continue; }
-		if (ev.action == ACT_DOWN) {
-			if (foc == 0) foc = 1;
-			else if (foc == 1) foc = 2;
-			else if (foc == 2) foc = 4;
-			else if (foc == 3) foc = 5;
-			continue;
-		}
-		if (ev.action == ACT_UP) {
-			if (foc == 1) foc = 0;
-			else if (foc == 2 || foc == 3) foc = 1;
-			else if (foc == 4) foc = 2;
-			else if (foc == 5) foc = 3;
-			continue;
-		}
-		if ((foc == 2 || foc == 3) && ev.action == ACT_CHAR && ev.ch == L' ') {
-			if (foc == 2) cs = !cs; else rx = !rx;
-			continue;
-		}
-		if (ev.action == ACT_ENTER) {
+		if (ev.action == ACT_SHIFT_TAB) { foc = (foc + 5) % 6; continue; }
+		if (ev.action == ACT_DOWN) { foc = (foc == 0) ? 1 : ((foc == 1) ? 2 : ((foc == 2) ? 4 : ((foc == 3) ? 5 : foc))); continue; }
+		if (ev.action == ACT_UP) { foc = (foc == 1) ? 0 : ((foc == 2 || foc == 3) ? 1 : ((foc == 4) ? 2 : ((foc == 5) ? 3 : foc))); continue; }
+		if ((foc == 2 || foc == 3) && ev.action == ACT_CHAR && ev.ch == L' ') { if (foc == 2) cs = !cs; else rx = !rx; continue; }
+		if (ev.action == ACT_ENTER || ((foc == 4 || foc == 5) && ev.action == ACT_CHAR && ev.ch == L' ')) {
 			if (foc == 5) break;
-			wcstombs(search_buf, wb[0], s_max); wcstombs(replace_buf, wb[1], r_max);
+			wcstombs(search_buf, wb[0], (size_t)s_max); search_buf[s_max - 1] = '\0';
+			wcstombs(replace_buf, wb[1], (size_t)r_max); replace_buf[r_max - 1] = '\0';
 			if (case_sens) *case_sens = cs;
 			if (use_regex) *use_regex = rx;
 			res = 1; break;
 		}
 		if (foc == 2 || foc == 3) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 5 - foc; continue; }
 		if (foc >= 4) { if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) foc = 9 - foc; continue; }
-		if (ev.action == ACT_LEFT && ps[foc] > 0) ps[foc]--;
-		else if (ev.action == ACT_RIGHT && ps[foc] < ln[foc]) ps[foc]++;
-		else if (ev.action == ACT_HOME) ps[foc] = 0; else if (ev.action == ACT_END) ps[foc] = ln[foc];
-		else if (ev.action == ACT_CTRL_U) { ln[foc] = ps[foc] = 0; wb[foc][0] = 0; }
-		else if (ev.action == ACT_BACKSPACE && ps[foc] > 0) { wmemmove(wb[foc] + ps[foc] - 1, wb[foc] + ps[foc], ln[foc] - ps[foc] + 1); ps[foc]--; ln[foc]--; }
-		else if (ev.action == ACT_DELETE && ps[foc] < ln[foc]) { wmemmove(wb[foc] + ps[foc], wb[foc] + ps[foc] + 1, ln[foc] - ps[foc]); ln[foc]--; }
-		else if (ev.action == ACT_CHAR && iswprint(ev.ch) && ln[foc] < MAX_PATH - 2) { wmemmove(wb[foc] + ps[foc] + 1, wb[foc] + ps[foc], ln[foc] - ps[foc] + 1); wb[foc][ps[foc]++] = ev.ch; ln[foc]++; }
+		if (foc < 2 && ui_tf_handle_event(&tf[foc], &ev)) continue;
 	}
 	curs_set(0); delwin(win); touchwin(stdscr); return res;
 }
@@ -2171,50 +1989,36 @@ int ui_overwrite_prompt(const char *filename, off_t src_size, time_t src_mtime, 
 
 	curs_set(0);
 	WINDOW *win = newwin(bh, bw, sy, sx);
-	wbkgd(win, COLOR_PAIR(5));
+	wbkgd(win, g_ui_theme.win_bg);
 
-	const char *btns[4] = {"[ Overwrite ]", "[ All ]", "[ Skip ]", "[ Cancel ]"};
-	int bwid[4] = {13, 7, 8, 10};
-	int total_w = 13 + 1 + 7 + 1 + 8 + 1 + 10;
-	int bx0 = (bw - total_w) / 2;
-	if (bx0 < 2) bx0 = 2;
+	const char *blbls[4] = { "[ Overwrite ]", "[ All ]", "[ Skip ]", "[ Cancel ]" };
+	int bx0 = (bw - 41 < 2) ? 2 : (bw - 41) / 2;
+	UiButtonRow btns = { blbls, 4, 7, bx0, 1, 0 };
 
 	int sel = 0, res = 0;
 	while (1) {
 		werase(win);
 		draw_win_box(win);
-		mvwprintw(win, 0, (bw - 11) / 2, " Overwrite ");
-		mvwprint_utf8(win, 1, 3, bw - 6, "File already exists:");
-		wattron(win, A_BOLD);
+		mvwprintw(win, 0, 2, " Warning ");
+		mvwprint_utf8(win, 1, 3, bw - 6, "Target file already exists:");
 		mvwprint_utf8(win, 2, 3, bw - 6, filename);
-		wattroff(win, A_BOLD);
 		mvwprint_utf8(win, 4, 3, bw - 6, line_src);
 		mvwprint_utf8(win, 5, 3, bw - 6, line_dst);
 
-		int cx = bx0;
-		for (int i = 0; i < 4; i++) {
-			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, 7, cx, "%s", btns[i]);
-			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 1;
-		}
+		btns.focus_idx = sel;
+		ui_btns_draw(&btns, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) { res = 0; break; }
-			if (wy == 7) {
-				int px = bx0;
-				for (int i = 0; i < 4; i++) {
-					if (wx >= px && wx < px + bwid[i]) { res = (i == 3) ? 0 : (i + 1); goto done_ovr; }
-					px += bwid[i] + 1;
-				}
-			}
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit >= 0) { res = (hit == 3) ? 0 : (hit + 1); break; }
 			continue;
 		}
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) { res = 0; break; }
-		if (ev.action == ACT_LEFT) sel = (sel + 3) % 4;
+		if (ev.action == ACT_LEFT || ev.action == ACT_SHIFT_TAB) sel = (sel + 3) % 4;
 		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 4;
 		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 3) ? 0 : (sel + 1); break; }
 		else if (ev.action == ACT_CHAR) {
@@ -2225,7 +2029,6 @@ int ui_overwrite_prompt(const char *filename, off_t src_size, time_t src_mtime, 
 			if (ch == L'c') { res = 0; break; }
 		}
 	}
-done_ovr:
 	delwin(win);
 	touchwin(stdscr);
 	return res;
@@ -2233,38 +2036,37 @@ done_ovr:
 
 int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid_y) {
 	int h, w; getmaxyx(stdscr, h, w);
-	int bw = w - 2 < 50 ? w - 2 : 50, bh = 8, sx = (w - bw) / 2, sy = h - bh - 2;
+	int bw = (w - 2 < 50) ? (w - 2) : 50, bh = 8, sx = (w - bw) / 2, sy = h - bh - 2;
 	if (avoid_y >= sy - 1 && avoid_y <= sy + bh) sy = 2;
 	if (sy < 1) sy = 1;
-	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
-	const char *btns[4] = {"[ Replace ]", "[ All ]", "[ Skip ]", "[ Cancel ]"};
-	int bwid[4] = {11, 7, 8, 10}, bx0 = (bw - 39) / 2, sel = 0, res = 0;
+	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, g_ui_theme.win_bg);
+
+	const char *blbls[4] = { "[ Replace ]", "[ All ]", "[ Skip ]", "[ Cancel ]" };
+	int bx0 = (bw - 39 < 2) ? 2 : (bw - 39) / 2;
+	UiButtonRow btns = { blbls, 4, 6, bx0, 1, 0 };
+
+	int sel = 0, res = 0;
 	while (1) {
 		werase(win); draw_win_box(win); mvwprintw(win, 0, (bw - 9) / 2, " Replace ");
 		mvwprintw(win, 1, (bw - 7) / 2, "Replace"); mvwprint_utf8(win, 2, 4, bw - 8, search_str);
 		mvwprintw(win, 3, (bw - 4) / 2, "with"); mvwprint_utf8(win, 4, 4, bw - 8, replace_str);
-		int cx = bx0;
-		for (int i = 0; i < 4; i++) {
-			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5)); mvwprintw(win, 6, cx, "%s", btns[i]);
-			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5)); cx += bwid[i] + 1;
-		}
-		wrefresh(win); InputEvent ev = input_read();
+
+		btns.focus_idx = sel;
+		ui_btns_draw(&btns, win);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy == 6) {
-				int px = bx0;
-				for (int i = 0; i < 4; i++) {
-					if (wx >= px && wx < px + bwid[i]) { res = (i == 3) ? 0 : (i + 1); goto done_rp; }
-					px += bwid[i] + 1;
-				}
-			}
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit >= 0) { res = (hit == 3) ? 0 : (hit + 1); break; }
 			continue;
 		}
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
-		if (ev.action == ACT_LEFT) sel = (sel + 3) % 4;
+		if (ev.action == ACT_LEFT || ev.action == ACT_SHIFT_TAB) sel = (sel + 3) % 4;
 		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 4;
-		else if (ev.action == ACT_ENTER) { res = (sel == 3) ? 0 : (sel + 1); break; }
+		else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 3) ? 0 : (sel + 1); break; }
 		else if (ev.action == ACT_CHAR) {
 			wchar_t ch = towlower(ev.ch);
 			if (ch == L'r' || ch == L'y') { res = 1; break; }
@@ -2273,7 +2075,6 @@ int ui_replace_prompt(const char *search_str, const char *replace_str, int avoid
 			if (ch == L'c') break;
 		}
 	}
-done_rp:
 	delwin(win); touchwin(stdscr); return res;
 }
 
@@ -2440,38 +2241,24 @@ int ui_cmd_history(CmdHistoryEntry *hist, int *hist_count, char *out_cmd, size_t
 			mvwprint_utf8(win, sep_y + 2, 2, bw - 4, cur->cmd);
 		}
 
-		int bx0 = (bw - total_bw) / 2;
-		if (bx0 < 2) bx0 = 2;
-		int cx = bx0;
-		for (int i = 0; i < 5; i++) {
-			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
-			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 1;
-		}
+		int bx0 = (bw - total_bw < 2) ? 2 : (bw - total_bw) / 2;
+		UiButtonRow brow = { btns, 5, bh - 2, bx0, 1, btn };
+		ui_btns_draw(&brow, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
-				sel = top + wy - 1;
-				continue;
-			}
-			if (wy == bh - 2) {
-				int px = bx0;
-				for (int i = 0; i < 5; i++) {
-					if (wx >= px && wx < px + bwid[i]) {
-						btn = i;
-						if (i == 0 && mcnt > 0) { res = 1; goto done_ch; }
-						if (i == 1 && mcnt > 0) { res = 2; goto done_ch; }
-						if (i == 2 && mcnt > 0) { res = 3; goto done_ch; }
-						if (i == 3 && mcnt > 0) goto do_del_ch;
-						goto done_ch;
-					}
-					px += bwid[i] + 1;
-				}
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) { sel = top + wy - 1; continue; }
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) {
+				btn = hit;
+				if (hit == 0 && mcnt > 0) { res = 1; goto done_ch; }
+				if (hit == 1 && mcnt > 0) { res = 2; goto done_ch; }
+				if (hit == 2 && mcnt > 0) { res = 3; goto done_ch; }
+				if (hit == 3 && mcnt > 0) goto do_del_ch;
+				goto done_ch;
 			}
 			continue;
 		}
@@ -2619,38 +2406,24 @@ int ui_dir_history(DirHistoryEntry *hist, int *hist_count, char *out_dir, size_t
 			wattroff(win, A_BOLD);
 		}
 
-		int bx0 = (bw - total_bw) / 2;
-		if (bx0 < 2) bx0 = 2;
-		int cx = bx0;
-		for (int i = 0; i < 5; i++) {
-			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
-			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 1;
-		}
+		int bx0 = (bw - total_bw < 2) ? 2 : (bw - total_bw) / 2;
+		UiButtonRow brow = { btns, 5, bh - 2, bx0, 1, btn };
+		ui_btns_draw(&brow, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
-				sel = top + wy - 1;
-				continue;
-			}
-			if (wy == bh - 2) {
-				int px = bx0;
-				for (int i = 0; i < 5; i++) {
-					if (wx >= px && wx < px + bwid[i]) {
-						btn = i;
-						if (i == 0 && mcnt > 0) { res = 1; goto done_dh; }
-						if (i == 1 && mcnt > 0) { res = 2; goto done_dh; }
-						if (i == 2 && mcnt > 0) { res = 3; goto done_dh; }
-						if (i == 3 && mcnt > 0) goto do_del_dh;
-						goto done_dh;
-					}
-					px += bwid[i] + 1;
-				}
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) { sel = top + wy - 1; continue; }
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) {
+				btn = hit;
+				if (hit == 0 && mcnt > 0) { res = 1; goto done_dh; }
+				if (hit == 1 && mcnt > 0) { res = 2; goto done_dh; }
+				if (hit == 2 && mcnt > 0) { res = 3; goto done_dh; }
+				if (hit == 3 && mcnt > 0) goto do_del_dh;
+				goto done_dh;
 			}
 			continue;
 		}
@@ -2811,38 +2584,24 @@ int ui_file_history(FileHistoryEntry *hist, int *hist_count, char *out_path, siz
 			mvwprint_utf8(win, sep_y + 2, 2, bw - 4, cur->path);
 		}
 
-		int bx0 = (bw - total_bw) / 2;
-		if (bx0 < 2) bx0 = 2;
-		int cx = bx0;
-		for (int i = 0; i < 5; i++) {
-			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
-			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 1;
-		}
+		int bx0 = (bw - total_bw < 2) ? 2 : (bw - total_bw) / 2;
+		UiButtonRow brow = { btns, 5, bh - 2, bx0, 1, btn };
+		ui_btns_draw(&brow, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) {
-				sel = top + wy - 1;
-				continue;
-			}
-			if (wy == bh - 2) {
-				int px = bx0;
-				for (int i = 0; i < 5; i++) {
-					if (wx >= px && wx < px + bwid[i]) {
-						btn = i;
-						if (i == 0 && mcnt > 0) { res = 1; goto done_fh; }
-						if (i == 1 && mcnt > 0) { res = 2; goto done_fh; }
-						if (i == 2 && mcnt > 0) { res = 3; goto done_fh; }
-						if (i == 3 && mcnt > 0) goto do_del_fh;
-						goto done_fh;
-					}
-					px += bwid[i] + 1;
-				}
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < mcnt) { sel = top + wy - 1; continue; }
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) {
+				btn = hit;
+				if (hit == 0 && mcnt > 0) { res = 1; goto done_fh; }
+				if (hit == 1 && mcnt > 0) { res = 2; goto done_fh; }
+				if (hit == 2 && mcnt > 0) { res = 3; goto done_fh; }
+				if (hit == 3 && mcnt > 0) goto do_del_fh;
+				goto done_fh;
 			}
 			continue;
 		}
@@ -3002,37 +2761,23 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 			bp = nl + 1;
 		}
 
-		int bx0 = (bw - total_bw) / 2;
-		if (bx0 < 2) bx0 = 2;
-		int cx = bx0;
-		for (int i = 0; i < 4; i++) {
-			wattron(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, bh - 2, cx, "%s", btns[i]);
-			wattroff(win, btn == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 1;
-		}
+		int bx0 = (bw - total_bw < 2) ? 2 : (bw - total_bw) / 2;
+		UiButtonRow brow = { btns, 4, bh - 2, bx0, 1, btn };
+		ui_btns_draw(&brow, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
-			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < cnt) {
-				sel = top + wy - 1;
-				continue;
-			}
-			if (wy == bh - 2) {
-				int px = bx0;
-				for (int i = 0; i < 4; i++) {
-					if (wx >= px && wx < px + bwid[i]) {
-						btn = i;
-						if (i == 0) { chs = sel; goto done_ml; }
-						if (i == 1) goto do_edit_ml;
-						if (i == 2) goto do_del_ml;
-						goto done_ml;
-					}
-					px += bwid[i] + 1;
-				}
+			if (wy >= 1 && wy < 1 + lh && (top + wy - 1) < cnt) { sel = top + wy - 1; continue; }
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) {
+				btn = hit;
+				if (hit == 0) { chs = sel; goto done_ml; }
+				if (hit == 1) goto do_edit_ml;
+				if (hit == 2) goto do_del_ml;
+				goto done_ml;
 			}
 			continue;
 		}
