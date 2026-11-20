@@ -787,7 +787,7 @@ static void ui_show_help_lines(const char *title, const char **lines, int total)
 
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	wbkgd(win, COLOR_PAIR(5));
+	wbkgd(win, g_ui_theme.win_bg);
 
 	while (1) {
 		int f_total = 0;
@@ -828,18 +828,17 @@ static void ui_show_help_lines(const char *title, const char **lines, int total)
 			mvwprintw(win, 0, box_w - (int)strlen(pos_str) - 2, "%s", pos_str);
 		}
 
-		mvwhline(win, 1, 2, ' ', box_w - 4);
-		wattron(win, COLOR_PAIR(2));
+		wattron(win, g_ui_theme.input_attr);
 		mvwhline(win, 1, 2, ' ', box_w - 4);
 		char f_disp[256];
 		snprintf(f_disp, sizeof(f_disp), "Filter: %s", flen > 0 ? filter : "(type to filter)");
 		mvwprint_utf8(win, 1, 3, box_w - 6, f_disp);
-		wattroff(win, COLOR_PAIR(2));
+		wattroff(win, g_ui_theme.input_attr);
 
-		const char *btn = flen > 0 ? "[ Clear (Esc) ]" : "[ Close (Esc) ]";
-		wattron(win, COLOR_PAIR(2));
-		mvwprintw(win, box_h - 2, (box_w - (int)strlen(btn)) / 2, "%s", btn);
-		wattroff(win, COLOR_PAIR(2));
+		const char *blbls[1] = { flen > 0 ? "[ Clear (Esc) ]" : "[ Close (Esc) ]" };
+		int btn_x = (box_w - (int)strlen(blbls[0]) < 2) ? 2 : (box_w - (int)strlen(blbls[0])) / 2;
+		UiButtonRow brow = { blbls, 1, box_h - 2, btn_x, 0, 0 };
+		ui_btns_draw(&brow, win);
 		const char *nav = " Type: Filter | Up/Down: Scroll ";
 		if (box_w > (int)strlen(nav) + 4) mvwprintw(win, box_h - 1, box_w - (int)strlen(nav) - 2, "%s", nav);
 
@@ -866,8 +865,9 @@ static void ui_show_help_lines(const char *title, const char **lines, int total)
 		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { top += 3; continue; }
 		if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
-			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w || wy == box_h - 2) {
-				if (wy == box_h - 2 && flen > 0) { flen = 0; filter[0] = '\0'; top = 0; continue; }
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) break;
+			if (ui_btns_hit_test(&brow, wy, wx) == 0) {
+				if (flen > 0) { flen = 0; filter[0] = '\0'; top = 0; continue; }
 				break;
 			}
 			continue;
@@ -954,7 +954,7 @@ void ui_help(void) {
 		"  Ctrl+V / Shift+Ins Paste file, text, or multiline script dialog",
 		"  Home / End / Ctrl+A Jump to start / end of command line",
 		"  Ctrl+Left / Right  Jump cursor by words in command line",
-		"  Shift+Arrows       Select characters in command line",
+		"  Shift+Arr/Home/End Select chars / to start or end in cmd & dialogs",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
 		"  Alt+F11 / Ctrl+L   Multiline Script History (Enter:Run F4:Edit F8:Delete)",
 		"  Alt+F12            Toggle 32-color auto file colorization by extension",
@@ -2170,7 +2170,6 @@ int ui_cmd_history(CmdHistoryEntry *hist, int *hist_count, char *out_cmd, size_t
 	wbkgd(win, COLOR_PAIR(5));
 
 	const char *btns[5] = {"[ Run ]", "[ Insert ]", "[ Jump ]", "[ Delete ]", "[ Cancel ]"};
-	int bwid[5] = {7, 10, 8, 10, 10};
 	int total_bw = 7 + 1 + 10 + 1 + 8 + 1 + 10 + 1 + 10;
 
 	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
@@ -2343,7 +2342,6 @@ int ui_dir_history(DirHistoryEntry *hist, int *hist_count, char *out_dir, size_t
 	wbkgd(win, COLOR_PAIR(5));
 
 	const char *btns[5] = {"[ Go ]", "[ Other ]", "[ Insert ]", "[ Delete ]", "[ Cancel ]"};
-	int bwid[5] = {6, 9, 10, 10, 10};
 	int total_bw = 6 + 1 + 9 + 1 + 10 + 1 + 10 + 1 + 10;
 
 	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
@@ -2506,7 +2504,6 @@ int ui_file_history(FileHistoryEntry *hist, int *hist_count, char *out_path, siz
 	wbkgd(win, COLOR_PAIR(5));
 
 	const char *btns[5] = {"[ Edit ]", "[ View ]", "[ Jump ]", "[ Delete ]", "[ Cancel ]"};
-	int bwid[5] = {8, 8, 8, 10, 10};
 	int total_bw = 8 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 10;
 
 	int *map_idx = malloc((size_t)(*hist_count) * sizeof(int));
@@ -2718,7 +2715,6 @@ int ui_multiline_history(char *out_script, size_t out_size) {
 	wbkgd(win, COLOR_PAIR(5));
 
 	const char *btns[4] = {"[ Run ]", "[ Edit ]", "[ Delete ]", "[ Cancel ]"};
-	int bwid[4] = {7, 8, 10, 10};
 	int total_bw = 7 + 1 + 8 + 1 + 10 + 1 + 10;
 
 	int sel = 0, top = 0, btn = 0, chs = -1;
@@ -2863,13 +2859,11 @@ int ui_confirm_cancel(const char *title, const char *msg) {
 
 	curs_set(0);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	wbkgd(win, COLOR_PAIR(5));
+	wbkgd(win, g_ui_theme.win_bg);
 
 	const char *btns[3] = { "[ Yes ]", "[ No ]", "[ Cancel ]" };
-	int bwid[3] = { 7, 6, 10 };
-	int total_w = 7 + 2 + 6 + 2 + 10;
-	int bx0 = (box_w - total_w) / 2;
-	if (bx0 < 2) bx0 = 2;
+	int bx0 = (box_w - 27 < 2) ? 2 : (box_w - 27) / 2;
+	UiButtonRow brow = { btns, 3, 3, bx0, 2, 0 };
 
 	int sel = 0; /* 0 = Yes, 1 = No, 2 = Cancel */
 	int res = -1;
@@ -2877,33 +2871,22 @@ int ui_confirm_cancel(const char *title, const char *msg) {
 	while (1) {
 		draw_win_box(win);
 		mvwprintw(win, 0, 2, " %s ", title);
-		int msg_x = (box_w - msg_cols) / 2;
-		if (msg_x < 2) msg_x = 2;
+		int msg_x = (box_w - msg_cols < 4) ? 2 : (box_w - msg_cols) / 2;
 		mvwprint_utf8(win, 1, msg_x, box_w - 4, msg);
 
-		int cx = bx0;
-		for (int i = 0; i < 3; i++) {
-			wattron(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			mvwprintw(win, 3, cx, "%s", btns[i]);
-			wattroff(win, sel == i ? COLOR_PAIR(2) : COLOR_PAIR(5));
-			cx += bwid[i] + 2;
-		}
+		brow.focus_idx = sel;
+		ui_btns_draw(&brow, win);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_ESC || ev.action == ACT_F10) { res = -1; break; }
-		if (ev.action == ACT_LEFT) sel = (sel + 2) % 3;
+		if (ev.action == ACT_LEFT || ev.action == ACT_SHIFT_TAB) sel = (sel + 2) % 3;
 		else if (ev.action == ACT_RIGHT || ev.action == ACT_TAB) sel = (sel + 1) % 3;
 		else if (ev.action == ACT_MOUSE_LEFT) {
 			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
 			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = -1; break; }
-			if (wy == 3) {
-				int px = bx0;
-				for (int i = 0; i < 3; i++) {
-					if (wx >= px && wx < px + bwid[i]) { res = (i == 0) ? 1 : (i == 1 ? 0 : -1); goto done_cc; }
-					px += bwid[i] + 2;
-				}
-			}
+			int hit = ui_btns_hit_test(&brow, wy, wx);
+			if (hit >= 0) { res = (hit == 0) ? 1 : (hit == 1 ? 0 : -1); break; }
 		} else if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) {
 			res = (sel == 0) ? 1 : (sel == 1 ? 0 : -1);
 			break;
@@ -2914,7 +2897,6 @@ int ui_confirm_cancel(const char *title, const char *msg) {
 			if (ch == L'c' || ch == L'с') { res = -1; break; }
 		}
 	}
-done_cc:
 	delwin(win);
 	touchwin(stdscr);
 	return res;
