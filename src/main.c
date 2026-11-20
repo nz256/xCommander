@@ -1174,7 +1174,7 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action == ACT_ALT_F12) { ui_toggle_auto_colorize(); draw_screen(); refresh(); continue; }
 		if (ev.action == ACT_TAB) active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
-		else if (ev.action == ACT_CTRL_R) { reload_panels_keep_cursor(); }
+		else if (ev.action == ACT_CTRL_R) { reload_panels_keep_cursor(); clearok(stdscr, TRUE); }
 				else if (ev.action == ACT_CTRL_F3 || ev.action == ACT_CTRL_F4 || ev.action == ACT_CTRL_F5 || ev.action == ACT_CTRL_F6) {
 			SortMode new_mode = SORT_NAME;
 			if (ev.action == ACT_CTRL_F3) new_mode = SORT_NAME;

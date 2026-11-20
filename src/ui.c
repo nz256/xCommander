@@ -823,6 +823,8 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 		else if (ev.action == ACT_WORD_SEL_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = ui_word_right(wbuf, pos, len); }
 		else if (ev.action == ACT_SHIFT_LEFT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos > 0) pos--; }
 		else if (ev.action == ACT_SHIFT_RIGHT) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; if (pos < len) pos++; }
+		else if (ev.action == ACT_SHIFT_HOME) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = 0; }
+		else if (ev.action == ACT_SHIFT_END) { focus = 0; if (sel_anchor == -1) sel_anchor = pos; pos = len; }
 		else if (ev.action == ACT_CTRL_LEFT) { focus = 0; sel_anchor = -1; pos = ui_word_left(wbuf, pos); }
 		else if (ev.action == ACT_CTRL_RIGHT) { focus = 0; sel_anchor = -1; pos = ui_word_right(wbuf, pos, len); }
 		else if (ev.action == ACT_LEFT) { sel_anchor = -1; if (focus == 0 && pos > 0) pos--; else if (focus == 2) focus = 1; else if (focus == 1) focus = 2; }

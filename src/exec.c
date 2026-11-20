@@ -506,6 +506,26 @@ static int build_run_script(char *out_path, size_t out_size, const char *workdir
 	return 1;
 }
 
+static void sanitize_bg_cmd(const char *cmd, char *out, size_t out_sz) {
+	snprintf(out, out_sz, "%s", cmd);
+	size_t len = strlen(out);
+	while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\t' || out[len - 1] == '\n' || out[len - 1] == '\r')) {
+		out[--len] = '\0';
+	}
+	if (len >= 1 && out[len - 1] == '&') {
+		if (len >= 2 && (out[len - 2] == '&' || out[len - 2] == '>' || out[len - 2] == '<')) return;
+		char body[MAX_CMD];
+		size_t blen = len - 1;
+		while (blen > 0 && (out[blen - 1] == ' ' || out[blen - 1] == '\t')) blen--;
+		if (blen == 0 || blen >= sizeof(body)) return;
+		memcpy(body, out, blen);
+		body[blen] = '\0';
+		if (strchr(body, '>') == NULL) {
+			snprintf(out, out_sz, "{ %s; } </dev/null >/dev/null 2>&1 &", body);
+		}
+	}
+}
+
 void execute_system_command(const char *cmd) {
 	if (strlen(cmd) == 0) return;
 
@@ -540,11 +560,13 @@ void execute_system_command(const char *cmd) {
 	setenv("XC_PWD_FILE", pwd_file, 1);
 	setenv("XC_OTHER_PWD_FILE", other_pwd_file, 1);
 	char clean_rc[128] = "";
-	setenv("XC_USER_CMD", cmd, 1);
+	char safe_cmd[MAX_CMD + 64];
+	sanitize_bg_cmd(cmd, safe_cmd, sizeof(safe_cmd));
+	setenv("XC_USER_CMD", safe_cmd, 1);
 	if (build_run_script(clean_rc, sizeof(clean_rc), active_panel->current_path)) {
 		snprintf(full_cmd, sizeof(full_cmd), "%s -c '. \"%s\"; eval \"$XC_USER_CMD\"\nxc_rc=$?; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"; exit $xc_rc' bash", shell, clean_rc);
 	} else {
-		snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, cmd);
+		snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, safe_cmd);
 	}
 	system(full_cmd);
 	if (clean_rc[0] != '\0') unlink(clean_rc);
