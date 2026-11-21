@@ -9,7 +9,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 #include "input.h"
 #include "panel.h"
@@ -43,8 +47,37 @@ static int resolve_gid(const char *s, gid_t *out) {
 	return -1;
 }
 
+static int parse_ts_str(const char *s, time_t *out) {
+	if (!s || !*s) return 0;
+	int Y = 0, M = 0, D = 0, h = 0, m = 0, sec = 0;
+	int n = sscanf(s, "%d-%d-%d %d:%d:%d", &Y, &M, &D, &h, &m, &sec);
+	if (n < 3 || Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31 || h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 60) return -1;
+	struct tm tm_v;
+	memset(&tm_v, 0, sizeof(tm_v));
+	tm_v.tm_year = Y - 1900; tm_v.tm_mon = M - 1; tm_v.tm_mday = D;
+	tm_v.tm_hour = h; tm_v.tm_min = m; tm_v.tm_sec = sec; tm_v.tm_isdst = -1;
+	time_t t = mktime(&tm_v);
+	if (t == (time_t)-1) return -1;
+	*out = t;
+	return 1;
+}
+
+static int parse_timestamp(const char *s, time_t *out) {
+	if (!s || !*s) return 0;
+	int Y, M, D, h = 0, m = 0, sec = 0;
+	if (sscanf(s, "%d-%d-%d %d:%d:%d", &Y, &M, &D, &h, &m, &sec) < 3) return -1;
+	if (Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31 || h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 60) return -1;
+	struct tm tmv; memset(&tmv, 0, sizeof(tmv));
+	tmv.tm_year = Y - 1900; tmv.tm_mon = M - 1; tmv.tm_mday = D;
+	tmv.tm_hour = h; tmv.tm_min = m; tmv.tm_sec = sec; tmv.tm_isdst = -1;
+	time_t res = mktime(&tmv);
+	if (res == (time_t)-1) return -1;
+	*out = res; return 1;
+}
+
 static void apply_attrs_recursive(const char *path, mode_t set_mask, mode_t clr_mask,
                                   int ch_uid, uid_t uid, int ch_gid, gid_t gid,
+                                  int ch_atime, time_t atime_val, int ch_mtime, time_t mtime_val,
                                   int rec, int *errs) {
 	struct stat st;
 	if (lstat(path, &st) != 0) { (*errs)++; return; }
@@ -63,9 +96,13 @@ static void apply_attrs_recursive(const char *path, mode_t set_mask, mode_t clr_
 			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
 			char sub[MAX_PATH * 2];
 			snprintf(sub, sizeof(sub), "%s/%s", path, de->d_name);
-			apply_attrs_recursive(sub, set_mask, clr_mask, ch_uid, uid, ch_gid, gid, 1, errs);
+			apply_attrs_recursive(sub, set_mask, clr_mask, ch_uid, uid, ch_gid, gid, ch_atime, atime_val, ch_mtime, mtime_val, 1, errs);
 		}
 		closedir(d);
+	}
+	if (ch_atime || ch_mtime) {
+		struct timespec ts[2] = { { ch_atime ? atime_val : 0, ch_atime ? 0 : UTIME_OMIT }, { ch_mtime ? mtime_val : 0, ch_mtime ? 0 : UTIME_OMIT } };
+		if (utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) != 0) (*errs)++;
 	}
 }
 
@@ -95,13 +132,14 @@ int ui_file_attributes(Panel *panel) {
 	}
 
 	char owner_buf[64] = "", group_buf[64] = "", init_owner[64] = "", init_group[64] = "";
-	uid_t f_uid = 0; gid_t f_gid = 0;
-	int s_uid = 1, s_gid = 1, got = 0;
+	char mtime_buf[32] = "", atime_buf[32] = "", init_mtime[32] = "", init_atime[32] = "";
+	uid_t f_uid = 0; gid_t f_gid = 0; time_t f_mt = 0, f_at = 0;
+	int s_uid = 1, s_gid = 1, s_mt = 1, s_at = 1, got = 0;
 	for (int i = 0; i < pcnt; i++) {
 		struct stat st;
 		if (lstat(paths[i], &st) == 0) {
-			if (!got) { f_uid = st.st_uid; f_gid = st.st_gid; got = 1; }
-			else { if (st.st_uid != f_uid) s_uid = 0; if (st.st_gid != f_gid) s_gid = 0; }
+			if (!got) { f_uid = st.st_uid; f_gid = st.st_gid; f_mt = st.st_mtime; f_at = st.st_atime; got = 1; }
+			else { if (st.st_uid != f_uid) s_uid = 0; if (st.st_gid != f_gid) s_gid = 0; if (st.st_mtime != f_mt) s_mt = 0; if (st.st_atime != f_at) s_at = 0; }
 		}
 	}
 	if (got && s_uid) {
@@ -116,16 +154,18 @@ int ui_file_attributes(Panel *panel) {
 		else snprintf(group_buf, sizeof(group_buf), "%u", (unsigned)f_gid);
 		snprintf(init_group, sizeof(init_group), "%s", group_buf);
 	}
+	if (got && s_mt) { struct tm *tmv = localtime(&f_mt); if (tmv) strftime(mtime_buf, sizeof(mtime_buf), "%Y-%m-%d %H:%M:%S", tmv); snprintf(init_mtime, sizeof(init_mtime), "%s", mtime_buf); }
+	if (got && s_at) { struct tm *tmv = localtime(&f_at); if (tmv) strftime(atime_buf, sizeof(atime_buf), "%Y-%m-%d %H:%M:%S", tmv); snprintf(init_atime, sizeof(init_atime), "%s", atime_buf); }
 
 	int h, w; getmaxyx(stdscr, h, w);
-	int bw = (w - 2 < 54) ? (w - 2) : 54, bh = 18;
+	int bw = (w - 2 < 54) ? (w - 2) : 54, bh = 22;
 	int sy = (h > bh) ? (h - bh) / 2 : 0, sx = (w > bw) ? (w - bw) / 2 : 0;
 	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
 
 	const char *rlbl[4] = {"Owner:", "Group:", "Others:", "Special:"};
 	const char *clbl[4][3] = { {"Read","Write","Exec"}, {"Read","Write","Exec"}, {"Read","Write","Exec"}, {"SUID","SGID","Sticky"} };
-	const char *btns[2] = {"[ Set ]", "[ Cancel ]"};
-	int foc = 0, rec = 0, applied = 0;
+	const char *btns[3] = {"[ Set ]", "[ Current ]", "[ Cancel ]"};
+	int foc = 0, rec = 0, applied = 0, tpos = 0;
 
 	while (1) {
 		werase(win); box(win, 0, 0);
@@ -165,17 +205,22 @@ int ui_file_attributes(Panel *panel) {
 		wattrset(win, (foc == 13) ? COLOR_PAIR(2) : COLOR_PAIR(4));
 		mvwprintw(win, 10, 12, "%-*.*s", fw, fw, group_buf);
 
-		wattrset(win, COLOR_PAIR(5));
-		mvwhline(win, 11, 1, ACS_HLINE, bw - 2);
-		wattrset(win, (foc == 14) ? COLOR_PAIR(2) : COLOR_PAIR(5));
-		mvwprintw(win, 12, 2, "[%c] Process subfolders (recursive)%s", rec ? 'x' : ' ', has_dir ? "" : " (no dirs)");
-		wattrset(win, COLOR_PAIR(5));
-		mvwhline(win, 13, 1, ACS_HLINE, bw - 2);
+		wattrset(win, COLOR_PAIR(5)); mvwhline(win, 11, 1, ACS_HLINE, bw - 2); mvwprintw(win, 11, (bw - 12) / 2, " Timestamps ");
+		mvwprintw(win, 12, 2, "Modified:"); wattrset(win, (foc == 14) ? COLOR_PAIR(2) : COLOR_PAIR(4)); mvwprintw(win, 12, 12, "%-*.*s", fw, fw, mtime_buf);
+		wattrset(win, COLOR_PAIR(5)); mvwprintw(win, 13, 2, "Accessed:"); wattrset(win, (foc == 15) ? COLOR_PAIR(2) : COLOR_PAIR(4)); mvwprintw(win, 13, 12, "%-*.*s", fw, fw, atime_buf);
+		wattrset(win, COLOR_PAIR(5)); mvwhline(win, 14, 1, ACS_HLINE, bw - 2);
+		wattrset(win, (foc == 16) ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 15, 2, "[%c] Process subfolders (recursive)%s", rec ? 'x' : ' ', has_dir ? "" : " (no dirs)");
+		wattrset(win, COLOR_PAIR(5)); mvwhline(win, 16, 1, ACS_HLINE, bw - 2);
 
-		UiButtonRow brow = { btns, 2, 15, (bw - 19) / 2, 2, (foc >= 15) ? (foc - 15) : -1 };
+		UiButtonRow brow = { btns, 3, 18, (bw - 32) / 2, 2, (foc >= 17) ? (foc - 17) : -1 };
 		ui_btns_draw(&brow, win);
-		if (foc == 12 || foc == 13) { curs_set(1); wmove(win, (foc == 12) ? 9 : 10, 12 + (int)strlen((foc == 12) ? owner_buf : group_buf)); }
-		else curs_set(0);
+		if (foc >= 12 && foc <= 15) {
+			const char *fb = (foc == 12) ? owner_buf : (foc == 13 ? group_buf : (foc == 14 ? mtime_buf : atime_buf));
+			int cx = (foc >= 14 && fb[0]) ? tpos : (int)strlen(fb);
+			if (cx > (int)strlen(fb)) cx = (int)strlen(fb);
+			curs_set(1); wmove(win, 9 + (foc - 12) + (foc >= 14 ? 1 : 0), 12 + cx);
+		} else curs_set(0);
 		wrefresh(win);
 
 		InputEvent ev = input_read();
@@ -184,46 +229,63 @@ int ui_file_attributes(Panel *panel) {
 			int wy = ev.mouse_y - sy, wx = ev.mouse_x - sx;
 			if (wy < 0 || wy >= bh || wx < 0 || wx >= bw) break;
 			if (wy >= 4 && wy <= 7 && wx >= 12 && (wx - 12) / 13 < 3) { foc = (wy - 4) * 3 + (wx - 12) / 13; ev.action = ACT_CHAR; ev.ch = L' '; }
-			else if (wy == 9) { foc = 12; continue; }
-			else if (wy == 10) { foc = 13; continue; }
-			else if (wy == 12) { foc = 14; ev.action = ACT_CHAR; ev.ch = L' '; }
-			else { int hit = ui_btns_hit_test(&brow, wy, wx); if (hit == 0) { foc = 15; ev.action = ACT_ENTER; } else if (hit == 1) break; }
+			else if (wy == 9) { foc = 12; continue; } else if (wy == 10) { foc = 13; continue; }
+			else if (wy == 12 || wy == 13) { foc = (wy == 12) ? 14 : 15; tpos = (wx >= 12 && wx <= 31) ? (wx - 12) : 0; continue; }
+			else if (wy == 15) { foc = 16; ev.action = ACT_CHAR; ev.ch = L' '; }
+			else { int hit = ui_btns_hit_test(&brow, wy, wx); if (hit == 0) { foc = 17; ev.action = ACT_ENTER; } else if (hit == 1) { foc = 18; ev.action = ACT_ENTER; } else if (hit == 2) break; }
+		}
+		if (foc >= 14 && foc <= 15) {
+			char *tb = (foc == 14) ? mtime_buf : atime_buf;
+			if (ev.action == ACT_LEFT && tpos > 0) { tpos--; continue; }
+			if (ev.action == ACT_RIGHT && tpos < (int)strlen(tb)) { tpos++; continue; }
+			if (ev.action == ACT_HOME) { tpos = 0; continue; }
+			if (ev.action == ACT_END) { tpos = (int)strlen(tb); continue; }
+			if (ev.action == ACT_CHAR && ev.ch >= L'0' && ev.ch <= L'9') {
+				if (tb[0] == '\0') { snprintf(tb, 32, "2026-01-01 00:00:00"); tpos = 0; }
+				while (tpos < 19 && (tb[tpos] == '-' || tb[tpos] == ' ' || tb[tpos] == ':')) tpos++;
+				if (tpos < 19) {
+					tb[tpos++] = (char)ev.ch;
+					while (tpos < 19 && (tb[tpos] == '-' || tb[tpos] == ' ' || tb[tpos] == ':')) tpos++;
+				}
+				continue;
+			}
+			if (ev.action == ACT_BACKSPACE && tpos > 0) {
+				tpos--;
+				while (tpos > 0 && (tb[tpos] == '-' || tb[tpos] == ' ' || tb[tpos] == ':')) tpos--;
+				if (tpos >= 0 && tb[tpos] >= '0' && tb[tpos] <= '9') tb[tpos] = '0';
+				continue;
+			}
 		}
 		if ((foc == 12 || foc == 13) && ev.action == ACT_BACKSPACE) {
-			char *b = (foc == 12) ? owner_buf : group_buf; size_t l = strlen(b); if (l > 0) b[l - 1] = '\0'; continue;
+			char *b = (foc == 12) ? owner_buf : group_buf;
+			size_t l = strlen(b); if (l > 0) b[l - 1] = '\0'; continue;
 		}
 		if ((foc == 12 || foc == 13) && ev.action == ACT_CHAR && ev.ch >= 33 && ev.ch < 127) {
-			char *b = (foc == 12) ? owner_buf : group_buf; size_t l = strlen(b); if (l + 1 < 63) { b[l] = (char)ev.ch; b[l + 1] = '\0'; } continue;
+			char *b = (foc == 12) ? owner_buf : group_buf;
+			size_t l = strlen(b); if (l + 1 < 63) { b[l] = (char)ev.ch; b[l + 1] = '\0'; } continue;
 		}
-		if (ev.action == ACT_TAB) foc = (foc + 1) % 17;
-		else if (ev.action == ACT_SHIFT_TAB) foc = (foc + 16) % 17;
-		else if (ev.action == ACT_UP) foc = (foc >= 3 && foc <= 11) ? foc - 3 : (foc == 12 ? 9 : (foc == 13 ? 12 : (foc == 14 ? 13 : (foc >= 15 ? 14 : foc))));
-		else if (ev.action == ACT_DOWN) foc = (foc <= 8) ? foc + 3 : (foc <= 11 ? 12 : (foc < 15 ? foc + 1 : foc));
-		else if (ev.action == ACT_LEFT) { if (foc <= 11 && foc % 3 > 0) foc--; else if (foc == 16) foc = 15; }
-		else if (ev.action == ACT_RIGHT) { if (foc <= 11 && foc % 3 < 2) foc++; else if (foc == 15) foc = 16; }
+		if (ev.action == ACT_TAB) foc = (foc + 1) % 20;
+		else if (ev.action == ACT_SHIFT_TAB) foc = (foc + 19) % 20;
+		else if (ev.action == ACT_UP) foc = (foc >= 3 && foc <= 11) ? foc - 3 : (foc == 12 ? 9 : (foc > 12 && foc <= 17 ? foc - 1 : (foc >= 18 ? 16 : foc)));
+		else if (ev.action == ACT_DOWN) foc = (foc <= 8) ? foc + 3 : (foc <= 11 ? 12 : (foc < 17 ? foc + 1 : foc));
+		else if (ev.action == ACT_LEFT) { if (foc <= 11 && foc % 3 > 0) foc--; else if (foc >= 18) foc--; }
+		else if (ev.action == ACT_RIGHT) { if (foc <= 11 && foc % 3 < 2) foc++; else if (foc >= 17 && foc < 19) foc++; }
 		else if (ev.action == ACT_CHAR && ev.ch == L' ') {
 			if (foc <= 11) state[foc] = (init_state[foc] == 2) ? (state[foc] + 1) % 3 : !state[foc];
-			else if (foc == 14) rec = !rec;
-			else if (foc == 15) ev.action = ACT_ENTER;
-			else if (foc == 16) break;
+			else if (foc == 16) rec = !rec; else if (foc >= 17) ev.action = ACT_ENTER;
 		}
 		if (ev.action == ACT_ENTER) {
-			if (foc == 16) break;
-			uid_t n_uid = (uid_t)-1; gid_t n_gid = (gid_t)-1; int c_uid = 0, c_gid = 0;
-			if (owner_buf[0] && strcmp(owner_buf, init_owner) != 0) {
-				int r = resolve_uid(owner_buf, &n_uid);
-				if (r < 0) { ui_message("Attributes Error", "Unknown owner user"); continue; }
-				c_uid = (r == 1);
-			}
-			if (group_buf[0] && strcmp(group_buf, init_group) != 0) {
-				int r = resolve_gid(group_buf, &n_gid);
-				if (r < 0) { ui_message("Attributes Error", "Unknown group"); continue; }
-				c_gid = (r == 1);
-			}
+			if (foc == 19) break;
+			if (foc == 18) { time_t now = time(NULL); struct tm *tmv = localtime(&now); if (tmv) { strftime(mtime_buf, sizeof(mtime_buf), "%Y-%m-%d %H:%M:%S", tmv); snprintf(atime_buf, sizeof(atime_buf), "%s", mtime_buf); } continue; }
+			uid_t n_uid = (uid_t)-1; gid_t n_gid = (gid_t)-1; int c_uid = 0, c_gid = 0, c_mt = 0, c_at = 0; time_t n_mt = 0, n_at = 0;
+			if (owner_buf[0] && strcmp(owner_buf, init_owner) != 0) { int r = resolve_uid(owner_buf, &n_uid); if (r < 0) { ui_message("Attributes Error", "Unknown owner user"); continue; } c_uid = (r == 1); }
+			if (group_buf[0] && strcmp(group_buf, init_group) != 0) { int r = resolve_gid(group_buf, &n_gid); if (r < 0) { ui_message("Attributes Error", "Unknown group"); continue; } c_gid = (r == 1); }
+			if (mtime_buf[0] && strcmp(mtime_buf, init_mtime) != 0) { int r = parse_timestamp(mtime_buf, &n_mt); if (r < 0) { ui_message("Attributes Error", "Invalid Modified time (YYYY-MM-DD HH:MM:SS)"); continue; } c_mt = (r == 1); }
+			if (atime_buf[0] && strcmp(atime_buf, init_atime) != 0) { int r = parse_timestamp(atime_buf, &n_at); if (r < 0) { ui_message("Attributes Error", "Invalid Accessed time (YYYY-MM-DD HH:MM:SS)"); continue; } c_at = (r == 1); }
 			mode_t sm = 0, cm = 0;
 			for (int b = 0; b < 12; b++) { if (state[b] == 1) sm |= k_bits[b]; else if (state[b] == 0) cm |= k_bits[b]; }
 			int errs = 0;
-			for (int i = 0; i < pcnt; i++) apply_attrs_recursive(paths[i], sm, cm, c_uid, n_uid, c_gid, n_gid, rec, &errs);
+			for (int i = 0; i < pcnt; i++) apply_attrs_recursive(paths[i], sm, cm, c_uid, n_uid, c_gid, n_gid, c_at, n_at, c_mt, n_mt, rec, &errs);
 			if (errs > 0) { char em[96]; snprintf(em, sizeof(em), "Failed to update attributes on %d item(s)", errs); ui_message("Attributes Warning", em); }
 			applied = 1; break;
 		}
@@ -236,9 +298,10 @@ static off_t calc_dir_walk(const char *path, int *steps, int *cancelled) {
 	if ((++(*steps) & 255) == 0) {
 		fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
 		struct timeval tv = {0, 0};
-		if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
-			char ch = 0;
-			if (read(STDIN_FILENO, &ch, 1) == 1 && ch == 27) { *cancelled = 1; return 0; }
+		while (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC) { *cancelled = 1; return 0; }
+			FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
 		}
 	}
 	DIR *d = opendir(path);

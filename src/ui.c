@@ -813,13 +813,13 @@ void ui_message(const char *title, const char *msg) {
 	touchwin(stdscr);
 }
 
-int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
+static int ui_input_ex(const char *title, const char *prompt, char *buf, int max_len, int max_w) {
 	int height, width;
 	getmaxyx(stdscr, height, width);
 
-	int box_w = width - 10;
-	if (box_w > 70) box_w = 70;
-	if (box_w < 36) box_w = 36;
+	int box_w = width - 4;
+	if (box_w > max_w) box_w = max_w;
+	if (box_w < 32) box_w = 32;
 	int box_h = 6;
 
 	int start_y = (height - box_h) / 2;
@@ -899,6 +899,14 @@ int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
 	delwin(win);
 	touchwin(stdscr);
 	return res;
+}
+
+int ui_input(const char *title, const char *prompt, char *buf, int max_len) {
+	return ui_input_ex(title, prompt, buf, max_len, 70);
+}
+
+int ui_input_narrow(const char *title, const char *prompt, char *buf, int max_len) {
+	return ui_input_ex(title, prompt, buf, max_len, 36);
 }
 
 static void ui_show_help_lines(const char *title, const char **lines, int total) {
@@ -1076,10 +1084,10 @@ void ui_help(void) {
 		"  F3                 View file (Text/Hex) or calculate folder(s) size",
 		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
 		"  Shift+F4           Create new file and open in built-in Editor",
-		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
+		"  F5 / F6            Copy / Move or rename (with progress bar & Esc cancel)",
 		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
-		"  F7 / F8 / Sh+F8    MkDir / Move to Trash / Permanent Delete",
-		"  Ctrl+A             File attributes, permissions & owner (chmod/chown)",
+		"  F7 / F8 / Sh+F8    MkDir / Trash / Permanent Delete (with progress bar)",
+		"  Ctrl+A             File attributes, owner & timestamps (chmod/chown/time)",
 		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Panel)",
 		"  Ctrl+PgUp (TmpPnl) Jump to real directory of item in Temporary Panel",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
@@ -1092,8 +1100,9 @@ void ui_help(void) {
 		"  Shift+Enter        Run command and open output directly in F4 editor",
 		"  Type in cmd        Live history popup from 1st char (Up/Dn, Right, Esc)",
 		"  Ctrl+C / Ctrl+X    Copy / Cut file (URI-list) or selected text",
+		"  Alt+Shift+N        Copy filename(s) as plain text to clipboard",
 		"  Ctrl+V / Shift+Ins Paste file, text, or multiline script dialog",
-		"  Home / End / Ctrl+A Jump to start / end of command line",
+		"  Home / End         Jump to start / end of command line (Ctrl+A in Ctrl+O)",
 		"  Ctrl+Left / Right  Jump cursor by words in command line",
 		"  Shift+Arr/Home/End Select chars / to start or end in cmd & dialogs",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
@@ -1130,6 +1139,7 @@ void ui_editor_help(void) {
 		"  Home / End         Jump to start / end of current line",
 		"  Ctrl+Home / End    Jump to start / end of entire file",
 		"  Ctrl+]             Jump to matching bracket or quote",
+		"  Alt+F8             Go to line[:col] number",
 		"  PageUp / PageDown  Scroll one page up / down",
 		"  Mouse Click        Place cursor at clicked line and column",
 		"  Mouse Wheel        Scroll text up / down",
@@ -1137,14 +1147,15 @@ void ui_editor_help(void) {
 		"=== 2. BLOCK SELECTION & VIEW OPTIONS ===",
 		"  Shift+Arrows       Select characters / lines",
 		"  Shift+Home / End   Select from cursor to start / end of line",
+		"  Ctrl+Sh+Home / End Select from cursor to start / end of entire file",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
-		"  F3                 Toggle block selection mark at cursor",
+		"  F3                 Toggle MARK selection mode (move cursor to extend)",
 		"  Alt+Shift+]        Select entire block between matching pair",
 		"  Ctrl+A             Select entire file",
 		"  Ctrl+C             Copy selected block to system clipboard",
-		"  F6 / Ctrl+X        Cut selected block to system clipboard",
+		"  Ctrl+X             Cut selected block (or line) to clipboard",
 		"  Ctrl+V / Shift+Ins Paste text (supports multiline paste)",
-		"  F8 / Del / BkSp    Delete selected block (or char)",
+		"  Del / BkSp         Delete selected block (or char)",
 		"  F4                 Toggle syntax highlighting on/off",
 		"  F5                 Toggle visible whitespace (spaces, tabs, EOL)",
 		"",

@@ -12,6 +12,8 @@
 #include "exec.h"
 #include "panel.h"
 #include "ui.h"
+#include "progress.h"
+static UiProgress *g_prog = NULL;
 #include "input.h"
 #include "editor.h"
 
@@ -50,8 +52,13 @@ static int check_overwrite(const char *src_path, const char *dst_path) {
 
 static int copy_single_file(const char *src_path, const char *dst_path, mode_t mode) {
 	int ovr = check_overwrite(src_path, dst_path);
-	if (ovr == 0) return 0;
+	if (ovr == 0) { if (g_prog) g_prog->done_files++; return 0; }
 	if (ovr < 0) return -2;
+
+	struct stat st;
+	off_t fsize = (lstat(src_path, &st) == 0) ? st.st_size : 0;
+	off_t cur_done = 0;
+	if (g_prog && progress_update(g_prog, src_path, dst_path, 0, fsize, 1)) return -2;
 
 	FILE *in = fopen(src_path, "rb");
 	if (!in) return -1;
@@ -71,51 +78,94 @@ static int copy_single_file(const char *src_path, const char *dst_path, mode_t m
 			err = -1;
 			break;
 		}
+		cur_done += (off_t)n;
+		if (g_prog) {
+			g_prog->done_bytes += (off_t)n;
+			if (progress_update(g_prog, src_path, dst_path, cur_done, fsize, 0)) { err = -2; break; }
+		}
 	}
 
-	if (ferror(in)) err = -1;
+	if (err == 0 && ferror(in)) err = -1;
 
 	fclose(in);
-	if (fclose(out) != 0) err = -1;
+	if (fclose(out) != 0 && err == 0) err = -1;
 
 	if (err == 0) {
 		chmod(dst_path, mode);
+		if (g_prog) g_prog->done_files++;
+	} else if (err == -2) {
+		unlink(dst_path);
 	}
 	return err;
 }
 
+static char g_copy_err[MAX_PATH + 128] = "";
+
 static int copy_recursive(const char *src_path, const char *dst_path) {
 	struct stat st;
-	if (lstat(src_path, &st) != 0) return -1;
+	if (lstat(src_path, &st) != 0) {
+		snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", src_path, strerror(errno));
+		return -1;
+	}
+
+	if (S_ISLNK(st.st_mode)) {
+		char lnk[MAX_PATH];
+		ssize_t len = readlink(src_path, lnk, sizeof(lnk) - 1);
+		if (len < 0) {
+			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", src_path, strerror(errno));
+			return -1;
+		}
+		lnk[len] = '\0';
+		unlink(dst_path);
+		if (symlink(lnk, dst_path) != 0) {
+			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", dst_path, strerror(errno));
+			return -1;
+		}
+		if (g_prog) {
+			g_prog->done_files++;
+			if (progress_update(g_prog, src_path, dst_path, 0, 0, 0)) return -2;
+		}
+		return 0;
+	}
 
 	if (S_ISDIR(st.st_mode)) {
-		if (mkdir(dst_path, st.st_mode & 0777) != 0 && errno != EEXIST) {
+		if (mkdir(dst_path, (st.st_mode & 0777) | 0700) != 0 && errno != EEXIST) {
+			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", dst_path, strerror(errno));
+			return -1;
+		}
+		chmod(dst_path, (st.st_mode & 0777) | 0700);
+
+		DIR *d = opendir(src_path);
+		if (!d) {
+			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", src_path, strerror(errno));
 			return -1;
 		}
 
-		DIR *d = opendir(src_path);
-		if (!d) return -1;
-
 		struct dirent *entry;
 		while ((entry = readdir(d)) != NULL) {
-			if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-				continue;
-			}
+			if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
 			char next_src[MAX_PATH * 2];
 			char next_dst[MAX_PATH * 2];
 			snprintf(next_src, sizeof(next_src), "%s/%s", src_path, entry->d_name);
 			snprintf(next_dst, sizeof(next_dst), "%s/%s", dst_path, entry->d_name);
 
-			if (copy_recursive(next_src, next_dst) != 0) {
+			int rc = copy_recursive(next_src, next_dst);
+			if (rc != 0) {
 				closedir(d);
-				return -1;
+				return rc;
 			}
 		}
 		closedir(d);
+		chmod(dst_path, st.st_mode & 07777);
+		if (g_prog) g_prog->done_files++;
 		return 0;
 	} else {
-		return copy_single_file(src_path, dst_path, st.st_mode & 0777);
+		int rc = copy_single_file(src_path, dst_path, st.st_mode & 0777);
+		if (rc == -1 && g_copy_err[0] == '\0') {
+			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", src_path, strerror(errno));
+		}
+		return rc;
 	}
 }
 
@@ -142,8 +192,16 @@ static int delete_recursive(const char *target_path) {
 			}
 		}
 		closedir(d);
+		if (g_prog) {
+			g_prog->done_files++;
+			if (progress_update(g_prog, target_path, NULL, 0, 0, 0)) return -2;
+		}
 		return rmdir(target_path);
 	} else {
+		if (g_prog) {
+			g_prog->done_files++;
+			if (progress_update(g_prog, target_path, NULL, 0, 0, 0)) return -2;
+		}
 		return unlink(target_path);
 	}
 }
@@ -268,8 +326,12 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		}
 
 		g_overwrite_all = 0;
-		int cr = copy_recursive(src_full, dst_full);
-		if (cr == -2) return 0;
+		UiProgress prog; progress_open(&prog, "Copying (F5)", 1);
+		progress_scan_path(&prog, src_full);
+		g_prog = &prog;
+		int cr = prog.cancelled ? -2 : copy_recursive(src_full, dst_full);
+		g_prog = NULL; progress_close(&prog);
+		if (cr == -2) return 1;
 		if (cr != 0) {
 			ui_message("Error", "Failed to copy item");
 			return -1;
@@ -288,7 +350,14 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 
 	g_overwrite_all = 0;
-	for (int i = 0; i < src_panel->count; i++) {
+	UiProgress prog; progress_open(&prog, "Copying Group (F5)", 1);
+	for (int i = 0; i < src_panel->count && !prog.cancelled; i++) {
+		if (!src_panel->files[i].is_selected || strcmp(src_panel->files[i].name, "..") == 0) continue;
+		char sf[MAX_PATH * 2]; panel_entry_full_path(src_panel, i, sf, sizeof(sf));
+		progress_scan_path(&prog, sf);
+	}
+	g_prog = &prog;
+	for (int i = 0; i < src_panel->count && !prog.cancelled; i++) {
 		if (!src_panel->files[i].is_selected) continue;
 		if (strcmp(src_panel->files[i].name, "..") == 0) continue;
 
@@ -300,12 +369,14 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		if (strcmp(src_full, dst_full) == 0) continue;
 
 		int cr = copy_recursive(src_full, dst_full);
-		if (cr == -2) return 1;
+		if (cr == -2) break;
 		if (cr != 0) {
-			ui_message("Error", "Error copying file group");
+			g_prog = NULL; progress_close(&prog);
+			ui_message("Error", g_copy_err[0] ? g_copy_err : "Error copying file group");
 			return -1;
 		}
 	}
+	g_prog = NULL; progress_close(&prog);
 	return 1;
 }
 
@@ -379,7 +450,14 @@ static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 	if (strlen(dest_dir) == 0) return 0;
 	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 
-	for (int i = 0; i < src_panel->count; i++) {
+	UiProgress prog; progress_open(&prog, "Moving Group (F6)", 1);
+	for (int i = 0; i < src_panel->count && !prog.cancelled; i++) {
+		if (!src_panel->files[i].is_selected || strcmp(src_panel->files[i].name, "..") == 0) continue;
+		char sf[MAX_PATH * 2]; build_full_path(sf, sizeof(sf), src_panel->current_path, src_panel->files[i].name);
+		progress_scan_path(&prog, sf);
+	}
+	g_prog = &prog;
+	for (int i = 0; i < src_panel->count && !prog.cancelled; i++) {
 		if (!src_panel->files[i].is_selected) continue;
 		if (strcmp(src_panel->files[i].name, "..") == 0) continue;
 
@@ -389,12 +467,14 @@ static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		build_full_path(dst_full, sizeof(dst_full), dest_dir, src_panel->files[i].name);
 
 		int mr = move_single_path(src_full, dst_full);
-		if (mr == -2) return 1;
+		if (mr == -2) break;
 		if (mr != 0) {
+			g_prog = NULL; progress_close(&prog);
 			ui_message("Error", "Error moving file group");
 			return -1;
 		}
 	}
+	g_prog = NULL; progress_close(&prog);
 	return 1;
 }
 
@@ -503,7 +583,13 @@ int trash_items(const Panel *panel) {
 		char full_path[MAX_PATH * 2];
 		build_full_path(full_path, sizeof(full_path), panel->current_path, item->name);
 
-		if (move_one_to_trash(full_path, item->name) != 0) {
+		UiProgress prog; progress_open(&prog, "Moving to Trash (F8)", 0);
+		prog.total_files = 1;
+		progress_update(&prog, full_path, NULL, 0, 0, 1);
+		int tr = move_one_to_trash(full_path, item->name);
+		prog.done_files = 1;
+		progress_close(&prog);
+		if (tr != 0) {
 			ui_message("Error", "Failed to move item to Trash");
 			return -1;
 		}
@@ -514,18 +600,24 @@ int trash_items(const Panel *panel) {
 	snprintf(prompt, sizeof(prompt), "Move selected items (%d items) to Trash?", marked);
 	if (!ui_confirm("Move Group to Trash (F8)", prompt)) return 0;
 
-	for (int i = 0; i < panel->count; i++) {
+	UiProgress prog; progress_open(&prog, "Moving Group to Trash (F8)", 0);
+	prog.total_files = marked;
+	for (int i = 0; i < panel->count && !prog.cancelled; i++) {
 		if (!panel->files[i].is_selected) continue;
 		if (strcmp(panel->files[i].name, "..") == 0) continue;
 
 		char full_path[MAX_PATH * 2];
 		build_full_path(full_path, sizeof(full_path), panel->current_path, panel->files[i].name);
+		if (progress_update(&prog, full_path, NULL, 0, 0, 0)) break;
 
 		if (move_one_to_trash(full_path, panel->files[i].name) != 0) {
+			progress_close(&prog);
 			ui_message("Error", "Error moving selected items to Trash");
 			return -1;
 		}
+		prog.done_files++;
 	}
+	progress_close(&prog);
 	return 1;
 }
 
@@ -548,7 +640,13 @@ int delete_items(const Panel *panel) {
 			return -1;
 		}
 
-		if (delete_recursive(full_path) != 0) {
+		UiProgress prog; progress_open(&prog, "Deleting (Shift+F8)", 0);
+		progress_scan_path(&prog, full_path);
+		g_prog = &prog;
+		int dr = prog.cancelled ? -2 : delete_recursive(full_path);
+		g_prog = NULL; progress_close(&prog);
+		if (dr == -2) return 1;
+		if (dr != 0) {
 			ui_message("Error", "Failed to delete item");
 			return -1;
 		}
@@ -559,22 +657,34 @@ int delete_items(const Panel *panel) {
 	snprintf(prompt, sizeof(prompt), "Permanently delete %d selected items? (Cannot be undone)", marked);
 	if (!ui_confirm("Permanent Delete Group (Shift+F8)", prompt)) return 0;
 
-	for (int i = 0; i < panel->count; i++) {
+	UiProgress prog; progress_open(&prog, "Deleting Group (Shift+F8)", 0);
+	for (int i = 0; i < panel->count && !prog.cancelled; i++) {
+		if (!panel->files[i].is_selected || strcmp(panel->files[i].name, "..") == 0) continue;
+		char fp[MAX_PATH * 2]; build_full_path(fp, sizeof(fp), panel->current_path, panel->files[i].name);
+		progress_scan_path(&prog, fp);
+	}
+	g_prog = &prog;
+	for (int i = 0; i < panel->count && !prog.cancelled; i++) {
 		if (!panel->files[i].is_selected) continue;
 		if (strcmp(panel->files[i].name, "..") == 0) continue;
 
 		char full_path[MAX_PATH * 2];
 		build_full_path(full_path, sizeof(full_path), panel->current_path, panel->files[i].name);
 		if (is_protected_path(full_path)) {
+			g_prog = NULL; progress_close(&prog);
 			ui_message("Protected", "Refusing to delete protected system/home path");
 			return -1;
 		}
 
-		if (delete_recursive(full_path) != 0) {
+		int dr = delete_recursive(full_path);
+		if (dr == -2) break;
+		if (dr != 0) {
+			g_prog = NULL; progress_close(&prog);
 			ui_message("Error", "Error deleting selected items");
 			return -1;
 		}
 	}
+	g_prog = NULL; progress_close(&prog);
 	return 1;
 }
 

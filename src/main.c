@@ -913,6 +913,26 @@ int main(int argc, char **argv) {
 			if (!terminal_mode) { draw_screen(); refresh(); }
 			continue;
 		}
+		if (!terminal_mode && ev.action == ACT_ALT_SHIFT_N && active_panel && active_panel->count > 0) {
+			int marked = panel_marked_count(active_panel);
+			if (marked == 0) {
+				const char *nm = active_panel->files[active_panel->selected].name;
+				if (strcmp(nm, "..") != 0) clipboard_copy(nm);
+			} else {
+				size_t cap = (size_t)marked * (MAX_FILENAME + 2) + 8;
+				char *txt = malloc(cap);
+				if (txt) {
+					size_t off = 0; txt[0] = '\0';
+					for (int i = 0; i < active_panel->count; i++) {
+						if (!active_panel->files[i].is_selected || strcmp(active_panel->files[i].name, "..") == 0) continue;
+						off += (size_t)snprintf(txt + off, cap - off, "%s%s", off ? "\n" : "", active_panel->files[i].name);
+					}
+					if (off > 0) clipboard_copy(txt);
+					free(txt);
+				}
+			}
+			continue;
+		}
 		if (ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_Y) {
 			if (!terminal_mode && cmd_len == 0 && cmd_sel_start < 0) clipboard_stage_files(active_panel, 0);
 			else cmdline_copy(active_panel, terminal_mode);

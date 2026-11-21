@@ -20,6 +20,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
   - `Alt+F11` / `Ctrl+L`: Multiline Script History (Run / Edit in built-in editor / Delete)
   - Hold `Alt` / `Ctrl` / `Shift` to dynamically switch the 12-button bottom F-bar.
 - **Inline History Autosuggest & Command-to-Editor Output**: Typing in the command line opens a live prefix-matching history popup from the 1st character (`Up`/`Down` navigate, `Right`/click fill, `Esc` dismiss); press `Shift+Enter` to run a command and open its output directly in the built-in `F4` editor.
+- **Progress Dialogs with Speed, ETA & Cancel Confirmation**: Live two-bar progress window (`F5` Copy, `F6` Move, `F8` Trash, `Shift+F8` Permanent Delete) showing `MB/s`, `ETA`, and interactive `Esc` abort confirmation.
 - **Smart Clipboard & Native Terminal Scrollback**: URI-list file copy/paste (`Ctrl+C` / `Ctrl+X` / `Ctrl+V`), multiline script paste dialog, quick prefix search (`Alt+<char>` with auto EN/RU layout), live-filtered Help (`F1`), and full shell toggle (`Ctrl+O`) with automatic mouse release for native wheel scrolling and text selection.
 
 ## Build & Run
@@ -48,6 +49,7 @@ make
 | `Ctrl+F3`..`Ctrl+F6` | Sort active panel by Name, Extension, Time, Size (repeat to reverse) |
 | `Alt+F1` / `Alt+F2` | Drive, bookmarks & `TmpPanel` (`0`) menu (`Ins`/`+` add, `F8`/`Del` remove/unmount) |
 | `Insert` / `Shift+Arrows` | Select / deselect files, ranges, or whole words in editor |
+| `Ctrl+Shift+Home` / `End` | Select from cursor to start / end of entire file in editor |
 | `+` / `-` / `*` | Select by mask / Deselect by mask / Invert selection |
 | `Alt+<char>` | Quick search by filename prefix (auto EN/RU layout) |
 | `F1` | Open Help guide with live search filter |
@@ -59,11 +61,12 @@ make
 | `Tab` / `Shift+Tab` | Indent / unindent selected block (or current line) in editor |
 | `Ctrl+.` / `Ctrl+M` | Record/stop keyboard macro (assign hotkey) / Open Macro Manager in editor |
 | `Ctrl+O` (in editor) | Toggle terminal output screen to view previous command output (like FAR) |
+| `Alt+F8` (in editor) | Go to line (or `line:col`) dialog |
 | `F5` / `F6` | Copy (or extract from archive) / Move or rename (supports relative paths) |
 | `Shift+F5` / `Shift+F6` | Copy / Rename single file in-place (prefills filename only; group unchanged) |
 | `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
 | `F7` / `F8` / `Shift+F8` | Create directory / Move to system Trash (or delete in archive) / Permanent delete |
-| `Ctrl+A` | File attributes, permissions & ownership dialog (`chmod` tri-state, `chown`, recursive) |
+| `Ctrl+A` | File attributes, permissions, owner & timestamps dialog (`chmod`, `chown`, `mtime`/`atime`, recursive) |
 | `Alt+F7` | Find files by mask & content (`Go to`, `View`, `Edit`, `Insert`, `Panel` -> `TmpPanel`) |
 | `Alt+F8` / `Ctrl+H` | Open Command History (filter, Run / Insert / Jump / Delete) |
 | `Alt+F9` / `Ctrl+G` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
@@ -76,5 +79,6 @@ make
 | `Shift+Enter` | Run entered command and open output directly in `F4` editor (when cmd is non-empty) |
 | `Up` / `Down` / `Right` (in cmd) | Navigate & accept inline command history popup (`Esc` dismisses popup) |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Smart copy / cut / paste (files, selection, or whole line in editor) |
+| `Alt+Shift+N` | Copy filename(s) under cursor or selection as plain text to clipboard |
 | `Ctrl+O` | Toggle full terminal mode / panels (with native mouse wheel scroll & selection) |
 | `F10` / `Ctrl+Q` | Save state & histories and quit |

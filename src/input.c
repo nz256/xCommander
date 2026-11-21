@@ -127,6 +127,9 @@ static KeyAction map_modified_code(int code, int mod) {
 	if (has_ctrl && has_shift && !has_alt) {
 		if (code == 'd' || code == 'D' || code == 1074 || code == 1042) return ACT_CTRL_SHIFT_D;
 	}
+	if (has_alt && has_shift && !has_ctrl) {
+		if (code == 'n' || code == 'N' || code == 1090 || code == 1058) return ACT_ALT_SHIFT_N;
+	}
 	if (has_ctrl && !has_alt && !has_shift && code == '.') return ACT_MACRO_REC;
 	if (has_ctrl && !has_alt && (code == '/' || code == '?' || code == 31)) return ACT_TOGGLE_COMMENT;
 	if (has_ctrl && !has_alt && !has_shift) {
@@ -279,16 +282,16 @@ static KeyAction parse_csi(const char *seq) {
 		if (mod == 6 || mod == 4) return ACT_WORD_SEL_LEFT;
 		return ACT_LEFT;
 	}
-	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
-	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
+	if (final == 'H') { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; if (mod == 6) return ACT_CTRL_SHIFT_HOME; return ACT_HOME; }
+	if (final == 'F') { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; if (mod == 6) return ACT_CTRL_SHIFT_END; return ACT_END; }
 	if (final == 'P') return ((mod == 3) || g_mod_alt) ? ACT_ALT_F1 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F1 : ACT_F1);
 	if (final == 'Q') return ((mod == 3) || g_mod_alt) ? ACT_ALT_F2 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F2 : ACT_F2);
 	if (final == 'R') return ACT_F3;
 	if (final == 'S') return ((mod == 5) || g_mod_ctrl) ? ACT_CTRL_F4 : (((mod == 2) || g_mod_shift) ? ACT_SHIFT_F4 : ACT_F4);
 
 	if (final == '~') {
-		if (p1 == 1 || p1 == 7) { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; return ACT_HOME; }
-		if (p1 == 4 || p1 == 8) { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; return ACT_END; }
+		if (p1 == 1 || p1 == 7) { if (mod == 2) return ACT_SHIFT_HOME; if (mod == 4) return ACT_ALT_SHIFT_HOME; if (mod == 5) return ACT_CTRL_HOME; if (mod == 6) return ACT_CTRL_SHIFT_HOME; return ACT_HOME; }
+		if (p1 == 4 || p1 == 8) { if (mod == 2) return ACT_SHIFT_END; if (mod == 4) return ACT_ALT_SHIFT_END; if (mod == 5) return ACT_CTRL_END; if (mod == 6) return ACT_CTRL_SHIFT_END; return ACT_END; }
 		if (p1 == 2) return (mod == 2) ? ACT_SHIFT_INSERT : ACT_INSERT;
 		if (p1 == 3) return ACT_DELETE;
 		if (p1 == 5) return (mod == 5) ? ACT_CTRL_PGUP : ACT_PGUP;

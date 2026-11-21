@@ -208,6 +208,7 @@ typedef struct {
 	int syntax_enabled;
 	const SyntaxLang *syntax;
 	int sel_active;
+	int mark_mode;
 	int sel_start_y, sel_start_x;
 	int sel_end_y, sel_end_x;
 	char search_query[128];
@@ -642,6 +643,8 @@ static void ed_macro_preview(const EdMacro *m, char *out, size_t sz) {
 			case ACT_HOME: tag = "<Home>"; break;
 			case ACT_END: tag = "<End>"; break;
 			case ACT_CTRL_HOME: tag = "<C-Home>"; break;
+			case ACT_CTRL_SHIFT_HOME: tag = "<CS-Home>"; break;
+			case ACT_CTRL_SHIFT_END: tag = "<CS-End>"; break;
 			case ACT_CTRL_END: tag = "<C-End>"; break;
 			case ACT_PGUP: tag = "<PgUp>"; break;
 			case ACT_PGDN: tag = "<PgDn>"; break;
@@ -802,9 +805,15 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 
 	int rlen = (int)strlen(right_info);
 	int rec_w = g_ed_macro_rec ? 6 : 0;
-	int name_space = width - rlen - rec_w - 4;
+	int mrk_w = ed->mark_mode ? 7 : 0;
+	int name_space = width - rlen - rec_w - mrk_w - 4;
 	if (name_space > 0) {
 		mvprintw(0, 1, "%s%.*s", ed->modified ? "*" : "", name_space, base);
+	}
+	if (ed->mark_mode && width > rlen + rec_w + mrk_w) {
+		attrset(COLOR_PAIR(4) | A_BOLD);
+		mvprintw(0, width - rlen - rec_w - mrk_w, " MARK ");
+		attrset(COLOR_PAIR(2));
 	}
 	if (g_ed_macro_rec && width > rlen + rec_w) {
 		attrset(COLOR_PAIR(17) | A_BOLD);
@@ -816,8 +825,8 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 	}
 
 	const char *labels[12] = {
-		"Help", "Save", "Mark", ed->syntax_enabled ? "NoSyn" : "Syntax", ed->show_whitespace ? "NoSpc" : "Spaces",
-		"Move", "Search", "Delete", ed->auto_indent ? "Ind:On" : "Ind:Of", "Quit", "", ""
+		"Help", "Save", ed->mark_mode ? "Unmark" : "Mark", ed->syntax_enabled ? "NoSyn" : "Syntax", ed->show_whitespace ? "NoSpc" : "Spaces",
+		"", "Search", "", ed->auto_indent ? "Ind:On" : "Ind:Of", "Quit", "", ""
 	};
 	if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
 		for (int i = 0; i < 12; i++) labels[i] = "";
@@ -828,6 +837,7 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 		labels[6] = "Next";
 	} else if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
 		for (int i = 0; i < 12; i++) labels[i] = "";
+		labels[7] = "Goto";
 	}
 	attrset(COLOR_PAIR(6));
 	mvhline(height - 1, 0, ' ', width);
@@ -1249,6 +1259,7 @@ static void ed_delete_char(EditorState *ed) {
 
 static void ed_clear_sel(EditorState *ed) {
 	ed->sel_active = 0;
+	ed->mark_mode = 0;
 }
 
 static void ed_update_sel(EditorState *ed, int old_y, int old_x) {
@@ -2142,7 +2153,7 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 				int idx = ev.mouse_x / col_w; if (idx > 11) idx = 11;
 				const KeyAction fk[12] = {
 					ACT_F1, g_mod_shift ? ACT_SHIFT_F2 : ACT_F2, ACT_F3, ACT_F4, ACT_F5,
-					ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10, ACT_F11, ACT_F12
+					ACT_F6, ACT_F7, g_mod_alt ? ACT_ALT_F8 : ACT_F8, ACT_F9, ACT_F10, ACT_F11, ACT_F12
 				};
 				ev.action = fk[idx];
 			} else if (ev.mouse_y >= 1 && ev.mouse_y < height - 1) {
@@ -2156,8 +2167,9 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 					vcol += (ln->text[cx] == L'\t') ? (4 - (vcol % 4)) : 1;
 					cx++;
 				}
+				int my0 = ed.cur_y, mx0 = ed.cur_x;
 				ed.cur_x = cx;
-				ed_clear_sel(&ed);
+				if (ed.mark_mode) ed_update_sel(&ed, my0, mx0); else ed_clear_sel(&ed);
 				continue;
 			}
 		}
@@ -2222,12 +2234,14 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			if (!ed.syntax) ed.syntax = &SYNTAX_LANGS[0];
 			ed.syntax_enabled = !ed.syntax_enabled;
 		} else if (ev.action == ACT_F3) {
-			if (!ed.sel_active) {
+			if (!ed.mark_mode) {
+				ed.mark_mode = 1;
 				ed.sel_active = 1;
 				ed.sel_start_y = ed.cur_y; ed.sel_start_x = ed.cur_x;
 				ed.sel_end_y = ed.cur_y;   ed.sel_end_x = ed.cur_x;
 			} else {
-				ed_clear_sel(&ed);
+				ed.mark_mode = 0;
+				if (ed.sel_start_y == ed.sel_end_y && ed.sel_start_x == ed.sel_end_x) ed.sel_active = 0;
 			}
 		} else if (ev.action == ACT_CTRL_F7) {
 			curs_set(0);
@@ -2243,7 +2257,7 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		} else if (ev.action == ACT_CTRL_C) {
 			if (ed.sel_active) ed_copy_selection(&ed);
 			else ed_copy_current_line(&ed);
-		} else if (ev.action == ACT_F6 || ev.action == ACT_CTRL_X) {
+		} else if (ev.action == ACT_CTRL_X) {
 			if (ed.sel_active) {
 				ed_push_undo(&ed);
 				ed_copy_selection(&ed);
@@ -2269,10 +2283,26 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 				curs_set(0);
 				ui_message("Search", "No more matches found");
 			}
-		} else if (ev.action == ACT_F8) {
-			ed_push_undo(&ed);
-			if (ed.sel_active) ed_delete_selection(&ed);
-			else ed_delete_char(&ed);
+		} else if (ev.action == ACT_ALT_F8) {
+			char gbuf[32], gprompt[64];
+			snprintf(gbuf, sizeof(gbuf), "%d", ed.cur_y + 1);
+			snprintf(gprompt, sizeof(gprompt), "Line[:Col] (1..%d):", ed.line_count);
+			curs_set(0);
+			if (ui_input_narrow("Go to Line (Alt+F8)", gprompt, gbuf, sizeof(gbuf)) && gbuf[0] != '\0') {
+				int t_line = 0, t_col = 1;
+				if (sscanf(gbuf, "%d:%d", &t_line, &t_col) >= 1 && t_line >= 1) {
+					if (t_line > ed.line_count) t_line = ed.line_count;
+					ed.cur_y = t_line - 1;
+					if (t_col < 1) t_col = 1;
+					int max_c = ed.lines[ed.cur_y].len;
+					ed.cur_x = (t_col - 1 <= max_c) ? (t_col - 1) : max_c;
+					if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x);
+					else ed_clear_sel(&ed);
+					int center_top = ed.cur_y - vis_rows / 2;
+					if (center_top < 0) center_top = 0;
+					ed.top_line = center_top;
+				}
+			}
 		} else if (ev.action == ACT_F9) {
 			ed.auto_indent = !ed.auto_indent;
 		} else if (ev.action == ACT_CTRL_A) {
@@ -2320,45 +2350,45 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		} else if (ev.action == ACT_INSERT) {
 			ed.overwrite_mode = !ed.overwrite_mode;
 		} else if (ev.action == ACT_UP) {
-			ed_clear_sel(&ed);
 			if (ed.cur_y > 0) ed.cur_y--;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_DOWN) {
-			ed_clear_sel(&ed);
 			if (ed.cur_y + 1 < ed.line_count) ed.cur_y++;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_LEFT) {
-			ed_clear_sel(&ed);
 			if (ed.cur_x > 0) ed.cur_x--;
 			else if (ed.cur_y > 0) { ed.cur_y--; ed.cur_x = ed.lines[ed.cur_y].len; }
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_RIGHT) {
-			ed_clear_sel(&ed);
 			if (ed.cur_x < ed.lines[ed.cur_y].len) ed.cur_x++;
 			else if (ed.cur_y + 1 < ed.line_count) { ed.cur_y++; ed.cur_x = 0; }
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_CTRL_LEFT) {
-			ed_clear_sel(&ed);
 			ed_move_word_left(&ed);
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_CTRL_RIGHT) {
-			ed_clear_sel(&ed);
 			ed_move_word_right(&ed);
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_HOME) {
-			ed_clear_sel(&ed);
 			ed.cur_x = 0;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_END) {
-			ed_clear_sel(&ed);
 			ed.cur_x = ed.lines[ed.cur_y].len;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_CTRL_HOME) {
-			ed_clear_sel(&ed);
 			ed.cur_y = 0;
 			ed.cur_x = 0;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_CTRL_END) {
-			ed_clear_sel(&ed);
 			ed.cur_y = ed.line_count - 1;
 			ed.cur_x = ed.lines[ed.cur_y].len;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_PGUP) {
-			ed_clear_sel(&ed);
 			ed.cur_y -= vis_rows; if (ed.cur_y < 0) ed.cur_y = 0;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_PGDN) {
-			ed_clear_sel(&ed);
 			ed.cur_y += vis_rows; if (ed.cur_y >= ed.line_count) ed.cur_y = ed.line_count - 1;
+			if (ed.mark_mode) ed_update_sel(&ed, old_y, old_x); else ed_clear_sel(&ed);
 		} else if (ev.action == ACT_SHIFT_UP) {
 			if (ed.cur_y > 0) ed.cur_y--;
 			ed_update_sel(&ed, old_y, old_x);
@@ -2383,6 +2413,14 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			ed.cur_x = 0;
 			ed_update_sel(&ed, old_y, old_x);
 		} else if (ev.action == ACT_SHIFT_END) {
+			ed.cur_x = ed.lines[ed.cur_y].len;
+			ed_update_sel(&ed, old_y, old_x);
+		} else if (ev.action == ACT_CTRL_SHIFT_HOME) {
+			ed.cur_y = 0;
+			ed.cur_x = 0;
+			ed_update_sel(&ed, old_y, old_x);
+		} else if (ev.action == ACT_CTRL_SHIFT_END) {
+			ed.cur_y = ed.line_count - 1;
 			ed.cur_x = ed.lines[ed.cur_y].len;
 			ed_update_sel(&ed, old_y, old_x);
 		} else if (ev.action == ACT_TOGGLE_COMMENT) {
