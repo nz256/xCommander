@@ -81,7 +81,108 @@ static void panel_watch_update(Panel *p) {
 	p->watch_fd = inotify_add_watch(g_inotify_fd, p->current_path, mask);
 }
 
+static char g_temp_paths[MAX_FILES][MAX_PATH];
+static int g_temp_count = 0;
+
+static void temp_panel_load_entries(Panel *p) {
+	p->count = 0;
+	strcpy(p->files[0].name, "..");
+	p->files[0].is_dir = 1;
+	p->files[0].is_exec = 0;
+	p->files[0].is_selected = 0;
+	p->files[0].size = 0;
+	p->files[0].mode = 0;
+	p->files[0].mtime = 0;
+	p->files[0].full_path[0] = '\0';
+	p->count = 1;
+
+	int w = 0;
+	for (int i = 0; i < g_temp_count && p->count < MAX_FILES; i++) {
+		struct stat st;
+		if (lstat(g_temp_paths[i], &st) != 0) continue;
+		if (w != i) snprintf(g_temp_paths[w], MAX_PATH, "%s", g_temp_paths[i]);
+		const char *base = strrchr(g_temp_paths[w], '/');
+		base = (base && base[1]) ? (base + 1) : g_temp_paths[w];
+		snprintf(p->files[p->count].name, MAX_FILENAME, "%s", base);
+		snprintf(p->files[p->count].full_path, MAX_PATH, "%s", g_temp_paths[w]);
+		p->files[p->count].is_selected = 0;
+		p->files[p->count].is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+		p->files[p->count].is_exec = (!S_ISDIR(st.st_mode) && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) ? 1 : 0;
+		p->files[p->count].size = st.st_size;
+		p->files[p->count].mode = st.st_mode;
+		p->files[p->count].mtime = st.st_mtime;
+		p->count++;
+		w++;
+	}
+	g_temp_count = w;
+
+	current_sort_mode = p->sort_mode;
+	current_sort_desc = p->sort_desc;
+	qsort(p->files, (size_t)p->count, sizeof(FileEntry), compare_entries);
+	if (p->selected >= p->count) p->selected = (p->count > 0) ? (p->count - 1) : 0;
+	if (p->selected < 0) p->selected = 0;
+}
+
+void temp_panel_open(Panel *p) {
+	if (!p) return;
+	p->archive_file[0] = '\0';
+	p->archive_dir[0] = '\0';
+	p->is_temp = 1;
+	p->selected = 0;
+	p->top_line = 0;
+	temp_panel_load_entries(p);
+}
+
+int temp_panel_add(const char *full_path) {
+	if (!full_path || !full_path[0] || g_temp_count >= MAX_FILES - 1) return 0;
+	for (int i = 0; i < g_temp_count; i++) {
+		if (strcmp(g_temp_paths[i], full_path) == 0) return 0;
+	}
+	snprintf(g_temp_paths[g_temp_count++], MAX_PATH, "%s", full_path);
+	return 1;
+}
+
+void temp_panel_clear(void) {
+	g_temp_count = 0;
+}
+
+int temp_panel_remove_selected(Panel *p) {
+	if (!p || !p->is_temp || p->count == 0) return 0;
+	int marked = panel_marked_count(p);
+	int changed = 0;
+	for (int i = 0; i < p->count; i++) {
+		if (strcmp(p->files[i].name, "..") == 0) continue;
+		if ((marked > 0 && p->files[i].is_selected) || (marked == 0 && i == p->selected)) {
+			for (int j = 0; j < g_temp_count; j++) {
+				if (strcmp(g_temp_paths[j], p->files[i].full_path) == 0) {
+					memmove(&g_temp_paths[j], &g_temp_paths[j + 1], (size_t)(g_temp_count - j - 1) * MAX_PATH);
+					g_temp_count--;
+					changed = 1;
+					break;
+				}
+			}
+		}
+	}
+	if (changed) temp_panel_load_entries(p);
+	return changed;
+}
+
+void panel_entry_full_path(const Panel *p, int index, char *out, size_t sz) {
+	if (!p || index < 0 || index >= p->count || !out || sz == 0) return;
+	if (p->is_temp && p->files[index].full_path[0] != '\0') {
+		snprintf(out, sz, "%s", p->files[index].full_path);
+	} else if (strcmp(p->current_path, "/") == 0) {
+		snprintf(out, sz, "/%s", p->files[index].name);
+	} else {
+		snprintf(out, sz, "%s/%s", p->current_path, p->files[index].name);
+	}
+}
+
 void load_directory(Panel *p) {
+	if (p && p->is_temp) {
+		temp_panel_load_entries(p);
+		return;
+	}
 	if (p && p->archive_file[0] != '\0') {
 		if (access(p->archive_file, R_OK) == 0 && archive_load_dir(p)) return;
 		p->archive_file[0] = '\0';
@@ -109,6 +210,18 @@ void load_directory(Panel *p) {
 		for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
 			if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
 				snprintf(marked_names[marked_cnt++], MAX_FILENAME, "%s", p->files[i].name);
+			}
+		}
+	}
+	char sized_names[MAX_FILES][MAX_FILENAME];
+	off_t sized_vals[MAX_FILES];
+	int sized_cnt = 0;
+	if (same_dir) {
+		for (int i = 0; i < p->count && sized_cnt < MAX_FILES; i++) {
+			if (p->files[i].is_dir && p->files[i].dir_size_known && strcmp(p->files[i].name, "..") != 0) {
+				snprintf(sized_names[sized_cnt], MAX_FILENAME, "%s", p->files[i].name);
+				sized_vals[sized_cnt] = p->files[i].size;
+				sized_cnt++;
 			}
 		}
 	}
@@ -140,6 +253,7 @@ void load_directory(Panel *p) {
 		if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
 
 		snprintf(p->files[p->count].name, MAX_FILENAME, "%s", dir->d_name);
+		p->files[p->count].full_path[0] = '\0';
 		p->files[p->count].is_selected = 0;
 
 		struct stat st;
@@ -147,6 +261,7 @@ void load_directory(Panel *p) {
 		snprintf(full_path, sizeof(full_path), "%s/%s", p->current_path, dir->d_name);
 
 		p->files[p->count].is_dir = 0;
+		p->files[p->count].dir_size_known = 0;
 		p->files[p->count].is_exec = 0;
 		p->files[p->count].size = 0;
 		p->files[p->count].mode = 0;
@@ -198,12 +313,42 @@ void load_directory(Panel *p) {
 			}
 		}
 	}
+	if (sized_cnt > 0) {
+		for (int i = 0; i < p->count; i++) {
+			if (!p->files[i].is_dir) continue;
+			for (int m = 0; m < sized_cnt; m++) {
+				if (strcmp(p->files[i].name, sized_names[m]) == 0) {
+					p->files[i].size = sized_vals[m];
+					p->files[i].dir_size_known = 1;
+					break;
+				}
+			}
+		}
+	}
 
 	panel_watch_update(p);
 }
 
 void change_directory(Panel *p, const char *dir) {
 	if (!p || !dir || !*dir) return;
+
+	if (p->is_temp) {
+		if (strcmp(dir, "..") == 0) {
+			p->is_temp = 0;
+			load_directory(p);
+			return;
+		}
+		for (int i = 0; i < p->count; i++) {
+			if (strcmp(p->files[i].name, dir) == 0 && p->files[i].full_path[0] != '\0') {
+				p->is_temp = 0;
+				snprintf(p->current_path, MAX_PATH, "%s", p->files[i].full_path);
+				p->parent_name[0] = '\0';
+				load_directory(p);
+				return;
+			}
+		}
+		return;
+	}
 
 	if (p->archive_file[0] != '\0') {
 		if (strcmp(dir, "..") == 0) {

@@ -360,7 +360,10 @@ static void format_perms(mode_t m, char out[10]) {
 
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active) {
 	char disp_path[MAX_PATH * 2];
-	if (p->archive_file[0] != '\0') {
+	if (p->is_temp) {
+		int tcnt = (p->count > 0) ? (p->count - 1) : 0;
+		snprintf(disp_path, sizeof(disp_path), "TmpPanel (%d item%s)", tcnt, tcnt == 1 ? "" : "s");
+	} else if (p->archive_file[0] != '\0') {
 		const char *ab = strrchr(p->archive_file, '/'); ab = ab ? (ab + 1) : p->archive_file;
 		snprintf(disp_path, sizeof(disp_path), "%s:/%s", ab, p->archive_dir);
 	} else snprintf(disp_path, sizeof(disp_path), "%s", p->current_path);
@@ -490,7 +493,20 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 			}
 
 			if (file_idx < p->count && col_w > 1) {
-				mvwprint_utf8(stdscr, y, col_x + 1, col_w - 1, p->files[file_idx].name);
+				const char *disp_name = p->files[file_idx].name;
+				char tmp_disp[MAX_PATH];
+				if (p->is_temp && p->files[file_idx].full_path[0] != '\0') {
+					const char *fp = p->files[file_idx].full_path;
+					const char *sl1 = strrchr(fp, '/');
+					if (sl1 && sl1 > fp) {
+						const char *sl2 = sl1 - 1;
+						while (sl2 > fp && *sl2 != '/') sl2--;
+						const char *sub = (*sl2 == '/') ? (sl2 + 1) : sl2;
+						snprintf(tmp_disp, sizeof(tmp_disp), "%s", sub);
+						disp_name = tmp_disp;
+					}
+				}
+				mvwprint_utf8(stdscr, y, col_x + 1, col_w - 1, disp_name);
 			}
 		}
 	}
@@ -499,12 +515,19 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	attrset(normal_attr);
 	for (int k = 0; k < inner_w; k++) mvaddch(info_y, start_x + 1 + k, ' ');
 
-	int marked_cnt = 0;
+	int marked_cnt = 0, marked_files = 0, marked_dirs = 0, unknown_dirs = 0;
 	off_t marked_bytes = 0;
 	for (int i = 0; i < p->count; i++) {
 		if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
 			marked_cnt++;
-			if (!p->files[i].is_dir) marked_bytes += p->files[i].size;
+			if (p->files[i].is_dir) {
+				marked_dirs++;
+				if (p->files[i].dir_size_known) marked_bytes += p->files[i].size;
+				else unknown_dirs++;
+			} else {
+				marked_files++;
+				marked_bytes += p->files[i].size;
+			}
 		}
 	}
 
@@ -514,31 +537,44 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 		attrset(quick_search_nomatch ? (COLOR_PAIR(4) | A_REVERSE) : COLOR_PAIR(2));
 		mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, sline);
 	} else if (marked_cnt > 0 && inner_w > 2) {
-		char sz[32], summary[128];
+		char sz[32], summary[160];
 		format_size(marked_bytes, sz, sizeof(sz));
-		snprintf(summary, sizeof(summary), "Selected: %d item(s), %s", marked_cnt, sz);
+		if (unknown_dirs > 0) {
+			if (marked_files > 0)
+				snprintf(summary, sizeof(summary), "Selected: %d file(s), %d dir(s), %s + dirs", marked_files, marked_dirs, sz);
+			else if (marked_bytes > 0)
+				snprintf(summary, sizeof(summary), "Selected: %d dir(s), %s + dirs", marked_dirs, sz);
+			else
+				snprintf(summary, sizeof(summary), "Selected: %d dir(s), + dirs", marked_dirs);
+		} else {
+			snprintf(summary, sizeof(summary), "Selected: %d item(s), %s", marked_cnt, sz);
+		}
 		attrset(mark_attr);
 		mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, summary);
 	} else if (p->count > 0 && p->selected >= 0 && p->selected < p->count && inner_w > 2) {
 		const FileEntry *cur = &p->files[p->selected];
 		char sz[32], perms[10], tbuf[32] = "", meta[96];
-		if (strcmp(cur->name, "..") == 0) snprintf(sz, sizeof(sz), "<UP>");
-		else if (cur->is_dir) snprintf(sz, sizeof(sz), "<DIR>");
+		if (strcmp(cur->name, "..") == 0 && !cur->dir_size_known) snprintf(sz, sizeof(sz), "<UP>");
+		else if (cur->is_dir && !cur->dir_size_known) snprintf(sz, sizeof(sz), "<DIR>");
 		else format_size(cur->size, sz, sizeof(sz));
 		format_perms(cur->mode, perms);
 		struct tm *tm_info = localtime(&cur->mtime);
 		if (tm_info) strftime(tbuf, sizeof(tbuf), "%d.%m.%Y %H:%M", tm_info);
 		snprintf(meta, sizeof(meta), "%s  %s  %s", sz, perms, tbuf);
 
-		int meta_len = (int)strlen(meta);
-		int left_avail = inner_w - 2 - meta_len - 2;
-		if (left_avail > 0) {
-			mvwprint_utf8(stdscr, info_y, start_x + 2, left_avail, cur->name);
-		}
-		if (inner_w - 2 >= meta_len) {
-			mvprintw(info_y, start_x + width - 2 - meta_len, "%s", meta);
-		} else if (inner_w > 2) {
-			mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, sz);
+		if (p->is_temp && cur->full_path[0] != '\0') {
+			mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, cur->full_path);
+		} else {
+			int meta_len = (int)strlen(meta);
+			int left_avail = inner_w - 2 - meta_len - 2;
+			if (left_avail > 0) {
+				mvwprint_utf8(stdscr, info_y, start_x + 2, left_avail, cur->name);
+			}
+			if (inner_w - 2 >= meta_len) {
+				mvprintw(info_y, start_x + width - 2 - meta_len, "%s", meta);
+			} else if (inner_w > 2) {
+				mvwprint_utf8(stdscr, info_y, start_x + 2, inner_w - 2, sz);
+			}
 		}
 	}
 
@@ -1022,7 +1058,7 @@ void ui_help(void) {
 		"  Ctrl+U             Swap left and right panels with cursor",
 		"  Ctrl+R             Force reload both panels (auto-updates via inotify)",
 		"  Ctrl+F3..F6        Sort active panel: Name, Ext, Time, Size (repeat: rev)",
-		"  Alt+F1 / Alt+F2    Change drive / bookmarks menu (Left / Right)",
+		"  Alt+F1 / Alt+F2    Change drive / bookmarks / TmpPanel (0) menu",
 		"                       Ins / + : Bookmark current dir with custom hotkey",
 		"                       F8 / Del: Remove bookmark or safe-unmount USB",
 		"  Insert / Shift+Arr Mark or unmark files & ranges (incl. Shift+Left/Right)",
@@ -1037,13 +1073,15 @@ void ui_help(void) {
 		"=== 2. VIEWER, EDITOR & FILE OPERATIONS ===",
 		"  F1                 Open this Help guide (type to live-filter)",
 		"  F2                 Open User Menu (submenus { } & hotkeys)",
-		"  F3                 Built-in Text / Hex viewer (F2:Wrap F4:Hex F7:Find)",
+		"  F3                 View file (Text/Hex) or calculate folder(s) size",
 		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
 		"  Shift+F4           Create new file and open in built-in Editor",
 		"  F5 / F6            Copy / Move or rename (with Overwrite prompt)",
 		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
 		"  F7 / F8 / Sh+F8    MkDir / Move to Trash / Permanent Delete",
-		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Insert)",
+		"  Ctrl+A             File attributes, permissions & owner (chmod/chown)",
+		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Panel)",
+		"  Ctrl+PgUp (TmpPnl) Jump to real directory of item in Temporary Panel",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
 		"                       Inside: F3 View, F4 Edit+Upd, F5 Extract, F8 Del",
 		"  Shift+F1 / Alt+F5  Pack selected items to archive (.zip/.tar.*/.7z)",
@@ -1051,7 +1089,7 @@ void ui_help(void) {
 		"=== 3. COMMAND LINE & SMART CLIPBOARD ===",
 		"  Alt+[ / Alt+]      Insert Left / Right panel path into cmd",
 		"  Alt+Enter / Ctrl+J Insert current filename into cmd",
-		"  Shift+Enter/Alt+O  Run command and open output directly in F4 editor",
+		"  Shift+Enter        Run command and open output directly in F4 editor",
 		"  Type in cmd        Live history popup from 1st char (Up/Dn, Right, Esc)",
 		"  Ctrl+C / Ctrl+X    Copy / Cut file (URI-list) or selected text",
 		"  Ctrl+V / Shift+Ins Paste file, text, or multiline script dialog",
@@ -1121,6 +1159,8 @@ void ui_editor_help(void) {
 		"  Shift+F7           Find next match",
 		"  Ctrl+F7            Interactive Replace (Case sensitive, RegExp, \\t, \\1..\\9)",
 		"  Ctrl+. / Ctrl+M    Record/Stop macro / Manage & delete saved macros",
+		"  Ctrl+O             Toggle terminal output screen (like FAR)",
+		"  Hold Ctrl/Shift    Dynamic 12-key F1..F12 bar highlights active keys",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
 		"  F1                 Open this Editor Help",
 		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"
@@ -1657,9 +1697,16 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 
 		snprintf(paths[count], MAX_PATH, "/");
 		devs[count][0] = '\0';
-		custom_hk[count] = '\0';
+		custom_hk[count] = '\x01';
 		item_type[count] = 0;
 		snprintf(labels[count], sizeof(labels[0]), "/ (Root)");
+		count++;
+
+		snprintf(paths[count], MAX_PATH, "::TEMP::");
+		devs[count][0] = '\0';
+		custom_hk[count] = '0';
+		item_type[count] = 0;
+		snprintf(labels[count], sizeof(labels[0]), "TmpPanel (Temporary)");
 		count++;
 
 		FILE *mf = fopen("/proc/mounts", "r");
@@ -1783,7 +1830,7 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 					continue;
 				}
 				int idx = (sep_idx >= 0 && dpos > sep_idx) ? (dpos - 1) : dpos;
-				char kch = item_hk[idx] ? item_hk[idx] : ' ';
+				char kch = (item_hk[idx] > 32) ? item_hk[idx] : ' ';
 				int flen = (int)strlen(free_info[idx]);
 				int left_w = box_w - 6 - flen;
 				if (left_w < 8) left_w = 8;
@@ -1823,8 +1870,10 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 				const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбю";
 				const char    *en = "qwertyuiop[]asdfghjkl;'zxcvbnm,.";
 				for (int k = 0; ru[k] != L'\0'; k++) { if (ch == ru[k]) { ch = (wchar_t)en[k]; break; } }
-				for (int i = 0; i < count; i++) {
-					if (item_hk[i] && (wchar_t)tolower((unsigned char)item_hk[i]) == ch) { chosen = i; break; }
+				if (ch > 32) {
+					for (int i = 0; i < count; i++) {
+						if (item_hk[i] > 32 && (wchar_t)tolower((unsigned char)item_hk[i]) == ch) { chosen = i; break; }
+					}
 				}
 				if (chosen >= 0) break;
 			}
@@ -1910,9 +1959,16 @@ void ui_drive_menu(Panel *target_panel, int is_right) {
 		}
 
 		if (chosen >= 0 && chosen < count) {
-			snprintf(target_panel->current_path, MAX_PATH, "%s", paths[chosen]);
-			target_panel->parent_name[0] = '\0';
-			load_directory(target_panel);
+			if (strcmp(paths[chosen], "::TEMP::") == 0) {
+				temp_panel_open(target_panel);
+			} else {
+				target_panel->is_temp = 0;
+				target_panel->archive_file[0] = '\0';
+				target_panel->archive_dir[0] = '\0';
+				snprintf(target_panel->current_path, MAX_PATH, "%s", paths[chosen]);
+				target_panel->parent_name[0] = '\0';
+				load_directory(target_panel);
+			}
 			active_panel = target_panel;
 		}
 		break;

@@ -244,7 +244,7 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 
 		char src_full[MAX_PATH * 2];
 		char dst_full[MAX_PATH * 5];
-		build_full_path(src_full, sizeof(src_full), src_panel->current_path, item->name);
+		panel_entry_full_path(src_panel, sel_idx, src_full, sizeof(src_full));
 
 		if (dest_input[0] == '/') {
 			snprintf(dst_full, sizeof(dst_full), "%s", dest_input);
@@ -294,7 +294,7 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 
 		char src_full[MAX_PATH * 2];
 		char dst_full[MAX_PATH * 3];
-		build_full_path(src_full, sizeof(src_full), src_panel->current_path, src_panel->files[i].name);
+		panel_entry_full_path(src_panel, i, src_full, sizeof(src_full));
 		build_full_path(dst_full, sizeof(dst_full), dest_dir, src_panel->files[i].name);
 
 		if (strcmp(src_full, dst_full) == 0) continue;
@@ -680,6 +680,8 @@ void execute_system_command(const char *cmd) {
 	} else {
 		snprintf(full_cmd, sizeof(full_cmd), "%s -c 'cd \"%s\" && %s; [ -s \"$XC_PWD_FILE\" ] || pwd > \"$XC_PWD_FILE\"'", shell, active_panel->current_path, safe_cmd);
 	}
+	input_restore_sane();
+	fflush(stdout);
 	system(full_cmd);
 	if (clean_rc[0] != '\0') unlink(clean_rc);
 	unsetenv("XC_PWD_FILE");

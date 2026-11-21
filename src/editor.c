@@ -815,30 +815,34 @@ static void ed_draw_bars(const EditorState *ed, int height, int width) {
 		mvprintw(0, width - rlen, "%s", right_info);
 	}
 
-	const char *labels[10] = {
+	const char *labels[12] = {
 		"Help", "Save", "Mark", ed->syntax_enabled ? "NoSyn" : "Syntax", ed->show_whitespace ? "NoSpc" : "Spaces",
-		"Move", "Search", "Delete", ed->auto_indent ? "Ind:On" : "Ind:Of", "Quit"
+		"Move", "Search", "Delete", ed->auto_indent ? "Ind:On" : "Ind:Of", "Quit", "", ""
 	};
 	if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
+		for (int i = 0; i < 12; i++) labels[i] = "";
 		labels[6] = "Replac";
 	} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+		for (int i = 0; i < 12; i++) labels[i] = "";
 		labels[1] = "SaveAs";
 		labels[6] = "Next";
+	} else if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
+		for (int i = 0; i < 12; i++) labels[i] = "";
 	}
 	attrset(COLOR_PAIR(6));
 	mvhline(height - 1, 0, ' ', width);
-	int col_w = width / 10;
+	int col_w = width / 12;
 	if (col_w < 3) col_w = 3;
-	for (int i = 0; i < 10; i++) {
+	for (int i = 0; i < 12; i++) {
 		int x = i * col_w;
 		if (x >= width) break;
-		int item_w = (i == 9) ? (width - x) : col_w;
+		int item_w = (i == 11) ? (width - x) : col_w;
 		attrset(COLOR_PAIR(6));
 		mvprintw(height - 1, x, "%d", i + 1);
-		int num_len = (i == 9) ? 2 : 1;
+		int num_len = (i >= 9) ? 2 : 1;
 		int lspace = item_w - num_len;
 		if (lspace > 0) {
-			attrset(COLOR_PAIR(2));
+			attrset(A_NORMAL | COLOR_PAIR(2));
 			for (int k = 0; k < lspace; k++) mvaddch(height - 1, x + num_len + k, ' ');
 			mvprintw(height - 1, x + num_len, "%.*s", lspace - (lspace > 1 ? 1 : 0), labels[i]);
 		}
@@ -2134,11 +2138,11 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 		}
 		if (ev.action == ACT_MOUSE_LEFT) {
 			if (ev.mouse_y == height - 1) {
-				int col_w = width / 10; if (col_w < 3) col_w = 3;
-				int idx = ev.mouse_x / col_w; if (idx > 9) idx = 9;
-				const KeyAction fk[10] = {
+				int col_w = width / 12; if (col_w < 3) col_w = 3;
+				int idx = ev.mouse_x / col_w; if (idx > 11) idx = 11;
+				const KeyAction fk[12] = {
 					ACT_F1, g_mod_shift ? ACT_SHIFT_F2 : ACT_F2, ACT_F3, ACT_F4, ACT_F5,
-					ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10
+					ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10, ACT_F11, ACT_F12
 				};
 				ev.action = fk[idx];
 			} else if (ev.mouse_y >= 1 && ev.mouse_y < height - 1) {
@@ -2170,6 +2174,24 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 
 		int old_y = ed.cur_y, old_x = ed.cur_x;
 
+		if (ev.action == ACT_CTRL_O) {
+			def_prog_mode();
+			endwin();
+			input_enable_raw();
+			input_set_mouse(0);
+			while (1) {
+				InputEvent tev = input_read();
+				if (tev.action == ACT_NONE || tev.action == ACT_MOD_CHANGE || tev.action == ACT_RESIZE) continue;
+				break;
+			}
+			reset_prog_mode();
+			input_enable_raw();
+			input_set_mouse(1);
+			clearok(stdscr, TRUE);
+			touchwin(stdscr);
+			refresh();
+			continue;
+		}
 		if (ev.action == ACT_F1) {
 			curs_set(0);
 			ui_editor_help();

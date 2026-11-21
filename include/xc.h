@@ -18,11 +18,13 @@ typedef enum {
 typedef struct {
 	char name[MAX_FILENAME];
 	int is_dir;
+	int dir_size_known;
 	int is_exec;
 	int is_selected;
 	off_t size;
 	mode_t mode;
 	time_t mtime;
+	char full_path[MAX_PATH];
 } FileEntry;
 
 typedef struct {
@@ -34,6 +36,7 @@ typedef struct {
 	char parent_name[MAX_FILENAME];
 	char archive_file[MAX_PATH];
 	char archive_dir[MAX_PATH];
+	int is_temp;
 	SortMode sort_mode;
 	int sort_desc;
 	int watch_fd;

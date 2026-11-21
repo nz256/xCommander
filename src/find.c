@@ -14,6 +14,7 @@
 #include "xc.h"
 #include "input.h"
 #include "ui.h"
+#include "panel.h"
 #include "widgets.h"
 #include "editor.h"
 #include "viewer.h"
@@ -278,13 +279,13 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 		mvwhline(win, bh - 4, 1, ACS_HLINE, bw - 2);
 		mvwaddnstr(win, bh - 3, 2, ctx.items[sel].full_path, bw - 4);
 
-		const char *blbls[5] = { "[ Go to ]", "[ View (F3) ]", "[ Edit (F4) ]", "[ Insert ]", "[ Close ]" };
-		int blens[5] = { 9, 13, 13, 10, 9 };
-		int total_bw = 9 + 2 + 13 + 2 + 13 + 2 + 10 + 2 + 9;
+		const char *blbls[6] = { "[ Go to ]", "[ View (F3) ]", "[ Edit (F4) ]", "[ Insert ]", "[ Panel ]", "[ Close ]" };
+		int blens[6] = { 9, 13, 13, 10, 9, 9 };
+		int total_bw = 9 + 2 + 13 + 2 + 13 + 2 + 10 + 2 + 9 + 2 + 9;
 		int bx = (bw - total_bw) / 2;
 		if (bx < 2) bx = 2;
-		int bpos[5], cur_x = bx;
-		for (int b = 0; b < 5; b++) {
+		int bpos[6], cur_x = bx;
+		for (int b = 0; b < 6; b++) {
 			bpos[b] = cur_x;
 			wattron(win, (btn_focus == b) ? COLOR_PAIR(2) : COLOR_PAIR(5));
 			mvwprintw(win, bh - 2, cur_x, "%s", blbls[b]);
@@ -301,8 +302,8 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 		if (ev.action == ACT_PGDN) { sel += vis; continue; }
 		if (ev.action == ACT_HOME) { sel = 0; continue; }
 		if (ev.action == ACT_END) { sel = ctx.count - 1; continue; }
-		if (ev.action == ACT_TAB || ev.action == ACT_RIGHT) { btn_focus = (btn_focus + 1) % 5; continue; }
-		if (ev.action == ACT_SHIFT_TAB || ev.action == ACT_LEFT) { btn_focus = (btn_focus + 4) % 5; continue; }
+		if (ev.action == ACT_TAB || ev.action == ACT_RIGHT) { btn_focus = (btn_focus + 1) % 6; continue; }
+		if (ev.action == ACT_SHIFT_TAB || ev.action == ACT_LEFT) { btn_focus = (btn_focus + 5) % 6; continue; }
 		if (ev.action == ACT_MOUSE_WHEEL_UP) { sel -= 3; continue; }
 		if (ev.action == ACT_MOUSE_WHEEL_DOWN) { sel += 3; continue; }
 		if (ev.action == ACT_MOUSE_LEFT || ev.action == ACT_MOUSE_DBL) {
@@ -318,7 +319,7 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 				} else continue;
 			} else if (wy == bh - 2) {
 				int hit = -1;
-				for (int b = 0; b < 5; b++) {
+				for (int b = 0; b < 6; b++) {
 					if (wx >= bpos[b] && wx < bpos[b] + blens[b]) { hit = b; break; }
 				}
 				if (hit == -1) continue;
@@ -327,6 +328,11 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 				else if (hit == 1) ev.action = ACT_F3;
 				else if (hit == 2) ev.action = ACT_F4;
 				else if (hit == 3) ev.action = ACT_INSERT_NAME;
+				else if (hit == 4) {
+					temp_panel_clear();
+					for (int k = 0; k < ctx.count; k++) temp_panel_add(ctx.items[k].full_path);
+					ret_code = 3; break;
+				}
 				else break;
 			} else continue;
 		}
@@ -335,13 +341,23 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 			else if (btn_focus == 1) ev.action = ACT_F3;
 			else if (btn_focus == 2) ev.action = ACT_F4;
 			else if (btn_focus == 3) ev.action = ACT_INSERT_NAME;
+			else if (btn_focus == 4) {
+				temp_panel_clear();
+				for (int k = 0; k < ctx.count; k++) temp_panel_add(ctx.items[k].full_path);
+				ret_code = 3; break;
+			}
 			else break;
 		}
 		if (ev.action == ACT_ENTER) {
 			if (btn_focus == 1) ev.action = ACT_F3;
 			else if (btn_focus == 2) ev.action = ACT_F4;
 			else if (btn_focus == 3) ev.action = ACT_INSERT_NAME;
-			else if (btn_focus == 4) break;
+			else if (btn_focus == 4) {
+				temp_panel_clear();
+				for (int k = 0; k < ctx.count; k++) temp_panel_add(ctx.items[k].full_path);
+				ret_code = 3; break;
+			}
+			else if (btn_focus == 5) break;
 		}
 
 		const FindResult *cur = &ctx.items[sel];

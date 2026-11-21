@@ -51,9 +51,11 @@ void input_enable_raw(void) {
 }
 
 void input_restore_sane(void) {
-	const char *off = "\033[?1004l\033[?1000;1006l\033[?1l\033>\033[<99u\033[=0u\033[>4;0m";
+	fflush(stdout);
+	const char *off = "\033[?1004l\033[?1000;1006l\033[?1l\033>\033[<99u\033[>4;0m";
 	ssize_t w = write(STDOUT_FILENO, off, strlen(off));
 	(void)w;
+	tcdrain(STDOUT_FILENO);
 	usleep(120000);
 	while (1) {
 		fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);

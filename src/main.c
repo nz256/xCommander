@@ -1217,8 +1217,7 @@ int main(int argc, char **argv) {
 			}
 			continue;
 		}
-		int is_cmd_to_ed = (cmd_len > 0 && (ev.action == ACT_SHIFT_ENTER ||
-			(ev.action == ACT_ALT_CHAR && (ev.ch == L'o' || ev.ch == L'O' || ev.ch == L'щ' || ev.ch == L'Щ'))));
+		int is_cmd_to_ed = (cmd_len > 0 && ev.action == ACT_SHIFT_ENTER);
 		if (is_cmd_to_ed) {
 			char full_cmd[CMD_MAX_LEN];
 			cmdline_get_utf8(full_cmd, sizeof(full_cmd));
@@ -1333,7 +1332,16 @@ int main(int argc, char **argv) {
 		else if (ev.action == ACT_ALT_F2) { quick_search_reset(); ui_drive_menu(&right_panel, 1); }
 		else if (ev.action == ACT_F3 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
+			if (cur->is_dir) {
+				panel_calc_dir_sizes(active_panel);
+				if (active_panel->sort_mode == SORT_SIZE) {
+					char keep[MAX_FILENAME];
+					snprintf(keep, sizeof(keep), "%s", cur->name);
+					snprintf(active_panel->parent_name, MAX_FILENAME, "%s", keep);
+					load_directory(active_panel);
+				}
+				draw_screen(); refresh();
+			} else if (strcmp(cur->name, "..") != 0) {
 				if (active_panel->archive_file[0]) {
 					char in[MAX_PATH*2], tfp[MAX_PATH];
 					if (active_panel->archive_dir[0]) snprintf(in, sizeof(in), "%s/%s", active_panel->archive_dir, cur->name);
@@ -1344,7 +1352,7 @@ int main(int argc, char **argv) {
 					} else ui_message("Archive View", "Failed to extract file from archive");
 				} else {
 					char fp[MAX_PATH * 2];
-					snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
+					panel_entry_full_path(active_panel, active_panel->selected, fp, sizeof(fp));
 					file_history_add_entry(NULL, "View", 0, 0, fp);
 					file_history_save();
 					ui_view_file(fp);
@@ -1383,7 +1391,7 @@ int main(int argc, char **argv) {
 					continue;
 				}
 				char fp[MAX_PATH * 2];
-				snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
+				panel_entry_full_path(active_panel, active_panel->selected, fp, sizeof(fp));
 				snprintf(active_panel->parent_name, MAX_FILENAME, "%s", cur->name);
 				int start_ln = 1, start_cl = 1;
 				file_history_get_pos(fp, &start_ln, &start_cl);
@@ -1431,6 +1439,22 @@ int main(int argc, char **argv) {
 		}
 		else if (ev.action == ACT_F5) {
 			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			if (oth->is_temp && !active_panel->is_temp && active_panel->archive_file[0] == '\0') {
+				int marked = panel_marked_count(active_panel);
+				int added = 0;
+				for (int i = 0; i < active_panel->count; i++) {
+					if (strcmp(active_panel->files[i].name, "..") == 0) continue;
+					if ((marked > 0 && active_panel->files[i].is_selected) || (marked == 0 && i == active_panel->selected)) {
+						char fp[MAX_PATH * 2];
+						panel_entry_full_path(active_panel, i, fp, sizeof(fp));
+						added += temp_panel_add(fp);
+						active_panel->files[i].is_selected = 0;
+					}
+				}
+				if (added > 0) load_directory(oth);
+				draw_screen(); refresh();
+				continue;
+			}
 			if (active_panel->archive_file[0]) {
 				if (archive_extract_items(active_panel, oth) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
 				draw_screen(); refresh();
@@ -1462,6 +1486,8 @@ int main(int argc, char **argv) {
 					snprintf(active_panel->current_path, MAX_PATH, "%s", found_fp);
 					load_directory(active_panel);
 				}
+			} else if (fres == 3) {
+				temp_panel_open(active_panel);
 			} else if (fres == 2 && found_fp[0] != '\0') {
 				wchar_t wfp[MAX_PATH * 2];
 				if (mbstowcs(wfp, found_fp, MAX_PATH * 2 - 1) != (size_t)-1) {
@@ -1479,7 +1505,20 @@ int main(int argc, char **argv) {
 			}
 			draw_screen(); refresh();
 		}
+		else if (ev.action == ACT_CTRL_A) {
+			if (ui_file_attributes(active_panel)) reload_panels_keep_cursor();
+			draw_screen(); refresh();
+		}
 		else if (ev.action == ACT_F8) {
+			if (active_panel->is_temp) {
+				int ps = active_panel->selected;
+				if (temp_panel_remove_selected(active_panel) > 0) {
+					if (ps >= active_panel->count) ps = active_panel->count - 1;
+					if (ps >= 0) active_panel->selected = ps;
+				}
+				draw_screen(); refresh();
+				continue;
+			}
 			if (active_panel->archive_file[0] != '\0') {
 				int ps = active_panel->selected;
 				if (archive_delete_items(active_panel) > 0) {
@@ -1494,7 +1533,7 @@ int main(int argc, char **argv) {
 			if (trash_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; }
 		}
 		else if (ev.action == ACT_SHIFT_F8) {
-			if (active_panel->archive_file[0] != '\0') continue;
+			if (active_panel->archive_file[0] != '\0' || active_panel->is_temp) continue;
 			int ps = active_panel->selected;
 			if (delete_items(active_panel) > 0) { reload_panels_keep_cursor(); if (ps >= active_panel->count) ps = active_panel->count - 1; if (ps >= 0) active_panel->selected = ps; }
 		}
@@ -1565,7 +1604,28 @@ int main(int argc, char **argv) {
 				else snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
 				if (access(fp, X_OK) == 0) { char rc[MAX_FILENAME + 16]; snprintf(rc, sizeof(rc), "./\"%s\"", cur->name); execute_system_command(rc); reload_panels_keep_cursor(); }
 			}
-		} else if (ev.action == ACT_CTRL_PGUP) change_directory(active_panel, "..");
+		} else if (ev.action == ACT_CTRL_PGUP) {
+			if (active_panel->is_temp && active_panel->count > 0 && active_panel->selected > 0) {
+				const FileEntry *te = &active_panel->files[active_panel->selected];
+				if (te->full_path[0] != '\0') {
+					char dir_buf[MAX_PATH];
+					snprintf(dir_buf, sizeof(dir_buf), "%s", te->full_path);
+					char *sl = strrchr(dir_buf, '/');
+					if (sl) {
+						const char *bn = sl + 1;
+						if (sl == dir_buf) strcpy(dir_buf, "/");
+						else *sl = '\0';
+						active_panel->is_temp = 0;
+						snprintf(active_panel->parent_name, MAX_FILENAME, "%s", bn);
+						snprintf(active_panel->current_path, MAX_PATH, "%s", dir_buf);
+						load_directory(active_panel);
+						draw_screen(); refresh();
+						continue;
+					}
+				}
+			}
+			change_directory(active_panel, "..");
+		}
 		else if (ev.action == ACT_CTRL_PGDN && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
 			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }

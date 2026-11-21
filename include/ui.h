@@ -26,6 +26,8 @@ void ui_help(void);
 void ui_editor_help(void);
 void ui_user_menu(void);
 void ui_drive_menu(Panel *target_panel, int is_right);
+int ui_file_attributes(Panel *panel);
+void panel_calc_dir_sizes(Panel *panel);
 
 
 #define CMD_SUGGEST_MAX 6
