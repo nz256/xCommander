@@ -18,6 +18,7 @@
 #include "input.h"
 #include "panel.h"
 #include "ui.h"
+#include "sudo_helper.h"
 #include "widgets.h"
 
 static const mode_t k_bits[12] = {
@@ -67,11 +68,20 @@ static void apply_attrs_recursive(const char *path, mode_t set_mask, mode_t clr_
 	struct stat st;
 	if (lstat(path, &st) != 0) { (*errs)++; return; }
 	if (ch_uid || ch_gid) {
-		if (lchown(path, ch_uid ? uid : (uid_t)-1, ch_gid ? gid : (gid_t)-1) != 0) (*errs)++;
+		if (lchown(path, ch_uid ? uid : (uid_t)-1, ch_gid ? gid : (gid_t)-1) != 0) {
+			char ug[64];
+			if (ch_uid && ch_gid) snprintf(ug, sizeof(ug), "%u:%u", (unsigned)uid, (unsigned)gid);
+			else if (ch_uid) snprintf(ug, sizeof(ug), "%u", (unsigned)uid);
+			else snprintf(ug, sizeof(ug), ":%u", (unsigned)gid);
+			if (!((errno == EPERM || errno == EACCES) && sudo_run_argv((const char *const[]){ "chown", "-h", ug, "--", path, NULL }) == 0)) (*errs)++;
+		}
 	}
 	if (!S_ISLNK(st.st_mode)) {
 		mode_t nm = (st.st_mode & 07777 & ~clr_mask) | set_mask;
-		if (chmod(path, nm) != 0) (*errs)++;
+		if (chmod(path, nm) != 0) {
+			char ms[16]; snprintf(ms, sizeof(ms), "%04o", (unsigned)nm);
+			if (!((errno == EPERM || errno == EACCES) && sudo_run_argv((const char *const[]){ "chmod", ms, "--", path, NULL }) == 0)) (*errs)++;
+		}
 	}
 	if (rec && S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
 		DIR *d = opendir(path);
@@ -87,16 +97,25 @@ static void apply_attrs_recursive(const char *path, mode_t set_mask, mode_t clr_
 	}
 	if (ch_atime || ch_mtime) {
 		struct timespec ts[2] = { { ch_atime ? atime_val : 0, ch_atime ? 0 : UTIME_OMIT }, { ch_mtime ? mtime_val : 0, ch_mtime ? 0 : UTIME_OMIT } };
-		if (utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) != 0) (*errs)++;
+		if (utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) != 0) {
+			int ok_t = 0;
+			if (errno == EPERM || errno == EACCES) {
+				ok_t = 1;
+				if (ch_atime) { char ds[32]; snprintf(ds, sizeof(ds), "@%lld", (long long)atime_val); if (sudo_run_argv((const char *const[]){ "touch", "-h", "-a", "-d", ds, "--", path, NULL }) != 0) ok_t = 0; }
+				if (ok_t && ch_mtime) { char ds[32]; snprintf(ds, sizeof(ds), "@%lld", (long long)mtime_val); if (sudo_run_argv((const char *const[]){ "touch", "-h", "-m", "-d", ds, "--", path, NULL }) != 0) ok_t = 0; }
+			}
+			if (!ok_t) (*errs)++;
+		}
 	}
 }
 
 int ui_file_attributes(Panel *panel) {
 	if (!panel || panel->count == 0 || panel->archive_file[0] != '\0') return 0;
 
-	char paths[MAX_FILES][MAX_PATH];
+	char (*paths)[MAX_PATH] = malloc((size_t)panel->count * MAX_PATH);
+	if (!paths) return 0;
 	int pcnt = 0, has_dir = 0, marked = panel_marked_count(panel);
-	for (int i = 0; i < panel->count && pcnt < MAX_FILES; i++) {
+	for (int i = 0; i < panel->count; i++) {
 		if (strcmp(panel->files[i].name, "..") == 0) continue;
 		if ((marked > 0 && panel->files[i].is_selected) || (marked == 0 && i == panel->selected)) {
 			panel_entry_full_path(panel, i, paths[pcnt], MAX_PATH);
@@ -104,7 +123,7 @@ int ui_file_attributes(Panel *panel) {
 			pcnt++;
 		}
 	}
-	if (pcnt == 0) return 0;
+	if (pcnt == 0) { free(paths); return 0; }
 
 	int state[12], init_state[12];
 	for (int b = 0; b < 12; b++) {
@@ -129,7 +148,8 @@ int ui_file_attributes(Panel *panel) {
 	}
 	if (got && s_uid) {
 		struct passwd *pw = getpwuid(f_uid);
-		if (!pw) snprintf(owner_buf, sizeof(owner_buf), "%u", (unsigned)f_uid);
+		if (pw) snprintf(owner_buf, sizeof(owner_buf), "%s", pw->pw_name);
+		else snprintf(owner_buf, sizeof(owner_buf), "%u", (unsigned)f_uid);
 		snprintf(init_owner, sizeof(init_owner), "%s", owner_buf);
 	}
 	if (got && s_gid) {
@@ -142,7 +162,7 @@ int ui_file_attributes(Panel *panel) {
 	if (got && s_at) { struct tm *tmv = localtime(&f_at); if (tmv) strftime(atime_buf, sizeof(atime_buf), "%Y-%m-%d %H:%M:%S", tmv); snprintf(init_atime, sizeof(init_atime), "%s", atime_buf); }
 
 	int h, w; getmaxyx(stdscr, h, w);
-	int bw = (w - 2 < 54) ? (w - 2) : 54, bh = 22;
+	int bw = (w - 2 < 54) ? (w - 2) : 54, bh = 19;
 	int sy = (h > bh) ? (h - bh) / 2 : 0, sx = (w > bw) ? (w - bw) / 2 : 0;
 	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
 
@@ -197,7 +217,7 @@ int ui_file_attributes(Panel *panel) {
 		mvwprintw(win, 15, 2, "[%c] Process subfolders (recursive)%s", rec ? 'x' : ' ', has_dir ? "" : " (no dirs)");
 		wattrset(win, COLOR_PAIR(5)); mvwhline(win, 16, 1, ACS_HLINE, bw - 2);
 
-		UiButtonRow brow = { btns, 3, 18, (bw - 32) / 2, 2, (foc >= 17) ? (foc - 17) : -1 };
+		UiButtonRow brow = { btns, 3, 17, (bw - 32) / 2, 2, (foc >= 17) ? (foc - 17) : -1 };
 		ui_btns_draw(&brow, win);
 		if (foc >= 12 && foc <= 15) {
 			const char *fb = (foc == 12) ? owner_buf : (foc == 13 ? group_buf : (foc == 14 ? mtime_buf : atime_buf));
@@ -274,6 +294,7 @@ int ui_file_attributes(Panel *panel) {
 			applied = 1; break;
 		}
 	}
+	free(paths);
 	curs_set(0); delwin(win); touchwin(stdscr); return applied;
 }
 

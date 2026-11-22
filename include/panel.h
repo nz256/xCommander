@@ -3,6 +3,7 @@
 
 #include "xc.h"
 
+int panel_ensure_capacity(Panel *p, int needed);
 void load_directory(Panel *p);
 void change_directory(Panel *p, const char *new_dir);
 int panel_marked_count(const Panel *p);

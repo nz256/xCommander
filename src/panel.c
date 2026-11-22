@@ -81,10 +81,23 @@ static void panel_watch_update(Panel *p) {
 	p->watch_fd = inotify_add_watch(g_inotify_fd, p->current_path, mask);
 }
 
-static char g_temp_paths[MAX_FILES][MAX_PATH];
-static int g_temp_count = 0;
+int panel_ensure_capacity(Panel *p, int needed) {
+	if (!p) return 0;
+	if (p->capacity >= needed && p->files) return 1;
+	int new_cap = (p->capacity > 0) ? p->capacity : 256;
+	while (new_cap < needed) new_cap *= 2;
+	FileEntry *nf = realloc(p->files, (size_t)new_cap * sizeof(FileEntry));
+	if (!nf) return 0;
+	p->files = nf;
+	p->capacity = new_cap;
+	return 1;
+}
+
+static char (*g_temp_paths)[MAX_PATH] = NULL;
+static int g_temp_count = 0, g_temp_cap = 0;
 
 static void temp_panel_load_entries(Panel *p) {
+	if (!panel_ensure_capacity(p, 1)) return;
 	p->count = 0;
 	strcpy(p->files[0].name, "..");
 	p->files[0].is_dir = 1;
@@ -97,10 +110,11 @@ static void temp_panel_load_entries(Panel *p) {
 	p->count = 1;
 
 	int w = 0;
-	for (int i = 0; i < g_temp_count && p->count < MAX_FILES; i++) {
+	for (int i = 0; i < g_temp_count; i++) {
+		if (!panel_ensure_capacity(p, p->count + 1)) break;
 		struct stat st;
 		if (lstat(g_temp_paths[i], &st) != 0) continue;
-		if (w != i) snprintf(g_temp_paths[w], MAX_PATH, "%s", g_temp_paths[i]);
+		if (w != i) memmove(g_temp_paths[w], g_temp_paths[i], MAX_PATH);
 		const char *base = strrchr(g_temp_paths[w], '/');
 		base = (base && base[1]) ? (base + 1) : g_temp_paths[w];
 		snprintf(p->files[p->count].name, MAX_FILENAME, "%s", base);
@@ -134,9 +148,15 @@ void temp_panel_open(Panel *p) {
 }
 
 int temp_panel_add(const char *full_path) {
-	if (!full_path || !full_path[0] || g_temp_count >= MAX_FILES - 1) return 0;
+	if (!full_path || !full_path[0]) return 0;
 	for (int i = 0; i < g_temp_count; i++) {
 		if (strcmp(g_temp_paths[i], full_path) == 0) return 0;
+	}
+	if (g_temp_count >= g_temp_cap) {
+		int nc = g_temp_cap ? g_temp_cap * 2 : 256;
+		char (*np)[MAX_PATH] = realloc(g_temp_paths, (size_t)nc * MAX_PATH);
+		if (!np) return 0;
+		g_temp_paths = np; g_temp_cap = nc;
 	}
 	snprintf(g_temp_paths[g_temp_count++], MAX_PATH, "%s", full_path);
 	return 1;
@@ -206,24 +226,19 @@ void load_directory(Panel *p) {
 		snprintf(tracked_dir[slot], MAX_PATH, "%s", p->current_path);
 	}
 
-	char marked_names[MAX_FILES][MAX_FILENAME];
-	int marked_cnt = 0;
-	if (same_dir) {
-		for (int i = 0; i < p->count && marked_cnt < MAX_FILES; i++) {
-			if (p->files[i].is_selected && strcmp(p->files[i].name, "..") != 0) {
+	int old_cnt = (same_dir && p->count > 0) ? p->count : 0;
+	char (*marked_names)[MAX_FILENAME] = old_cnt ? malloc((size_t)old_cnt * MAX_FILENAME) : NULL;
+	char (*sized_names)[MAX_FILENAME]  = old_cnt ? malloc((size_t)old_cnt * MAX_FILENAME) : NULL;
+	off_t *sized_vals = old_cnt ? malloc((size_t)old_cnt * sizeof(off_t)) : NULL;
+	int marked_cnt = 0, sized_cnt = 0;
+	if (old_cnt && marked_names && sized_names && sized_vals) {
+		for (int i = 0; i < old_cnt; i++) {
+			if (strcmp(p->files[i].name, "..") == 0) continue;
+			if (p->files[i].is_selected)
 				snprintf(marked_names[marked_cnt++], MAX_FILENAME, "%s", p->files[i].name);
-			}
-		}
-	}
-	char sized_names[MAX_FILES][MAX_FILENAME];
-	off_t sized_vals[MAX_FILES];
-	int sized_cnt = 0;
-	if (same_dir) {
-		for (int i = 0; i < p->count && sized_cnt < MAX_FILES; i++) {
-			if (p->files[i].is_dir && p->files[i].dir_size_known && strcmp(p->files[i].name, "..") != 0) {
+			if (p->files[i].is_dir && p->files[i].dir_size_known) {
 				snprintf(sized_names[sized_cnt], MAX_FILENAME, "%s", p->files[i].name);
-				sized_vals[sized_cnt] = p->files[i].size;
-				sized_cnt++;
+				sized_vals[sized_cnt++] = p->files[i].size;
 			}
 		}
 	}
@@ -237,12 +252,13 @@ void load_directory(Panel *p) {
 	if (!d) {
 		strcpy(p->current_path, "/");
 		d = opendir("/");
-		if (!d) return;
+		if (!d) { free(marked_names); free(sized_names); free(sized_vals); return; }
 	}
 
 	struct dirent *dir;
 	p->count = 0;
 
+	if (!panel_ensure_capacity(p, 2)) { closedir(d); free(marked_names); free(sized_names); free(sized_vals); return; }
 	if (strcmp(p->current_path, "/") != 0) {
 		strcpy(p->files[p->count].name, "..");
 		p->files[p->count].is_dir = 1;
@@ -251,7 +267,8 @@ void load_directory(Panel *p) {
 		p->count++;
 	}
 
-	while ((dir = readdir(d)) != NULL && p->count < MAX_FILES) {
+	while ((dir = readdir(d)) != NULL) {
+		if (!panel_ensure_capacity(p, p->count + 1)) break;
 		if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
 		if (!g_show_hidden && dir->d_name[0] == '.') continue;
 

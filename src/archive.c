@@ -63,7 +63,7 @@ static void panel_add_entry_dedup(Panel *p, const char *name, int is_dir, off_t 
 			return;
 		}
 	}
-	if (p->count >= MAX_FILES) return;
+	if (!panel_ensure_capacity(p, p->count + 1)) return;
 	FileEntry *fe = &p->files[p->count++];
 	memset(fe, 0, sizeof(*fe));
 	snprintf(fe->name, MAX_FILENAME, "%s", name);

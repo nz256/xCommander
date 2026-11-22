@@ -1,4 +1,7 @@
 #define _GNU_SOURCE
+#include <errno.h>
+#include <unistd.h>
+#define _GNU_SOURCE
 #include <ncurses.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -8,6 +11,7 @@
 #include <wctype.h>
 #include "xc.h"
 #include "ui.h"
+#include "sudo_helper.h"
 #include "widgets.h"
 #include "exec.h"
 #include "input.h"
@@ -412,7 +416,14 @@ static void ed_load_file(EditorState *ed, const char *filepath) {
 }
 
 static int ed_save_file(EditorState *ed) {
+	char tmp_path[64] = "";
+	int use_sudo = 0;
 	FILE *f = fopen(ed->filepath, "wb");
+	if (!f && (errno == EACCES || errno == EPERM)) {
+		snprintf(tmp_path, sizeof(tmp_path), "/tmp/xc_sudo_edit_XXXXXX");
+		int tfd = mkstemp(tmp_path);
+		if (tfd >= 0) { f = fdopen(tfd, "wb"); if (f) use_sudo = 1; else { close(tfd); unlink(tmp_path); } }
+	}
 	if (!f) {
 		ui_message("Save Error", "Cannot open file for writing");
 		return 0;
@@ -431,6 +442,11 @@ static int ed_save_file(EditorState *ed) {
 		if (i + 1 < ed->line_count) fputc('\n', f);
 	}
 	fclose(f);
+	if (use_sudo) {
+		int sres = sudo_write_from_temp(tmp_path, ed->filepath);
+		unlink(tmp_path);
+		if (sres != 0) return 0;
+	}
 	ed->modified = 0;
 	return 1;
 }

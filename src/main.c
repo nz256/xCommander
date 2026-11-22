@@ -17,6 +17,7 @@
 #include "ui.h"
 #include "menu_bar.h"
 #include "info_panel.h"
+#include "sudo_helper.h"
 #include "widgets.h"
 #include "exec.h"
 #include "input.h"
@@ -1175,7 +1176,8 @@ int main(int argc, char **argv) {
 			int hres = ui_cmd_history(cmd_history, &history_count, picked_cmd, sizeof(picked_cmd), picked_dir, sizeof(picked_dir));
 			if (history_count != prev_cnt) {
 				history_idx = history_count;
-				history_save();
+				sudo_clear_cache();
+	history_save();
 			}
 			if (hres == 1 && picked_cmd[0] != '\0') {
 				if (terminal_mode) { printf("\r\n"); fflush(stdout); }
@@ -1722,6 +1724,8 @@ int main(int argc, char **argv) {
 	dir_history_save();
 	file_history_save();
 	state_save();
+	free(left_panel.files);
+	free(right_panel.files);
 	input_restore_sane();
 	endwin();
 	input_restore_sane();

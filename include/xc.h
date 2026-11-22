@@ -2,7 +2,7 @@
 #ifndef XC_H
 #define XC_H
 
-#define MAX_FILES 1024
+#define MAX_FILES 16384
 #define MAX_FILENAME 256
 #define MAX_PATH 4096
 #define MAX_CMD 1024
@@ -28,7 +28,8 @@ typedef struct {
 } FileEntry;
 
 typedef struct {
-	FileEntry files[MAX_FILES];
+	FileEntry *files;
+	int capacity;
 	int count;
 	int selected;
 	int top_line;

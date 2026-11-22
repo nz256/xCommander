@@ -13,6 +13,7 @@
 #include "exec.h"
 #include "panel.h"
 #include "ui.h"
+#include "sudo_helper.h"
 #include "progress.h"
 static UiProgress *g_prog = NULL;
 #include "input.h"
@@ -495,7 +496,7 @@ int make_directory(Panel *panel) {
 		build_full_path(full_path, sizeof(full_path), panel->current_path, dir_name);
 	}
 
-	if (mkdir(full_path, 0755) != 0) {
+	if (mkdir(full_path, 0755) != 0 && !((errno == EACCES || errno == EPERM) && sudo_run_argv((const char *const[]){"mkdir", "-p", "--", full_path, NULL}) == 0)) {
 		ui_message("Error", "Failed to create folder");
 		return -1;
 	}
@@ -591,6 +592,12 @@ int trash_items(const Panel *panel) {
 		prog.done_files = 1;
 		progress_close(&prog);
 		if (tr != 0) {
+			draw_screen();
+			if ((errno == EACCES || errno == EPERM || access(panel->current_path, W_OK) != 0) &&
+			    ui_confirm("Elevation Required", "No permission for Trash. Delete permanently with sudo?") &&
+			    sudo_run_argv((const char *const[]){"rm", "-rf", "--", full_path, NULL}) == 0) {
+				return 1;
+			}
 			ui_message("Error", "Failed to move item to Trash");
 			return -1;
 		}
@@ -612,6 +619,11 @@ int trash_items(const Panel *panel) {
 		if (progress_update(&prog, full_path, NULL, 0, 0, 0)) break;
 
 		if (move_one_to_trash(full_path, panel->files[i].name) != 0) {
+			if ((errno == EACCES || errno == EPERM || access(panel->current_path, W_OK) != 0) &&
+			    sudo_run_argv((const char *const[]){ "rm", "-rf", "--", full_path, NULL }) == 0) {
+				prog.done_files++;
+				continue;
+			}
 			progress_close(&prog);
 			ui_message("Error", "Error moving selected items to Trash");
 			return -1;
@@ -648,6 +660,11 @@ int delete_items(const Panel *panel) {
 		g_prog = NULL; progress_close(&prog);
 		if (dr == -2) return 1;
 		if (dr != 0) {
+			draw_screen();
+			if ((errno == EACCES || errno == EPERM || access(panel->current_path, W_OK) != 0) &&
+			    sudo_run_argv((const char *const[]){"rm", "-rf", "--", full_path, NULL}) == 0) {
+				return 1;
+			}
 			ui_message("Error", "Failed to delete item");
 			return -1;
 		}
@@ -681,6 +698,11 @@ int delete_items(const Panel *panel) {
 		if (dr == -2) break;
 		if (dr != 0) {
 			g_prog = NULL; progress_close(&prog);
+			draw_screen();
+			if ((errno == EACCES || errno == EPERM || access(panel->current_path, W_OK) != 0) &&
+			    sudo_run_argv((const char *const[]){"rm", "-rf", "--", full_path, NULL}) == 0) {
+				continue;
+			}
 			ui_message("Error", "Error deleting selected items");
 			return -1;
 		}
@@ -1011,102 +1033,6 @@ int clipboard_paste_files(Panel *dst_panel) {
 int move_items(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 0); }
 int move_items_inplace(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 1); }
 
-static void sh_append_quoted(char *dst, size_t dsz, size_t *pos, const char *s) {
-	if (*pos + 3 >= dsz) return;
-	dst[(*pos)++] = '\'';
-	for (size_t i = 0; s && s[i]; i++) {
-		if (s[i] == '\'') {
-			if (*pos + 5 >= dsz) break;
-			dst[(*pos)++] = '\''; dst[(*pos)++] = '\\'; dst[(*pos)++] = '\''; dst[(*pos)++] = '\'';
-		} else {
-			if (*pos + 2 >= dsz) break;
-			dst[(*pos)++] = s[i];
-		}
-	}
-	dst[(*pos)++] = '\'';
-	dst[*pos] = '\0';
-}
-
-static void expand_far_apply_cmd(const char *tpl, const char *dir, const char *name, char *out, size_t osz) {
-	char stem[MAX_FILENAME], ext[MAX_FILENAME] = "", dir_sl[MAX_PATH + 4], full[MAX_PATH * 2];
-	snprintf(stem, sizeof(stem), "%s", name);
-	char *dot = strrchr(stem, '.');
-	if (dot && dot != stem) { snprintf(ext, sizeof(ext), "%s", dot + 1); *dot = '\0'; }
-	size_t dl = strlen(dir);
-	if (dl > 0 && dir[dl - 1] == '/') snprintf(dir_sl, sizeof(dir_sl), "%s", dir);
-	else snprintf(dir_sl, sizeof(dir_sl), "%s/", dir);
-	build_full_path(full, sizeof(full), dir, name);
-
-	size_t p = 0; out[0] = '\0';
-	int had_macro = 0;
-	for (size_t i = 0; tpl[i] && p + 2 < osz; ) {
-		if (tpl[i] == '!') {
-			had_macro = 1;
-			if (tpl[i + 1] == '.' && tpl[i + 2] == '!') { sh_append_quoted(out, osz, &p, name); i += 3; }
-			else if (tpl[i + 1] == '~') { sh_append_quoted(out, osz, &p, stem); i += 2; }
-			else if (tpl[i + 1] == '.') { sh_append_quoted(out, osz, &p, ext); i += 2; }
-			else if (tpl[i + 1] == '/') { sh_append_quoted(out, osz, &p, dir_sl); i += 2; }
-			else if (tpl[i + 1] == ':') { sh_append_quoted(out, osz, &p, full); i += 2; }
-			else { sh_append_quoted(out, osz, &p, name); i += 1; }
-		} else {
-			out[p++] = tpl[i++];
-			out[p] = '\0';
-		}
-	}
-	if (!had_macro && p + 4 < osz) {
-		out[p++] = ' '; out[p] = '\0';
-		sh_append_quoted(out, osz, &p, name);
-	}
-}
-
-int apply_command_to_selected(Panel *panel) {
-	if (!panel || panel->count == 0) return 0;
-	static char last_tpl[512] = "";
-	char tpl[512];
-	snprintf(tpl, sizeof(tpl), "%s", last_tpl);
-	if (!ui_input("Apply command (Ctrl+G)", "Command (macros: !.! !~ !. !: !/):", tpl, sizeof(tpl))) return 0;
-	if (tpl[0] == '\0') return 0;
-	snprintf(last_tpl, sizeof(last_tpl), "%s", tpl);
-
-	int marked = panel_marked_count(panel);
-	int idxs[MAX_FILES], cnt = 0;
-	for (int i = 0; i < panel->count && cnt < MAX_FILES; i++) {
-		if (strcmp(panel->files[i].name, "..") == 0) continue;
-		if ((marked > 0 && panel->files[i].is_selected) || (marked == 0 && i == panel->selected)) idxs[cnt++] = i;
-	}
-	if (cnt == 0) return 0;
-
-	endwin();
-	input_restore_sane();
-	for (int k = 0; k < cnt; k++) {
-		const FileEntry *fe = &panel->files[idxs[k]];
-		char dir[MAX_PATH], name[MAX_FILENAME];
-		if (panel->is_temp && fe->full_path[0] != '\0') {
-			snprintf(dir, sizeof(dir), "%s", fe->full_path);
-			char *sl = strrchr(dir, '/');
-			if (sl) { snprintf(name, sizeof(name), "%s", sl + 1); if (sl == dir) strcpy(dir, "/"); else *sl = '\0'; }
-			else { snprintf(dir, sizeof(dir), "%s", panel->current_path); snprintf(name, sizeof(name), "%s", fe->name); }
-		} else {
-			snprintf(dir, sizeof(dir), "%s", panel->current_path);
-			snprintf(name, sizeof(name), "%s", fe->name);
-		}
-		char cmd[MAX_PATH * 4];
-		expand_far_apply_cmd(tpl, dir, name, cmd, sizeof(cmd));
-		printf("\n\033[1;36m==> [%d/%d] %s\033[0m\n", k + 1, cnt, cmd);
-		fflush(stdout);
-		if (chdir(dir) == 0) { int rc = system(cmd); (void)rc; }
-	}
-	printf("\n\033[1;32m--- Done (%d item%s). Press any key... ---\033[0m", cnt, cnt == 1 ? "" : "s");
-	fflush(stdout);
-	input_enable_raw();
-	input_read();
-	reset_prog_mode();
-	input_enable_raw();
-	input_set_mouse(1);
-	clearok(stdscr, TRUE);
-	return 1;
-}
-
 static void shell_quote_append(const char *s, char *out, size_t cap, size_t *pos) {
 	if (*pos + 3 >= cap) return;
 	out[(*pos)++] = '\'';
@@ -1157,12 +1083,13 @@ static void expand_far_macros(const char *tpl, const char *dir, const char *name
 
 int apply_command_to_items(const Panel *panel) {
 	if (!panel || panel->count == 0) return 0;
-	int idxs[MAX_FILES], cnt = 0, marked = panel_marked_count(panel);
-	for (int i = 0; i < panel->count && cnt < MAX_FILES; i++) {
+	int *idxs = malloc((size_t)panel->count * sizeof(int)), cnt = 0, marked = panel_marked_count(panel);
+	if (!idxs) return 0;
+	for (int i = 0; i < panel->count; i++) {
 		if (strcmp(panel->files[i].name, "..") == 0) continue;
 		if ((marked > 0 && panel->files[i].is_selected) || (marked == 0 && i == panel->selected)) idxs[cnt++] = i;
 	}
-	if (cnt == 0) return 0;
+	if (cnt == 0) { free(idxs); return 0; }
 
 	static char last_cmd[1024] = "";
 	char cfg_path[MAX_PATH];
@@ -1180,8 +1107,8 @@ int apply_command_to_items(const Panel *panel) {
 	snprintf(cmd, sizeof(cmd), "%s", last_cmd);
 	char title[96];
 	snprintf(title, sizeof(title), "Apply command (%d item%s)", cnt, cnt == 1 ? "" : "s");
-	if (!ui_input(title, "Command (macros: !.! !~ !. !: !/):", cmd, sizeof(cmd))) return 0;
-	if (cmd[0] == '\0') return 0;
+	if (!ui_input(title, "Command (macros: !.! !~ !. !: !/):", cmd, sizeof(cmd))) { free(idxs); return 0; }
+	if (cmd[0] == '\0') { free(idxs); return 0; }
 	snprintf(last_cmd, sizeof(last_cmd), "%s", cmd);
 	FILE *wf = fopen(cfg_path, "w");
 	if (wf) { fprintf(wf, "%s\n", last_cmd); fclose(wf); }
