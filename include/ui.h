@@ -17,6 +17,7 @@ int ui_cmd_history(CmdHistoryEntry *hist, int *hist_count, char *out_cmd, size_t
 int ui_dir_history(DirHistoryEntry *hist, int *hist_count, char *out_dir, size_t dir_size);
 int ui_file_history(FileHistoryEntry *hist, int *hist_count, char *out_path, size_t path_size, int *out_line, int *out_col);
 void ui_message(const char *title, const char *msg);
+void ui_dialog_box(const char *title, const char *text);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
 int ui_input_narrow(const char *title, const char *prompt, char *buf, int max_len);
 int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex);

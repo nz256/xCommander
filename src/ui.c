@@ -821,6 +821,108 @@ void ui_message(const char *title, const char *msg) {
 	touchwin(stdscr);
 }
 
+void ui_dialog_box(const char *title, const char *text) {
+	if (!title || !title[0]) title = "Message";
+	if (!text) text = "";
+
+	int height, width;
+	getmaxyx(stdscr, height, width);
+	int max_iw = (width - 8 < 24) ? 24 : (width - 8);
+	if (max_iw > 96) max_iw = 96;
+
+	/* Разбиваем текст на строки с переносом по max_iw */
+	int cap = 64, lcnt = 0;
+	char **lines = malloc((size_t)cap * sizeof(char *));
+	if (!lines) return;
+
+	int max_cols = 0;
+	const char *p = text;
+	while (*p || lcnt == 0) {
+		const char *nl = strchr(p, '\n');
+		size_t raw_len = nl ? (size_t)(nl - p) : strlen(p);
+		if (raw_len > 0 && p[raw_len - 1] == '\r') raw_len--;
+
+		size_t off = 0;
+		do {
+			size_t take = raw_len - off;
+			if ((int)take > max_iw * 2) take = (size_t)(max_iw * 2);
+			char *seg = malloc(take + 1);
+			if (!seg) break;
+			memcpy(seg, p + off, take);
+			seg[take] = '\0';
+			/* Подрезаем по экранным колонкам UTF-8 */
+			while (take > 0) {
+				int cols = (int)mbstowcs(NULL, seg, 0);
+				if (cols >= 0 && cols <= max_iw) { if (cols > max_cols) max_cols = cols; break; }
+				if (cols < 0) { if ((int)take <= max_iw) { if ((int)take > max_cols) max_cols = (int)take; break; } }
+				seg[--take] = '\0';
+			}
+			if (lcnt >= cap) {
+				cap *= 2;
+				char **nl_arr = realloc(lines, (size_t)cap * sizeof(char *));
+				if (!nl_arr) { free(seg); break; }
+				lines = nl_arr;
+			}
+			lines[lcnt++] = seg;
+			off += take;
+		} while (off < raw_len);
+
+		if (!nl) break;
+		p = nl + 1;
+		if (*p == '\0') break;
+	}
+
+	int tcols = (int)mbstowcs(NULL, title, 0);
+	if (tcols < 0) tcols = (int)strlen(title);
+	int box_w = ((max_cols > tcols) ? max_cols : tcols) + 6;
+	if (box_w < 30) box_w = 30;
+	if (box_w > width - 4) box_w = width - 4;
+
+	int max_vis = height - 6;
+	if (max_vis < 1) max_vis = 1;
+	int vis_lines = (lcnt < max_vis) ? lcnt : max_vis;
+	int box_h = vis_lines + 4;
+	int start_y = (height - box_h) / 2;
+	int start_x = (width - box_w) / 2;
+
+	curs_set(0);
+	wnoutrefresh(stdscr);
+	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	wbkgd(win, g_ui_theme.win_bg);
+
+	const char *blbls[1] = { "[ Enter ]" };
+	int btn_x = (box_w - 9 < 2) ? 2 : (box_w - 9) / 2;
+	UiButtonRow btns = { blbls, 1, box_h - 2, btn_x, 0, 0 };
+	int top = 0;
+
+	while (1) {
+		werase(win);
+		draw_win_box(win);
+		mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
+		for (int r = 0; r < vis_lines && top + r < lcnt; r++) {
+			mvwprint_utf8(win, 1 + r, 2, box_w - 4, lines[top + r]);
+		}
+		if (lcnt > vis_lines) {
+			mvwprintw(win, box_h - 1, box_w - 11, " %d/%d ", top + vis_lines, lcnt);
+		}
+		ui_btns_draw(&btns, win);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (top > 0) top--; continue; }
+		if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { if (top + vis_lines < lcnt) top++; continue; }
+		if (ev.action == ACT_PGUP) { top -= vis_lines; if (top < 0) top = 0; continue; }
+		if (ev.action == ACT_PGDN) { top += vis_lines; if (top + vis_lines > lcnt) top = lcnt - vis_lines; if (top < 0) top = 0; continue; }
+		if (ev.action == ACT_MOUSE_LEFT || ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
+	}
+
+	for (int i = 0; i < lcnt; i++) free(lines[i]);
+	free(lines);
+	delwin(win);
+	touchwin(stdscr);
+}
+
+
 static int ui_input_ex(const char *title, const char *prompt, char *buf, int max_len, int max_w) {
 	int height, width;
 	getmaxyx(stdscr, height, width);

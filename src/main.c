@@ -742,6 +742,9 @@ typedef struct {
 	const char *view_file;
 	int view_mode;
 	int view_line;
+	int dialog_mode;
+	const char *dialog_arg1;
+	const char *dialog_arg2;
 } StartupOpts;
 
 static void print_cli_version(void) {
@@ -753,6 +756,7 @@ static void print_cli_help(const char *prog) {
 	printf("Options:\n");
 	printf("  -e[LINE[:POS]] [FILE], --edit  Open FILE (or '-' for stdin) in built-in editor\n");
 	printf("  -v[LINE] [FILE], --view        Open FILE (or '-' for stdin) in built-in viewer\n");
+	printf("  -D, --dialog [TITLE] TEXT|FILE Show info dialog with TEXT, FILE, or '-' (stdin)\n");
 	printf("  -V, --version                  Show version and build number\n");
 	printf("  -h, --help                     Show this help message\n");
 }
@@ -779,6 +783,16 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 			}
 			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
 				opts->view_file = argv[++i];
+			}
+			continue;
+		}
+		if (strcmp(argv[i], "-D") == 0 || strcmp(argv[i], "--dialog") == 0) {
+			opts->dialog_mode = 1;
+			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
+				opts->dialog_arg1 = argv[++i];
+				if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
+					opts->dialog_arg2 = argv[++i];
+				}
 			}
 			continue;
 		}
@@ -843,13 +857,17 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 }
 
 int main(int argc, char **argv) {
+	char start_cwd[MAX_PATH] = "";
+	(void)!getcwd(start_cwd, sizeof(start_cwd));
 	StartupOpts opts;
 	int arg_res = parse_startup_args(argc, argv, &opts);
 	if (arg_res != 0) return (arg_res > 0) ? 0 : 1;
 
 	char pipe_tmp[64] = "";
+	int dialog_stdin = (opts.dialog_mode && ((opts.dialog_arg1 && strcmp(opts.dialog_arg1, "-") == 0) || (opts.dialog_arg2 && strcmp(opts.dialog_arg2, "-") == 0)));
 	if ((opts.view_mode && opts.view_file && strcmp(opts.view_file, "-") == 0) ||
-	    (opts.edit_mode && opts.edit_file && strcmp(opts.edit_file, "-") == 0)) {
+	    (opts.edit_mode && opts.edit_file && strcmp(opts.edit_file, "-") == 0) ||
+	    dialog_stdin) {
 		snprintf(pipe_tmp, sizeof(pipe_tmp), "/tmp/xc_pipe_XXXXXX");
 		int pfd = mkstemp(pipe_tmp);
 		if (pfd >= 0) {
@@ -936,6 +954,53 @@ int main(int argc, char **argv) {
 	refresh();
 	input_enable_raw();
 
+	if (opts.dialog_mode) {
+		const char *d_title = "Message";
+		const char *d_src = opts.dialog_arg1 ? opts.dialog_arg1 : "";
+		if (opts.dialog_arg1 && opts.dialog_arg2) { d_title = opts.dialog_arg1; d_src = opts.dialog_arg2; }
+		char *dyn_txt = NULL;
+		struct stat dst;
+		if (strcmp(d_src, "-") == 0 && pipe_tmp[0] != '\0') {
+			FILE *fp = fopen(pipe_tmp, "rb");
+			if (fp) {
+				fseek(fp, 0, SEEK_END); long sz = ftell(fp); rewind(fp);
+				if (sz > 0) { dyn_txt = malloc((size_t)sz + 1); if (dyn_txt) { size_t rd = fread(dyn_txt, 1, (size_t)sz, fp); dyn_txt[rd] = '\0'; } }
+				fclose(fp);
+			}
+		} else if (d_src[0] != '\0') {
+			char fpath[MAX_PATH * 2];
+			if (d_src[0] != '/' && start_cwd[0] != '\0') snprintf(fpath, sizeof(fpath), "%s/%s", start_cwd, d_src);
+			else snprintf(fpath, sizeof(fpath), "%s", d_src);
+			if (stat(fpath, &dst) == 0 && S_ISREG(dst.st_mode)) {
+				if (!opts.dialog_arg2) { const char *bn = strrchr(fpath, '/'); d_title = (bn && bn[1]) ? (bn + 1) : fpath; }
+				dyn_txt = calloc(1, 1);
+				FILE *fp = fopen(fpath, "rb");
+				if (fp && dst.st_size > 0 && dst.st_size < 1024 * 1024) {
+					char *nb = realloc(dyn_txt, (size_t)dst.st_size + 1);
+					if (nb) { dyn_txt = nb; size_t rd = fread(dyn_txt, 1, (size_t)dst.st_size, fp); dyn_txt[rd] = '\0'; }
+				}
+				if (fp) fclose(fp);
+			}
+		}
+		if (!dyn_txt && d_src[0] != '\0') {
+			/* Поддержка \n в строке аргумента */
+			dyn_txt = malloc(strlen(d_src) + 1);
+			if (dyn_txt) {
+				size_t w = 0;
+				for (size_t r = 0; d_src[r]; r++) {
+					if (d_src[r] == '\\' && d_src[r + 1] == 'n') { dyn_txt[w++] = '\n'; r++; }
+					else dyn_txt[w++] = d_src[r];
+				}
+				dyn_txt[w] = '\0';
+			}
+		}
+		ui_dialog_box(d_title, dyn_txt ? dyn_txt : d_src);
+		free(dyn_txt);
+		if (pipe_tmp[0] != '\0') unlink(pipe_tmp);
+		free(left_panel.files); free(right_panel.files);
+		input_restore_sane(); endwin(); input_restore_sane();
+		return 0;
+	}
 	if (opts.view_mode) {
 		const char *target_file = (opts.view_file && opts.view_file[0] != '\0') ? opts.view_file : "";
 		if (target_file[0] != '\0') {
