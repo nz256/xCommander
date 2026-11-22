@@ -40,8 +40,8 @@ static wchar_t alt_layout_char(wchar_t c) {
 	const wchar_t *en = L"qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
 	const wchar_t *ru = L"йцукенгшщзхъфывапролджэячсмитьбюё";
 	for (int i = 0; en[i] != L'\0'; i++) {
-		if (lc == en[i]) return is_up ? towupper(ru[i]) : ru[i];
-		if (lc == ru[i]) return is_up ? towupper(en[i]) : en[i];
+		if (lc == en[i]) return is_up ? (wchar_t)towupper(ru[i]) : ru[i];
+		if (lc == ru[i]) return is_up ? (wchar_t)towupper(en[i]) : en[i];
 	}
 	return c;
 }
@@ -57,7 +57,7 @@ static int match_prefix_mode(const char *name, const wchar_t *wpfx, int plen, in
 	return 1;
 }
 
-static int match_prefix_icase(const char *name, const wchar_t *wpfx, int plen) {
+static int __attribute__((unused)) match_prefix_icase(const char *name, const wchar_t *wpfx, int plen) {
 	wchar_t wname[MAX_FILENAME];
 	size_t nlen = mbstowcs(wname, name, MAX_FILENAME - 1);
 	if (nlen == (size_t)-1 || (int)nlen < plen) return 0;
@@ -1092,7 +1092,15 @@ int main(int argc, char **argv) {
 			}
 			continue;
 		}
-		if (ev.action == ACT_ALT_F9 || ev.action == ACT_CTRL_G) {
+		if (ev.action == ACT_CTRL_G) {
+			if (apply_command_to_items(active_panel)) {
+				for (int i = 0; i < active_panel->count; i++) active_panel->files[i].is_selected = 0;
+				reload_panels_keep_cursor();
+			}
+			draw_screen(); sync_refresh();
+			continue;
+		}
+		if (ev.action == ACT_ALT_F9) {
 			char picked_file[MAX_PATH] = "";
 			int picked_line = 1, picked_col = 1;
 			int prev_fcnt = file_history_count;
@@ -1361,7 +1369,8 @@ int main(int argc, char **argv) {
 				active_panel = &right_panel;
 				const KeyAction ra[5] = { ACT_CTRL_F3, ACT_CTRL_F4, ACT_CTRL_F5, ACT_CTRL_F6, ACT_ALT_F2 };
 				ev.action = ra[ma - MB_R_NAME];
-			} else if (ma == MB_F_ATTRS)   ev.action = ACT_CTRL_A;
+			} else if (ma == MB_F_APPLY)   ev.action = ACT_CTRL_G;
+			else if (ma == MB_F_ATTRS)   ev.action = ACT_CTRL_A;
 			else if (ma == MB_F_DIRSIZE)   ev.action = ACT_F3;
 			else if (ma == MB_F_FIND)      ev.action = ACT_ALT_F7;
 			else if (ma == MB_F_PACK)      ev.action = ACT_SHIFT_F1;
@@ -1659,8 +1668,10 @@ int main(int argc, char **argv) {
 			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
 			else if (!active_panel->archive_file[0] && archive_is_supported(cur->name) && !(cur->mode & (S_IXUSR|S_IXGRP|S_IXOTH))) {
 				quick_search_reset();
-				if (!strcmp(active_panel->current_path, "/")) snprintf(active_panel->archive_file, MAX_PATH, "/%s", cur->name);
-				else snprintf(active_panel->archive_file, MAX_PATH, "%s/%s", active_panel->current_path, cur->name);
+				char ap[MAX_PATH * 2];
+				if (!strcmp(active_panel->current_path, "/")) snprintf(ap, sizeof(ap), "/%s", cur->name);
+				else snprintf(ap, sizeof(ap), "%s/%s", active_panel->current_path, cur->name);
+				snprintf(active_panel->archive_file, MAX_PATH, "%.*s", MAX_PATH - 1, ap);
 				active_panel->archive_dir[0] = '\0'; active_panel->parent_name[0] = '\0';
 				archive_load_dir(active_panel);
 			}
@@ -1697,8 +1708,10 @@ int main(int argc, char **argv) {
 			if (cur->is_dir) { quick_search_reset(); change_directory(active_panel, cur->name); }
 			else if (!active_panel->archive_file[0] && strcmp(cur->name, "..") != 0) {
 				quick_search_reset();
-				if (!strcmp(active_panel->current_path, "/")) snprintf(active_panel->archive_file, MAX_PATH, "/%s", cur->name);
-				else snprintf(active_panel->archive_file, MAX_PATH, "%s/%s", active_panel->current_path, cur->name);
+				char ap[MAX_PATH * 2];
+				if (!strcmp(active_panel->current_path, "/")) snprintf(ap, sizeof(ap), "/%s", cur->name);
+				else snprintf(ap, sizeof(ap), "%s/%s", active_panel->current_path, cur->name);
+				snprintf(active_panel->archive_file, MAX_PATH, "%.*s", MAX_PATH - 1, ap);
 				active_panel->archive_dir[0] = '\0'; active_panel->parent_name[0] = '\0';
 				archive_load_dir(active_panel);
 			}

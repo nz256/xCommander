@@ -100,7 +100,7 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 		if (rl > 0) lnk[rl] = '\0';
 		snprintf(tline, sizeof(tline), "Symlink -> %s", lnk);
 	} else if (S_ISDIR(st.st_mode)) {
-		char ghead[MAX_PATH * 2], br[64] = "";
+		char ghead[MAX_PATH * 2 + 16], br[64] = "";
 		snprintf(ghead, sizeof(ghead), "%s/.git/HEAD", target);
 		FILE *gf = fopen(ghead, "r");
 		if (gf) { if (fgets(br, sizeof(br), gf)) { br[strcspn(br, "\r\n")] = '\0'; } fclose(gf); }
@@ -142,7 +142,7 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 	struct statvfs vfs;
 	if (statvfs(target, &vfs) == 0 && y + 3 < sy + h - 1) {
 		mvaddstr(y, sx, "├"); mvhline(y, sx + 1, ACS_HLINE, w - 2); mvaddstr(y++, sx + w - 1, "┤");
-		char mnt[128], fst[32], tot[48], fre[48];
+		char mnt[256], fst[64], tot[48], fre[48];
 		find_mount_info(target, mnt, sizeof(mnt), fst, sizeof(fst));
 		off_t tb_all = (off_t)vfs.f_blocks * vfs.f_frsize;
 		off_t tb_avl = (off_t)vfs.f_bavail * vfs.f_frsize;

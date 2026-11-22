@@ -1087,7 +1087,7 @@ static void ed_draw(EditorState *ed, int *out_scr_y, int *out_scr_x) {
 			int cw = (wc == L'\t') ? (4 - (vcol % 4)) : 1;
 			int is_sel = ed_is_selected(ed, line_idx, i);
 			int is_pair = ((line_idx == m_y1 && i == m_x1) || (line_idx == m_y2 && i == m_x2));
-			int tok_attr = toks ? ed_token_attr(toks[i]) : COLOR_PAIR(1);
+			attr_t tok_attr = toks ? (attr_t)ed_token_attr(toks[i]) : (attr_t)COLOR_PAIR(1);
 			if (is_sel) attrset(COLOR_PAIR(2));
 			else if (is_pair) attrset(m_unmatched ? (COLOR_PAIR(17) | A_BOLD) : (COLOR_PAIR(4) | A_BOLD));
 			else attrset(tok_attr);

@@ -47,21 +47,6 @@ static int resolve_gid(const char *s, gid_t *out) {
 	return -1;
 }
 
-static int parse_ts_str(const char *s, time_t *out) {
-	if (!s || !*s) return 0;
-	int Y = 0, M = 0, D = 0, h = 0, m = 0, sec = 0;
-	int n = sscanf(s, "%d-%d-%d %d:%d:%d", &Y, &M, &D, &h, &m, &sec);
-	if (n < 3 || Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31 || h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 60) return -1;
-	struct tm tm_v;
-	memset(&tm_v, 0, sizeof(tm_v));
-	tm_v.tm_year = Y - 1900; tm_v.tm_mon = M - 1; tm_v.tm_mday = D;
-	tm_v.tm_hour = h; tm_v.tm_min = m; tm_v.tm_sec = sec; tm_v.tm_isdst = -1;
-	time_t t = mktime(&tm_v);
-	if (t == (time_t)-1) return -1;
-	*out = t;
-	return 1;
-}
-
 static int parse_timestamp(const char *s, time_t *out) {
 	if (!s || !*s) return 0;
 	int Y, M, D, h = 0, m = 0, sec = 0;
@@ -144,7 +129,6 @@ int ui_file_attributes(Panel *panel) {
 	}
 	if (got && s_uid) {
 		struct passwd *pw = getpwuid(f_uid);
-		snprintf(owner_buf, sizeof(owner_buf), pw ? "%s" : "%u", pw ? pw->pw_name : (char *)(uintptr_t)f_uid);
 		if (!pw) snprintf(owner_buf, sizeof(owner_buf), "%u", (unsigned)f_uid);
 		snprintf(init_owner, sizeof(init_owner), "%s", owner_buf);
 	}

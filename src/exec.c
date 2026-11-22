@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <termios.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -1009,3 +1010,217 @@ int clipboard_paste_files(Panel *dst_panel) {
 
 int move_items(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 0); }
 int move_items_inplace(const Panel *src_panel, const Panel *dst_panel) { return move_items_ex(src_panel, dst_panel, 1); }
+
+static void sh_append_quoted(char *dst, size_t dsz, size_t *pos, const char *s) {
+	if (*pos + 3 >= dsz) return;
+	dst[(*pos)++] = '\'';
+	for (size_t i = 0; s && s[i]; i++) {
+		if (s[i] == '\'') {
+			if (*pos + 5 >= dsz) break;
+			dst[(*pos)++] = '\''; dst[(*pos)++] = '\\'; dst[(*pos)++] = '\''; dst[(*pos)++] = '\'';
+		} else {
+			if (*pos + 2 >= dsz) break;
+			dst[(*pos)++] = s[i];
+		}
+	}
+	dst[(*pos)++] = '\'';
+	dst[*pos] = '\0';
+}
+
+static void expand_far_apply_cmd(const char *tpl, const char *dir, const char *name, char *out, size_t osz) {
+	char stem[MAX_FILENAME], ext[MAX_FILENAME] = "", dir_sl[MAX_PATH + 4], full[MAX_PATH * 2];
+	snprintf(stem, sizeof(stem), "%s", name);
+	char *dot = strrchr(stem, '.');
+	if (dot && dot != stem) { snprintf(ext, sizeof(ext), "%s", dot + 1); *dot = '\0'; }
+	size_t dl = strlen(dir);
+	if (dl > 0 && dir[dl - 1] == '/') snprintf(dir_sl, sizeof(dir_sl), "%s", dir);
+	else snprintf(dir_sl, sizeof(dir_sl), "%s/", dir);
+	build_full_path(full, sizeof(full), dir, name);
+
+	size_t p = 0; out[0] = '\0';
+	int had_macro = 0;
+	for (size_t i = 0; tpl[i] && p + 2 < osz; ) {
+		if (tpl[i] == '!') {
+			had_macro = 1;
+			if (tpl[i + 1] == '.' && tpl[i + 2] == '!') { sh_append_quoted(out, osz, &p, name); i += 3; }
+			else if (tpl[i + 1] == '~') { sh_append_quoted(out, osz, &p, stem); i += 2; }
+			else if (tpl[i + 1] == '.') { sh_append_quoted(out, osz, &p, ext); i += 2; }
+			else if (tpl[i + 1] == '/') { sh_append_quoted(out, osz, &p, dir_sl); i += 2; }
+			else if (tpl[i + 1] == ':') { sh_append_quoted(out, osz, &p, full); i += 2; }
+			else { sh_append_quoted(out, osz, &p, name); i += 1; }
+		} else {
+			out[p++] = tpl[i++];
+			out[p] = '\0';
+		}
+	}
+	if (!had_macro && p + 4 < osz) {
+		out[p++] = ' '; out[p] = '\0';
+		sh_append_quoted(out, osz, &p, name);
+	}
+}
+
+int apply_command_to_selected(Panel *panel) {
+	if (!panel || panel->count == 0) return 0;
+	static char last_tpl[512] = "";
+	char tpl[512];
+	snprintf(tpl, sizeof(tpl), "%s", last_tpl);
+	if (!ui_input("Apply command (Ctrl+G)", "Command (macros: !.! !~ !. !: !/):", tpl, sizeof(tpl))) return 0;
+	if (tpl[0] == '\0') return 0;
+	snprintf(last_tpl, sizeof(last_tpl), "%s", tpl);
+
+	int marked = panel_marked_count(panel);
+	int idxs[MAX_FILES], cnt = 0;
+	for (int i = 0; i < panel->count && cnt < MAX_FILES; i++) {
+		if (strcmp(panel->files[i].name, "..") == 0) continue;
+		if ((marked > 0 && panel->files[i].is_selected) || (marked == 0 && i == panel->selected)) idxs[cnt++] = i;
+	}
+	if (cnt == 0) return 0;
+
+	endwin();
+	input_restore_sane();
+	for (int k = 0; k < cnt; k++) {
+		const FileEntry *fe = &panel->files[idxs[k]];
+		char dir[MAX_PATH], name[MAX_FILENAME];
+		if (panel->is_temp && fe->full_path[0] != '\0') {
+			snprintf(dir, sizeof(dir), "%s", fe->full_path);
+			char *sl = strrchr(dir, '/');
+			if (sl) { snprintf(name, sizeof(name), "%s", sl + 1); if (sl == dir) strcpy(dir, "/"); else *sl = '\0'; }
+			else { snprintf(dir, sizeof(dir), "%s", panel->current_path); snprintf(name, sizeof(name), "%s", fe->name); }
+		} else {
+			snprintf(dir, sizeof(dir), "%s", panel->current_path);
+			snprintf(name, sizeof(name), "%s", fe->name);
+		}
+		char cmd[MAX_PATH * 4];
+		expand_far_apply_cmd(tpl, dir, name, cmd, sizeof(cmd));
+		printf("\n\033[1;36m==> [%d/%d] %s\033[0m\n", k + 1, cnt, cmd);
+		fflush(stdout);
+		if (chdir(dir) == 0) { int rc = system(cmd); (void)rc; }
+	}
+	printf("\n\033[1;32m--- Done (%d item%s). Press any key... ---\033[0m", cnt, cnt == 1 ? "" : "s");
+	fflush(stdout);
+	input_enable_raw();
+	input_read();
+	reset_prog_mode();
+	input_enable_raw();
+	input_set_mouse(1);
+	clearok(stdscr, TRUE);
+	return 1;
+}
+
+static void shell_quote_append(const char *s, char *out, size_t cap, size_t *pos) {
+	if (*pos + 3 >= cap) return;
+	out[(*pos)++] = '\'';
+	for (size_t i = 0; s && s[i] && *pos + 6 < cap; i++) {
+		if (s[i] == '\'') {
+			out[(*pos)++] = '\''; out[(*pos)++] = '\\'; out[(*pos)++] = '\''; out[(*pos)++] = '\'';
+		} else {
+			out[(*pos)++] = s[i];
+		}
+	}
+	out[(*pos)++] = '\'';
+	out[*pos] = '\0';
+}
+
+static void expand_far_macros(const char *tpl, const char *dir, const char *name, const char *full, char *out, size_t cap) {
+	char stem[MAX_FILENAME], ext[MAX_FILENAME] = "";
+	snprintf(stem, sizeof(stem), "%s", name);
+	char *dot = strrchr(stem, '.');
+	if (dot && dot != stem) { snprintf(ext, sizeof(ext), "%s", dot + 1); *dot = '\0'; }
+
+	size_t pos = 0; out[0] = '\0';
+	int has_macro = 0;
+	for (size_t i = 0; tpl[i] && pos + 8 < cap; i++) {
+		if (tpl[i] == '!') {
+			has_macro = 1;
+			if (tpl[i + 1] == '.' && tpl[i + 2] == '!') { shell_quote_append(name, out, cap, &pos); i += 2; }
+			else if (tpl[i + 1] == '~') { shell_quote_append(stem, out, cap, &pos); i += 1; }
+			else if (tpl[i + 1] == '.') { shell_quote_append(ext, out, cap, &pos); i += 1; }
+			else if (tpl[i + 1] == ':') { shell_quote_append(full, out, cap, &pos); i += 1; }
+			else if (tpl[i + 1] == '/') {
+				char dslash[MAX_PATH + 4];
+				size_t dl = strlen(dir);
+				snprintf(dslash, sizeof(dslash), "%s%s", dir, (dl > 0 && dir[dl - 1] == '/') ? "" : "/");
+				shell_quote_append(dslash, out, cap, &pos); i += 1;
+			} else {
+				shell_quote_append(name, out, cap, &pos);
+			}
+		} else {
+			out[pos++] = tpl[i];
+			out[pos] = '\0';
+		}
+	}
+	if (!has_macro && pos + 4 < cap) {
+		out[pos++] = ' '; out[pos] = '\0';
+		shell_quote_append(name, out, cap, &pos);
+	}
+}
+
+int apply_command_to_items(const Panel *panel) {
+	if (!panel || panel->count == 0) return 0;
+	int idxs[MAX_FILES], cnt = 0, marked = panel_marked_count(panel);
+	for (int i = 0; i < panel->count && cnt < MAX_FILES; i++) {
+		if (strcmp(panel->files[i].name, "..") == 0) continue;
+		if ((marked > 0 && panel->files[i].is_selected) || (marked == 0 && i == panel->selected)) idxs[cnt++] = i;
+	}
+	if (cnt == 0) return 0;
+
+	static char last_cmd[1024] = "";
+	char cfg_path[MAX_PATH];
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	if (xdg && *xdg) snprintf(cfg_path, sizeof(cfg_path), "%s/xcommander/apply_cmd", xdg);
+	else { const char *hm = getenv("HOME"); snprintf(cfg_path, sizeof(cfg_path), "%s/.config/xcommander/apply_cmd", hm ? hm : "/tmp"); }
+	if (last_cmd[0] == '\0') {
+		FILE *rf = fopen(cfg_path, "r");
+		if (rf) {
+			if (fgets(last_cmd, sizeof(last_cmd), rf)) last_cmd[strcspn(last_cmd, "\r\n")] = '\0';
+			fclose(rf);
+		}
+	}
+	char cmd[1024];
+	snprintf(cmd, sizeof(cmd), "%s", last_cmd);
+	char title[96];
+	snprintf(title, sizeof(title), "Apply command (%d item%s)", cnt, cnt == 1 ? "" : "s");
+	if (!ui_input(title, "Command (macros: !.! !~ !. !: !/):", cmd, sizeof(cmd))) return 0;
+	if (cmd[0] == '\0') return 0;
+	snprintf(last_cmd, sizeof(last_cmd), "%s", cmd);
+	FILE *wf = fopen(cfg_path, "w");
+	if (wf) { fprintf(wf, "%s\n", last_cmd); fclose(wf); }
+
+	input_set_mouse(0);
+	endwin();
+	input_restore_sane();
+
+	for (int k = 0; k < cnt; k++) {
+		int idx = idxs[k];
+		char full[MAX_PATH * 2], dir[MAX_PATH * 2], expanded[4096];
+		panel_entry_full_path(panel, idx, full, sizeof(full));
+		snprintf(dir, sizeof(dir), "%s", full);
+		char *sl = strrchr(dir, '/');
+		if (sl) { if (sl == dir) strcpy(dir, "/"); else *sl = '\0'; }
+		else snprintf(dir, sizeof(dir), "%s", panel->current_path);
+
+		expand_far_macros(cmd, dir, panel->files[idx].name, full, expanded, sizeof(expanded));
+		printf("\033[1;36m==> [%d/%d] %s\033[0m\r\n", k + 1, cnt, expanded);
+		fflush(stdout);
+		if (chdir(dir) == 0) { int rc = system(expanded); (void)rc; }
+	}
+	printf("\r\n\033[1;33m--- Done (%d item%s). Press any key ---\033[0m", cnt, cnt == 1 ? "" : "s");
+	fflush(stdout);
+	struct termios orig_t, raw_t;
+	if (tcgetattr(STDIN_FILENO, &orig_t) == 0) {
+		raw_t = orig_t;
+		raw_t.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+		raw_t.c_cc[VMIN] = 1; raw_t.c_cc[VTIME] = 0;
+		tcsetattr(STDIN_FILENO, TCSANOW, &raw_t);
+		char ch; (void)!read(STDIN_FILENO, &ch, 1);
+		tcsetattr(STDIN_FILENO, TCSANOW, &orig_t);
+	} else {
+		getchar();
+	}
+
+	reset_prog_mode();
+	input_enable_raw();
+	input_set_mouse(1);
+	clearok(stdscr, TRUE);
+	return 1;
+}
