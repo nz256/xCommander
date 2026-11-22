@@ -141,6 +141,7 @@ static KeyAction map_modified_code(int code, int mod) {
 		if (code == 'f' || code == 'F') return ACT_CTRL_F;
 		if (code == 'g' || code == 'G' || code == 1087 || code == 1055) return ACT_CTRL_G;
 		if (code == 'h' || code == 'H' || code == 1088 || code == 1056) return ACT_CTRL_H;
+		if (code == 'i' || code == 'I' || code == 1096 || code == 1064) return ACT_CTRL_I;
 		if (code == 'j' || code == 'J') return ACT_INSERT_NAME;
 		if (code == 'l' || code == 'L' || code == 1076 || code == 1044) return ACT_CTRL_L;
 		if (code == 'o' || code == 'O') return ACT_CTRL_O;

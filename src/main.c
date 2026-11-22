@@ -15,6 +15,8 @@
 #include "archive.h"
 #include "find.h"
 #include "ui.h"
+#include "menu_bar.h"
+#include "info_panel.h"
 #include "widgets.h"
 #include "exec.h"
 #include "input.h"
@@ -490,6 +492,13 @@ static int confirm_exit(void) {
 
 
 
+static void sync_refresh(void) {
+	(void)!write(STDOUT_FILENO, "\033[?2026h", 8);
+	wnoutrefresh(stdscr);
+	doupdate();
+	(void)!write(STDOUT_FILENO, "\033[?2026l", 8);
+}
+
 static KeyAction handle_mouse_event(InputEvent ev) {
 	if (terminal_mode) return ACT_NONE;
 	int height, width;
@@ -498,26 +507,36 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 	if (mx < 0 || my < 0 || mx >= width || my >= height) return ACT_NONE;
 
 	if (my == height - 1 && ev.action == ACT_MOUSE_LEFT) {
-		int col_w = width / 10;
+		int col_w = width / 12;
 		if (col_w < 3) col_w = 3;
 		int idx = mx / col_w;
-		if (idx > 9) idx = 9;
+		if (idx > 11) idx = 11;
 		if (g_mod_alt && !g_mod_ctrl && !g_mod_shift) {
 			if (idx == 0) return ACT_ALT_F1;
 			if (idx == 1) return ACT_ALT_F2;
+			if (idx == 4) return ACT_SHIFT_F1;
+			if (idx == 6) return ACT_ALT_F7;
 			if (idx == 7) return ACT_ALT_F8;
-			if (idx == 8) return ACT_ALT_F11;
+			if (idx == 8) return ACT_ALT_F9;
+			if (idx == 9) return ACT_ALT_F10;
+			if (idx == 10) return ACT_ALT_F11;
 			if (idx == 11) return ACT_ALT_F12;
+			return ACT_NONE;
 		} else if (g_mod_shift && !g_mod_ctrl && !g_mod_alt) {
+			if (idx == 0) return ACT_SHIFT_F1;
 			if (idx == 3) return ACT_SHIFT_F4;
 			if (idx == 4) return ACT_SHIFT_F5;
 			if (idx == 5) return ACT_SHIFT_F6;
+			if (idx == 7) return ACT_SHIFT_F8;
+			return ACT_NONE;
 		} else if (g_mod_ctrl && !g_mod_alt && !g_mod_shift) {
 			if (idx == 2) return ACT_CTRL_F3;
 			if (idx == 3) return ACT_CTRL_F4;
 			if (idx == 4) return ACT_CTRL_F5;
 			if (idx == 5) return ACT_CTRL_F6;
+			return ACT_NONE;
 		}
+		if (idx > 9) return ACT_NONE;
 		const KeyAction fkeys[10] = {
 			ACT_F1, ACT_F2, ACT_F3, ACT_F4, ACT_F5,
 			ACT_F6, ACT_F7, ACT_F8, ACT_F9, ACT_F10
@@ -540,13 +559,13 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 			if (ev.action == ACT_MOUSE_WHEEL_UP) {
 				if (cmd_suggest_sel < 0) cmd_suggest_sel = (cmd_suggest_count > 1) ? (cmd_suggest_count - 2) : 0;
 				else cmd_suggest_sel = (cmd_suggest_sel > 0) ? (cmd_suggest_sel - 1) : (cmd_suggest_count - 1);
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				return ACT_NONE;
 			}
 			if (ev.action == ACT_MOUSE_WHEEL_DOWN) {
 				if (cmd_suggest_sel < 0) cmd_suggest_sel = 0;
 				else cmd_suggest_sel = (cmd_suggest_sel + 1) % cmd_suggest_count;
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				return ACT_NONE;
 			}
 			if (ev.action == ACT_MOUSE_LEFT) {
@@ -554,7 +573,7 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 				if (row >= 0 && row < cmd_suggest_count) {
 					cmdline_set_text(cmd_history[cmd_suggest_idx[row]].cmd);
 					cmd_suggest_reset();
-					draw_screen(); refresh();
+					draw_screen(); sync_refresh();
 				}
 				return ACT_NONE;
 			}
@@ -576,7 +595,7 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 		}
 		active_panel = target_p;
 		quick_search_reset();
-		draw_screen(); refresh();
+		draw_screen(); sync_refresh();
 		return ACT_NONE;
 	}
 
@@ -605,7 +624,7 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 			target_p->selected = file_idx;
 			if (ev.action == ACT_MOUSE_RIGHT) {
 				panel_toggle_mark(target_p, file_idx);
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				return ACT_NONE;
 			}
 			if (ev.action == ACT_MOUSE_LEFT) {
@@ -613,7 +632,7 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 				last_click_p = target_p;
 				last_click_idx = file_idx;
 				last_click_ms = now_ms;
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				if (is_dbl) {
 					last_click_ms = 0;
 					return ACT_ENTER;
@@ -623,7 +642,7 @@ static KeyAction handle_mouse_event(InputEvent ev) {
 		}
 	}
 
-	draw_screen(); refresh();
+	draw_screen(); sync_refresh();
 	return ACT_NONE;
 }
 
@@ -699,7 +718,7 @@ static void run_multiline_script(const char *script, int was_term) {
 		unlink(tmp_sh);
 		reload_panels_keep_cursor();
 	}
-	if (!was_term) { draw_screen(); refresh(); }
+	if (!was_term) { draw_screen(); sync_refresh(); }
 	else { print_term_prompt_ex(cmd_wbuf, 1); }
 }
 
@@ -824,6 +843,9 @@ int main(int argc, char **argv) {
 	setlocale(LC_ALL, "");
 	ui_init();
 	nonl();
+	idlok(stdscr, FALSE);
+	idcok(stdscr, FALSE);
+	scrollok(stdscr, FALSE);
 	
 	
         history_load();
@@ -861,8 +883,7 @@ int main(int argc, char **argv) {
 	load_directory(&right_panel);
 	active_panel = act_right ? &right_panel : &left_panel;
 
-	clear();
-	refresh();
+	bkgd(COLOR_PAIR(1));
 	draw_screen();
 	refresh();
 	input_enable_raw();
@@ -897,7 +918,7 @@ int main(int argc, char **argv) {
 		}
 		if (ev.action != ACT_SHIFT_LEFT && ev.action != ACT_SHIFT_RIGHT && ev.action != ACT_NONE) { /* reset lr chain */ }
 		if (ev.action == ACT_MOD_CHANGE) {
-			if (!terminal_mode) { draw_screen(); refresh(); }
+			if (!terminal_mode) { draw_screen(); sync_refresh(); }
 			continue;
 		}
 		if (ev.action >= ACT_MOUSE_LEFT && ev.action <= ACT_MOUSE_WHEEL_DOWN) {
@@ -905,12 +926,12 @@ int main(int argc, char **argv) {
 			if (ev.action == ACT_NONE) continue;
 		}
 		if (ev.action == ACT_RESIZE) {
-			if (!terminal_mode) { endwin(); refresh(); clearok(stdscr, TRUE); draw_screen(); refresh(); }
+			if (!terminal_mode) { endwin(); refresh(); clearok(stdscr, TRUE); draw_screen(); sync_refresh(); }
 			continue;
 		}
 		if (ev.action == ACT_CTRL_Q || ev.action == ACT_F10) {
 			if (confirm_exit()) break;
-			if (!terminal_mode) { draw_screen(); refresh(); }
+			if (!terminal_mode) { draw_screen(); sync_refresh(); }
 			continue;
 		}
 		if (!terminal_mode && ev.action == ACT_ALT_SHIFT_N && active_panel && active_panel->count > 0) {
@@ -941,7 +962,7 @@ int main(int argc, char **argv) {
 		if (ev.action == ACT_CTRL_X && (cmd_sel_start >= 0 || (!terminal_mode && cmd_len == 0))) {
 			if (cmd_sel_start >= 0) {
 				cmdline_cut();
-				if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(cmd_wbuf); }
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else { print_term_prompt(cmd_wbuf); }
 			} else clipboard_stage_files(active_panel, 1);
 			continue;
 		}
@@ -952,7 +973,7 @@ int main(int argc, char **argv) {
 					for (int i = 0; i < right_panel.count; i++) right_panel.files[i].is_selected = 0;
 					reload_panels_keep_cursor();
 				}
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 			} else {
 				char raw_clip[65536] = {0};
 				if (clipboard_paste_raw(raw_clip, sizeof(raw_clip)) > 0 && strchr(raw_clip, '\n') != NULL) {
@@ -968,15 +989,15 @@ int main(int argc, char **argv) {
 						int h_ok = ui_multiline_history(picked, sizeof(picked));
 						if (was_term) { endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); }
 						if (h_ok) run_multiline_script(picked, was_term);
-						else if (!was_term) { draw_screen(); refresh(); }
+						else if (!was_term) { draw_screen(); sync_refresh(); }
 						else { print_term_prompt(cmd_wbuf); }
 					} else {
-						if (!was_term) { draw_screen(); refresh(); }
+						if (!was_term) { draw_screen(); sync_refresh(); }
 						else { print_term_prompt(cmd_wbuf); }
 					}
 				} else {
 					cmdline_paste();
-					if (!terminal_mode) { draw_screen(); refresh(); } else { print_term_prompt(cmd_wbuf); }
+					if (!terminal_mode) { draw_screen(); sync_refresh(); } else { print_term_prompt(cmd_wbuf); }
 				}
 			}
 			continue;
@@ -1012,12 +1033,12 @@ int main(int argc, char **argv) {
 				}
 			} else {
 				reset_prog_mode(); input_enable_raw(); input_set_mouse(1); clearok(stdscr, TRUE);
-				reload_panels_keep_cursor(); refresh(); draw_screen(); refresh();
+				reload_panels_keep_cursor(); refresh(); draw_screen(); sync_refresh();
 			}
 			continue;
 		}
-		if (ev.action == ACT_INSERT_LEFT_PATH) { cmdline_insert_path(&left_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
-		if (ev.action == ACT_INSERT_RIGHT_PATH) { cmdline_insert_path(&right_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
+		if (ev.action == ACT_INSERT_LEFT_PATH) { cmdline_insert_path(&left_panel); if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf); continue; }
+		if (ev.action == ACT_INSERT_RIGHT_PATH) { cmdline_insert_path(&right_panel); if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf); continue; }
 		if (!terminal_mode && cmd_len == 0 && ev.action == ACT_ALT_BACKSPACE) {
 			if (dir_history_count > 1) {
 				int start_i = (dir_history_pos >= 0 && dir_history_pos < dir_history_count) ? (dir_history_pos - 1) : (dir_history_count - 2);
@@ -1111,7 +1132,7 @@ int main(int argc, char **argv) {
 					}
 				}
 			}
-			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			continue;
 		}
 		if (ev.action == ACT_ALT_F10 || ev.action == ACT_CTRL_D) {
@@ -1136,7 +1157,7 @@ int main(int argc, char **argv) {
 				else snprintf(qpath, sizeof(qpath), "%s ", picked_dir);
 				wchar_t wqpath[MAX_PATH + 16]; if (mbstowcs(wqpath, qpath, MAX_PATH + 15) != (size_t)-1) cmdline_insert_wstr(wqpath);
 			}
-			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			continue;
 		}
 		if (ev.action == ACT_ALT_F8 || ev.action == ACT_CTRL_H) {
@@ -1156,10 +1177,10 @@ int main(int argc, char **argv) {
 				last_prompt_dir[0] = '\0';
 				if (!terminal_mode) reload_panels_keep_cursor();
 				cmdline_clear();
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
 			} else if (hres == 2 && picked_cmd[0] != '\0') {
 				cmdline_set_text(picked_cmd);
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			} else if (hres == 3) {
 				if (picked_dir[0] != '\0' && access(picked_dir, R_OK | X_OK) == 0) {
 					quick_search_reset();
@@ -1169,9 +1190,9 @@ int main(int argc, char **argv) {
 				} else {
 					ui_message("Jump", "Saved directory no longer exists");
 				}
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
 			} else {
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			}
 			continue;
 		}
@@ -1182,7 +1203,7 @@ int main(int argc, char **argv) {
 			int h_ok = ui_multiline_history(picked, sizeof(picked));
 			if (was_term) { endwin(); input_enable_raw(); if (terminal_mode) input_set_mouse(0); }
 			if (h_ok) run_multiline_script(picked, was_term);
-			else if (!was_term) { draw_screen(); refresh(); }
+			else if (!was_term) { draw_screen(); sync_refresh(); }
 			else { print_term_prompt(cmd_wbuf); }
 			continue;
 		}
@@ -1203,7 +1224,7 @@ int main(int argc, char **argv) {
 					beep();
 				}
 			}
-			draw_screen(); refresh();
+			draw_screen(); sync_refresh();
 			continue;
 		}
 		if (!terminal_mode && quick_search_active) {
@@ -1215,17 +1236,17 @@ int main(int argc, char **argv) {
 					if (wsearch_len == 0) quick_search_reset();
 					else quick_search_jump(0);
 				}
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			} else if (ev.action == ACT_ESC) {
 				quick_search_reset();
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			} else if (ev.action != ACT_ENTER) {
 				quick_search_reset();
 			}
 		}
-		if (ev.action == ACT_INSERT_NAME) { cmdline_insert_filename(active_panel); if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf); continue; }
+		if (ev.action == ACT_INSERT_NAME) { cmdline_insert_filename(active_panel); if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf); continue; }
 		int is_hist_prev = (ev.action == ACT_CTRL_E) || (terminal_mode && ev.action == ACT_UP);
 		int is_hist_next = (ev.action == ACT_CTRL_X) || (terminal_mode && ev.action == ACT_DOWN);
 		if (is_hist_prev || is_hist_next) {
@@ -1233,7 +1254,7 @@ int main(int argc, char **argv) {
 				if (is_hist_prev && history_idx > 0) history_idx--;
 				else if (is_hist_next && history_idx < history_count) history_idx++;
 				history_apply();
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			}
 			continue;
 		}
@@ -1257,7 +1278,7 @@ int main(int argc, char **argv) {
 			if (strcmp(full_cmd, "exit") == 0 || strcmp(full_cmd, "quit") == 0) {
 				if (confirm_exit()) break;
 				cmdline_clear();
-				if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 				continue;
 			}
 			history_add(full_cmd);
@@ -1265,7 +1286,7 @@ int main(int argc, char **argv) {
 			execute_system_command(full_cmd); last_prompt_dir[0] = '\0';
 			if (!terminal_mode) reload_panels_keep_cursor();
 			cmdline_clear();
-			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+			if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
 			continue;
 		}
 		if (!terminal_mode && cmd_len == 0 && ev.action == ACT_CHAR &&
@@ -1291,26 +1312,26 @@ int main(int argc, char **argv) {
 				cmd_suggest_dismissed = 1;
 				cmd_suggest_count = 0;
 				cmd_suggest_sel = -1;
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (ev.action == ACT_UP) {
 				if (cmd_suggest_sel < 0) cmd_suggest_sel = (cmd_suggest_count > 1) ? (cmd_suggest_count - 2) : 0;
 				else cmd_suggest_sel = (cmd_suggest_sel > 0) ? (cmd_suggest_sel - 1) : (cmd_suggest_count - 1);
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (ev.action == ACT_DOWN) {
 				if (cmd_suggest_sel < 0) cmd_suggest_sel = 0;
 				else cmd_suggest_sel = (cmd_suggest_sel + 1) % cmd_suggest_count;
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (ev.action == ACT_RIGHT && cmd_pos == cmd_len) {
 				int pick = (cmd_suggest_sel >= 0 && cmd_suggest_sel < cmd_suggest_count) ? cmd_suggest_sel : (cmd_suggest_count - 1);
 				cmdline_set_text(cmd_history[cmd_suggest_idx[pick]].cmd);
 				cmd_suggest_reset();
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (ev.action == ACT_ENTER && cmd_suggest_sel >= 0 && cmd_suggest_sel < cmd_suggest_count) {
@@ -1322,13 +1343,38 @@ int main(int argc, char **argv) {
 		if (ed_res > 0) {
 			if (ed_res == 2) { history_idx = history_count; cmd_suggest_dismissed = 0; cmd_suggest_sel = -1; }
 			if (cmd_len == 0) cmd_suggest_reset();
-			if (!terminal_mode) { draw_screen(); refresh(); } else print_term_prompt(cmd_wbuf);
+			if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt(cmd_wbuf);
 			continue;
 		}
 		if (terminal_mode) {
 			continue;
 		}
-		if (ev.action == ACT_ALT_F12) { ui_toggle_auto_colorize(); draw_screen(); refresh(); continue; }
+		if (ev.action == ACT_F9) {
+			MenuBarAction ma = ui_top_menu();
+			draw_screen(); sync_refresh();
+			if (ma == MB_NONE) continue;
+			if (ma >= MB_L_NAME && ma <= MB_L_DRIVE) {
+				active_panel = &left_panel;
+				const KeyAction la[5] = { ACT_CTRL_F3, ACT_CTRL_F4, ACT_CTRL_F5, ACT_CTRL_F6, ACT_ALT_F1 };
+				ev.action = la[ma - MB_L_NAME];
+			} else if (ma >= MB_R_NAME && ma <= MB_R_DRIVE) {
+				active_panel = &right_panel;
+				const KeyAction ra[5] = { ACT_CTRL_F3, ACT_CTRL_F4, ACT_CTRL_F5, ACT_CTRL_F6, ACT_ALT_F2 };
+				ev.action = ra[ma - MB_R_NAME];
+			} else if (ma == MB_F_ATTRS)   ev.action = ACT_CTRL_A;
+			else if (ma == MB_F_DIRSIZE)   ev.action = ACT_F3;
+			else if (ma == MB_F_FIND)      ev.action = ACT_ALT_F7;
+			else if (ma == MB_F_PACK)      ev.action = ACT_SHIFT_F1;
+			else if (ma == MB_C_INFO)      { g_info_panel = !g_info_panel; draw_screen(); sync_refresh(); continue; }
+			else if (ma == MB_C_COMPARE)   { panel_compare_dirs(&left_panel, &right_panel); draw_screen(); sync_refresh(); continue; }
+			else if (ma == MB_C_TMPPANEL)  { temp_panel_open(active_panel); draw_screen(); sync_refresh(); continue; }
+			else if (ma == MB_C_SWAP)      ev.action = ACT_CTRL_U;
+			else if (ma == MB_C_USERMENU)  ev.action = ACT_F2;
+			else if (ma == MB_O_COLORIZE)  ev.action = ACT_ALT_F12;
+			else if (ma == MB_O_HIDDEN)    { g_show_hidden = !g_show_hidden; reload_panels_keep_cursor(); draw_screen(); sync_refresh(); continue; }
+		}
+		if (ev.action == ACT_CTRL_I) { g_info_panel = !g_info_panel; draw_screen(); sync_refresh(); continue; }
+		if (ev.action == ACT_ALT_F12) { ui_toggle_auto_colorize(); draw_screen(); sync_refresh(); continue; }
 		if (ev.action == ACT_TAB) active_panel = (active_panel == &left_panel) ? &right_panel : &left_panel;
 		else if (ev.action == ACT_CTRL_R) { reload_panels_keep_cursor(); clearok(stdscr, TRUE); }
 				else if (ev.action == ACT_CTRL_F3 || ev.action == ACT_CTRL_F4 || ev.action == ACT_CTRL_F5 || ev.action == ACT_CTRL_F6) {
@@ -1360,7 +1406,7 @@ int main(int argc, char **argv) {
 					snprintf(active_panel->parent_name, MAX_FILENAME, "%s", keep);
 					load_directory(active_panel);
 				}
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 			} else if (strcmp(cur->name, "..") != 0) {
 				if (active_panel->archive_file[0]) {
 					char in[MAX_PATH*2], tfp[MAX_PATH];
@@ -1407,7 +1453,7 @@ int main(int argc, char **argv) {
 					} else {
 						ui_message("Archive Edit", "Failed to extract file from archive");
 					}
-					draw_screen(); refresh();
+					draw_screen(); sync_refresh();
 					continue;
 				}
 				char fp[MAX_PATH * 2];
@@ -1472,12 +1518,12 @@ int main(int argc, char **argv) {
 					}
 				}
 				if (added > 0) load_directory(oth);
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (active_panel->archive_file[0]) {
 				if (archive_extract_items(active_panel, oth) > 0) { load_directory(&left_panel); load_directory(&right_panel); }
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			char keep_name[MAX_FILENAME] = "";
@@ -1515,7 +1561,7 @@ int main(int argc, char **argv) {
 					cmdline_insert_wstr(wfp);
 				}
 			}
-			draw_screen(); refresh();
+			draw_screen(); sync_refresh();
 		}
 		else if (ev.action == ACT_F7) { if (make_directory(active_panel) > 0) { reload_panels_keep_cursor(); } }
 		else if (ev.action == ACT_SHIFT_F1 || ev.action == ACT_ALT_F5) {
@@ -1523,11 +1569,11 @@ int main(int argc, char **argv) {
 				load_directory(&left_panel);
 				load_directory(&right_panel);
 			}
-			draw_screen(); refresh();
+			draw_screen(); sync_refresh();
 		}
 		else if (ev.action == ACT_CTRL_A) {
 			if (ui_file_attributes(active_panel)) reload_panels_keep_cursor();
-			draw_screen(); refresh();
+			draw_screen(); sync_refresh();
 		}
 		else if (ev.action == ACT_F8) {
 			if (active_panel->is_temp) {
@@ -1536,7 +1582,7 @@ int main(int argc, char **argv) {
 					if (ps >= active_panel->count) ps = active_panel->count - 1;
 					if (ps >= 0) active_panel->selected = ps;
 				}
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			if (active_panel->archive_file[0] != '\0') {
@@ -1546,7 +1592,7 @@ int main(int argc, char **argv) {
 					if (ps >= active_panel->count) ps = active_panel->count - 1;
 					if (ps >= 0) active_panel->selected = ps;
 				}
-				draw_screen(); refresh();
+				draw_screen(); sync_refresh();
 				continue;
 			}
 			int ps = active_panel->selected;
@@ -1639,7 +1685,7 @@ int main(int argc, char **argv) {
 						snprintf(active_panel->parent_name, MAX_FILENAME, "%s", bn);
 						snprintf(active_panel->current_path, MAX_PATH, "%s", dir_buf);
 						load_directory(active_panel);
-						draw_screen(); refresh();
+						draw_screen(); sync_refresh();
 						continue;
 					}
 				}
@@ -1657,7 +1703,7 @@ int main(int argc, char **argv) {
 				archive_load_dir(active_panel);
 			}
 		}
-		if (!terminal_mode) { draw_screen(); refresh(); }
+		if (!terminal_mode) { draw_screen(); sync_refresh(); }
 	}
 	history_save();
 	dir_history_save();

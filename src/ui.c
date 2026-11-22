@@ -12,6 +12,7 @@
 #include <wchar.h>
 #include <wctype.h>
 #include "ui.h"
+#include "info_panel.h"
 #include "widgets.h"
 #include "exec.h"
 #include "panel.h"
@@ -672,7 +673,8 @@ static void ui_draw_cmd_suggest(int height, int width, int prompt_cols) {
 }
 
 void draw_screen(void) {
-	erase();
+	bkgd(COLOR_PAIR(1));
+	attrset(COLOR_PAIR(1));
 	int height, width;
 	getmaxyx(stdscr, height, width);
 
@@ -680,8 +682,14 @@ void draw_screen(void) {
 	int panel_height = height - 2;
 	if (panel_height < 3) panel_height = 3;
 
-	draw_panel(&left_panel, 0, 0, panel_width, panel_height, active_panel == &left_panel);
-	draw_panel(&right_panel, 0, panel_width, width - panel_width, panel_height, active_panel == &right_panel);
+	if (g_info_panel && active_panel == &right_panel)
+		draw_info_panel(&right_panel, 0, 0, panel_width, panel_height);
+	else
+		draw_panel(&left_panel, 0, 0, panel_width, panel_height, active_panel == &left_panel);
+	if (g_info_panel && active_panel == &left_panel)
+		draw_info_panel(&left_panel, 0, panel_width, width - panel_width, panel_height);
+	else
+		draw_panel(&right_panel, 0, panel_width, width - panel_width, panel_height, active_panel == &right_panel);
 
 	char prompt[MAX_PATH + 16];
 	int prompt_cols = build_cmd_prompt(prompt, sizeof(prompt), width);
@@ -1080,7 +1088,8 @@ void ui_help(void) {
 		"",
 		"=== 2. VIEWER, EDITOR & FILE OPERATIONS ===",
 		"  F1                 Open this Help guide (type to live-filter)",
-		"  F2                 Open User Menu (submenus { } & hotkeys)",
+		"  F2 / F9            Open User Menu / Top Menu (Compare Dirs, Hidden, Sort)",
+		"  Ctrl+I             Toggle Info Panel (dir size, Git branch, perms, disk)",
 		"  F3                 View file (Text/Hex) or calculate folder(s) size",
 		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
 		"  Shift+F4           Create new file and open in built-in Editor",
@@ -1465,7 +1474,7 @@ void ui_user_menu(void) {
 			sel = (sel + 1) % total_items;
 		} else if (ev.action == ACT_F4 || (ev.action == ACT_ENTER && btn_focus == 1)) {
 			ui_edit_file(menu_path);
-			clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
+			clearok(stdscr, TRUE); draw_screen(); refresh();
 			free_user_menu_tree(root);
 			root = load_user_menu_tree(menu_path);
 			cur_menu = root;
@@ -3018,7 +3027,7 @@ do_edit_ml:
 					fclose(rf2);
 				}
 				unlink(tmp_ed);
-				clearok(stdscr, TRUE); refresh(); draw_screen(); refresh();
+				clearok(stdscr, TRUE); draw_screen(); refresh();
 			}
 		}
 	}

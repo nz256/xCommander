@@ -15,4 +15,7 @@ void temp_panel_clear(void);
 int temp_panel_remove_selected(Panel *p);
 void panel_entry_full_path(const Panel *p, int index, char *out, size_t sz);
 
+extern int g_show_hidden;
+void panel_compare_dirs(Panel *left, Panel *right);
+
 #endif

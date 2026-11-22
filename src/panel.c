@@ -178,6 +178,8 @@ void panel_entry_full_path(const Panel *p, int index, char *out, size_t sz) {
 	}
 }
 
+int g_show_hidden = 1;
+
 void load_directory(Panel *p) {
 	if (p && p->is_temp) {
 		temp_panel_load_entries(p);
@@ -251,6 +253,7 @@ void load_directory(Panel *p) {
 
 	while ((dir = readdir(d)) != NULL && p->count < MAX_FILES) {
 		if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+		if (!g_show_hidden && dir->d_name[0] == '.') continue;
 
 		snprintf(p->files[p->count].name, MAX_FILENAME, "%s", dir->d_name);
 		p->files[p->count].full_path[0] = '\0';
@@ -451,5 +454,39 @@ void panel_invert_selection(Panel *p) {
 	for (int i = 0; i < p->count; i++) {
 		if (strcmp(p->files[i].name, "..") == 0) continue;
 		p->files[i].is_selected = !p->files[i].is_selected;
+	}
+}
+
+void panel_compare_dirs(Panel *left, Panel *right) {
+	if (!left || !right) return;
+	for (int i = 0; i < left->count; i++) left->files[i].is_selected = 0;
+	for (int i = 0; i < right->count; i++) right->files[i].is_selected = 0;
+	for (int i = 0; i < left->count; i++) {
+		FileEntry *a = &left->files[i];
+		if (a->is_dir || strcmp(a->name, "..") == 0) continue;
+		int found = 0;
+		for (int j = 0; j < right->count; j++) {
+			FileEntry *b = &right->files[j];
+			if (!b->is_dir && strcmp(a->name, b->name) == 0) {
+				found = 1;
+				if (a->size != b->size || a->mtime > b->mtime + 2) a->is_selected = 1;
+				break;
+			}
+		}
+		if (!found) a->is_selected = 1;
+	}
+	for (int j = 0; j < right->count; j++) {
+		FileEntry *b = &right->files[j];
+		if (b->is_dir || strcmp(b->name, "..") == 0) continue;
+		int found = 0;
+		for (int i = 0; i < left->count; i++) {
+			FileEntry *a = &left->files[i];
+			if (!a->is_dir && strcmp(a->name, b->name) == 0) {
+				found = 1;
+				if (b->size != a->size || b->mtime > a->mtime + 2) b->is_selected = 1;
+				break;
+			}
+		}
+		if (!found) b->is_selected = 1;
 	}
 }

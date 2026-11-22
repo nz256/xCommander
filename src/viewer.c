@@ -275,7 +275,8 @@ void ui_view_file(const char *filepath) {
 		if (vs.top_line >= total_rows) vs.top_line = total_rows - 1;
 		if (vs.top_line < 0) vs.top_line = 0;
 
-		erase();
+		bkgd(COLOR_PAIR(1));
+		werase(stdscr);
 		if (vs.hex_mode) viewer_draw_hex(&vs, height, width);
 		else viewer_draw_text(&vs, height, width);
 		viewer_draw_bars(&vs, filepath, height, width);
