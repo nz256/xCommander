@@ -13,6 +13,7 @@
 #include "exec.h"
 #include "panel.h"
 #include "ui.h"
+#include "widgets.h"
 #include "sudo_helper.h"
 #include "progress.h"
 static UiProgress *g_prog = NULL;
@@ -1150,4 +1151,115 @@ int apply_command_to_items(const Panel *panel) {
 	input_set_mouse(1);
 	clearok(stdscr, TRUE);
 	return 1;
+}
+
+static int create_one_link(const char *target, const char *link_path, int is_hard) {
+	int rc = is_hard ? link(target, link_path) : symlink(target, link_path);
+	if (rc == 0) return 0;
+	if (errno == EACCES || errno == EPERM) {
+		if (is_hard) return sudo_run_argv((const char *const[]){ "ln", "--", target, link_path, NULL });
+		return sudo_run_argv((const char *const[]){ "ln", "-s", "--", target, link_path, NULL });
+	}
+	return -1;
+}
+
+int make_link_items(const Panel *src_panel, const Panel *dst_panel) {
+	if (!src_panel || src_panel->count == 0 || src_panel->archive_file[0] != '\0') return 0;
+	int marked = panel_marked_count(src_panel);
+	const FileEntry *cur = &src_panel->files[src_panel->selected];
+	if (marked == 0 && strcmp(cur->name, "..") == 0) return 0;
+
+	const char *def_dir = (dst_panel && dst_panel->archive_file[0] == '\0' && !dst_panel->is_temp)
+	                      ? dst_panel->current_path : src_panel->current_path;
+	char link_buf[MAX_PATH], targ_buf[MAX_PATH];
+	if (marked <= 1) {
+		int idx = src_panel->selected;
+		if (marked == 1) { for (int i = 0; i < src_panel->count; i++) if (src_panel->files[i].is_selected) { idx = i; break; } }
+		panel_entry_full_path(src_panel, idx, targ_buf, sizeof(targ_buf));
+		build_full_path(link_buf, sizeof(link_buf), def_dir, src_panel->files[idx].name);
+	} else {
+		snprintf(targ_buf, sizeof(targ_buf), "(%d selected items)", marked);
+		snprintf(link_buf, sizeof(link_buf), "%s", def_dir);
+	}
+
+	int h, w; getmaxyx(stdscr, h, w);
+	int bw = (w - 4 < 62) ? (w - 4) : 62, bh = 11;
+	int sy = (h > bh) ? (h - bh) / 2 : 0, sx = (w > bw) ? (w - bw) / 2 : 0;
+	WINDOW *win = newwin(bh, bw, sy, sx); wbkgd(win, COLOR_PAIR(5));
+
+	int foc = 0, is_hard = 0, created = 0;
+	size_t lpos = strlen(link_buf), tpos = strlen(targ_buf);
+	const char *btns[2] = { "[ Create ]", "[ Cancel ]" };
+
+	while (1) {
+		werase(win); wattrset(win, COLOR_PAIR(5)); box(win, 0, 0);
+		mvwprintw(win, 0, 2, " Make Link (Alt+F6) ");
+		int fw = bw - 4;
+		mvwprintw(win, 2, 2, "Link path%s:", marked > 1 ? " (directory)" : "");
+		wattrset(win, (foc == 0) ? COLOR_PAIR(2) : COLOR_PAIR(4));
+		mvwprintw(win, 3, 2, "%-*.*s", fw, fw, link_buf);
+
+		wattrset(win, COLOR_PAIR(5));
+		mvwprintw(win, 4, 2, "Target:");
+		wattrset(win, (foc == 1 && marked <= 1) ? COLOR_PAIR(2) : COLOR_PAIR(4));
+		mvwprintw(win, 5, 2, "%-*.*s", fw, fw, targ_buf);
+
+		wattrset(win, (foc == 2) ? COLOR_PAIR(2) : COLOR_PAIR(5));
+		mvwprintw(win, 7, 2, "(%c) Symbolic link   (%c) Hard link", is_hard ? ' ' : 'x', is_hard ? 'x' : ' ');
+
+		UiButtonRow brow = { btns, 2, 9, (bw - 24) / 2, 2, (foc >= 3) ? (foc - 3) : -1 };
+		ui_btns_draw(&brow, win);
+		if (foc == 0) { curs_set(1); wmove(win, 3, 2 + ((int)lpos < fw ? (int)lpos : fw - 1)); }
+		else if (foc == 1 && marked <= 1) { curs_set(1); wmove(win, 5, 2 + ((int)tpos < fw ? (int)tpos : fw - 1)); }
+		else curs_set(0);
+		wrefresh(win);
+
+		InputEvent ev = input_read();
+		if (ev.action == ACT_ESC || ev.action == ACT_F10) break;
+		if (ev.action == ACT_TAB || ev.action == ACT_DOWN) { foc = (foc + 1) % 5; if (foc == 1 && marked > 1) foc = 2; continue; }
+		if (ev.action == ACT_SHIFT_TAB || ev.action == ACT_UP) { foc = (foc + 4) % 5; if (foc == 1 && marked > 1) foc = 0; continue; }
+		if (foc == 2 && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || (ev.action == ACT_CHAR && ev.ch == ' '))) { is_hard = !is_hard; continue; }
+		if (foc >= 3 && ev.action == ACT_LEFT) { foc = 3; continue; }
+		if (foc >= 3 && ev.action == ACT_RIGHT) { foc = 4; continue; }
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int ry = ev.mouse_y - sy, rx = ev.mouse_x - sx;
+			if (ry == 3 && rx >= 2 && rx < 2 + fw) { foc = 0; continue; }
+			if (ry == 5 && rx >= 2 && rx < 2 + fw && marked <= 1) { foc = 1; continue; }
+			if (ry == 7 && rx >= 2 && rx < bw - 2) { foc = 2; is_hard = (rx >= 20) ? 1 : 0; continue; }
+			int bhit = ui_btns_hit_test(&brow, ry, rx);
+			if (bhit == 1) break;
+			if (bhit == 0) { foc = 3; ev.action = ACT_ENTER; }
+		}
+		if (foc == 0 || (foc == 1 && marked <= 1)) {
+			char *b = (foc == 0) ? link_buf : targ_buf;
+			size_t *p = (foc == 0) ? &lpos : &tpos;
+			if (ev.action == ACT_BACKSPACE && *p > 0) { b[--(*p)] = '\0'; continue; }
+			if (ev.action == ACT_CHAR && ev.ch >= 32 && *p + 5 < MAX_PATH) {
+				char mb[8]; int ml = wctomb(mb, ev.ch);
+				if (ml > 0 && *p + (size_t)ml < MAX_PATH) { memcpy(b + *p, mb, (size_t)ml); *p += (size_t)ml; b[*p] = '\0'; }
+				continue;
+			}
+		}
+		if (ev.action == ACT_ENTER) {
+			if (foc == 4) break;
+			curs_set(0); delwin(win); win = NULL; draw_screen();
+			if (marked <= 1) {
+				if (create_one_link(targ_buf, link_buf, is_hard) != 0) ui_message("Link Error", "Failed to create link");
+				else created = 1;
+			} else {
+				int errs = 0;
+				for (int i = 0; i < src_panel->count; i++) {
+					if (!src_panel->files[i].is_selected || strcmp(src_panel->files[i].name, "..") == 0) continue;
+					char tfp[MAX_PATH], lfp[MAX_PATH * 2];
+					panel_entry_full_path(src_panel, i, tfp, sizeof(tfp));
+					build_full_path(lfp, sizeof(lfp), link_buf, src_panel->files[i].name);
+					if (create_one_link(tfp, lfp, is_hard) != 0) errs++; else created = 1;
+				}
+				if (errs > 0) { char em[64]; snprintf(em, sizeof(em), "Failed on %d item(s)", errs); ui_message("Link Error", em); }
+			}
+			break;
+		}
+	}
+	curs_set(0); if (win) { delwin(win); touchwin(stdscr); }
+	return created;
 }

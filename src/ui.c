@@ -277,7 +277,7 @@ void draw_fkey_bar(int y, int width) {
 		labels[2] = "";
 		labels[3] = "";
 		labels[4] = "Pack";
-		labels[5] = "";
+		labels[5] = "Link";
 		labels[6] = "Find";
 		labels[7] = "CmdH";
 		labels[8] = "FileH";

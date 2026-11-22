@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <grp.h>
 #include <ncurses.h>
+#include <poll.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,21 +28,80 @@ static void fmt_sz(off_t b, char *out, size_t sz) {
 	else snprintf(out, sz, "%lld B", (long long)b);
 }
 
-static void walk_dir_info(const char *path, int *steps) {
-	if (*steps > 15000) { g_cache_trunc = 1; return; }
+static long long now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
+static int check_esc_pressed(void) {
+	struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
+	if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+		char buf[128];
+		ssize_t n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
+		if (n <= 0) return 0;
+		buf[n] = '\0';
+		if (n == 1 && (buf[0] == 27 || buf[0] == 3)) return 1;
+		if (strstr(buf, "\033[27u") || strstr(buf, "\033[27;1u") || strstr(buf, "\033[<0;")) return 1;
+	}
+	return 0;
+}
+
+typedef struct {
+	WINDOW *win;
+	long long start_ms;
+	long long last_ms;
+	const char *root;
+} ScanUi;
+
+static void scan_ui_tick(ScanUi *u) {
+	if (g_cache_trunc) return;
+	long long t = now_ms();
+	if (t - u->last_ms < 100) return;
+	u->last_ms = t;
+	if (check_esc_pressed()) { g_cache_trunc = 1; return; }
+	if (!u->win && (t - u->start_ms) >= 40) {
+		int h, w; getmaxyx(stdscr, h, w);
+		int bw = (w - 4 < 48) ? (w - 4) : 48, bh = 7;
+		u->win = newwin(bh, bw, (h - bh) / 2, (w - bw) / 2);
+		wbkgd(u->win, COLOR_PAIR(5));
+	}
+	if (u->win) {
+		int bw = getmaxx(u->win), iw = bw - 4;
+		werase(u->win); box(u->win, 0, 0);
+		mvwprintw(u->win, 0, 2, " Info Panel ");
+		mvwprintw(u->win, 1, (bw - 19) / 2, "Scanning the folder");
+		int rl = (int)strlen(u->root);
+		if (rl > iw && iw > 4) mvwprintw(u->win, 2, 2, "...%.*s", iw - 3, u->root + rl - iw + 3);
+		else mvwprintw(u->win, 2, (bw - rl) / 2, "%.*s", iw, u->root);
+		char ln[96];
+		double gb = (double)g_cache_bytes / (1024.0 * 1024.0 * 1024.0);
+		if (gb >= 0.1) snprintf(ln, sizeof(ln), "%.2f GB (%ld files)", gb, g_cache_files);
+		else snprintf(ln, sizeof(ln), "%.1f MB (%ld files)", (double)g_cache_bytes / (1024.0 * 1024.0), g_cache_files);
+		mvwprintw(u->win, 3, (bw - (int)strlen(ln)) / 2, "%s", ln);
+		mvwprintw(u->win, 5, (bw - 19) / 2, "[ Esc - Interrupt ]");
+		wrefresh(u->win);
+	}
+}
+
+static void walk_dir_info(const char *path, ScanUi *u) {
+	if (g_cache_trunc) return;
 	DIR *d = opendir(path);
 	if (!d) return;
 	struct dirent *de;
-	while ((de = readdir(d)) != NULL) {
+	while ((de = readdir(d)) != NULL && !g_cache_trunc) {
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-		if (++(*steps) > 15000) { g_cache_trunc = 1; break; }
 		if (de->d_name[0] == '.') g_cache_hid++;
 		char sub[MAX_PATH * 2];
 		snprintf(sub, sizeof(sub), "%s/%s", path, de->d_name);
 		struct stat st;
 		if (lstat(sub, &st) != 0) continue;
-		if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) { g_cache_dirs++; walk_dir_info(sub, steps); }
-		else { g_cache_files++; g_cache_bytes += st.st_size; }
+		if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+			g_cache_dirs++; scan_ui_tick(u); walk_dir_info(sub, u);
+		} else {
+			g_cache_files++; g_cache_bytes += st.st_size;
+			if ((g_cache_files & 255) == 0) scan_ui_tick(u);
+		}
 	}
 	closedir(d);
 }
@@ -61,16 +121,25 @@ static void find_mount_info(const char *path, char *mnt, size_t msz, char *fstyp
 	fclose(f);
 }
 
-static void print_fit_utf8(int y, int x, int max_w, const char *str) {
-	if (max_w <= 0 || !str) return;
-	wchar_t wb[MAX_PATH * 2];
-	size_t n = mbstowcs(wb, str, MAX_PATH * 2 - 1);
-	if (n == (size_t)-1) { mvprintw(y, x, "%.*s", max_w, str); return; }
-	wb[n] = L'\0';
-	mvaddnwstr(y, x, wb, max_w);
-}
-
 void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
+	if (!src || src->count == 0) return;
+	char target[MAX_PATH * 2];
+	const FileEntry *cur = &src->files[src->selected];
+	if (strcmp(cur->name, "..") == 0) snprintf(target, sizeof(target), "%s", src->current_path);
+	else panel_entry_full_path(src, src->selected, target, sizeof(target));
+
+	struct stat st;
+	int st_ok = (lstat(target, &st) == 0);
+	if (st_ok && S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+		if (strcmp(g_cache_path, target) != 0) {
+			snprintf(g_cache_path, sizeof(g_cache_path), "%s", target);
+			g_cache_bytes = 0; g_cache_files = 0; g_cache_dirs = 0; g_cache_hid = 0; g_cache_trunc = 0;
+			wnoutrefresh(stdscr); doupdate();
+			ScanUi u = { NULL, now_ms(), 0, target };
+			walk_dir_info(target, &u);
+			if (u.win) { delwin(u.win); touchwin(stdscr); }
+		}
+	}
 	attrset(COLOR_PAIR(1));
 	for (int r = 0; r < h; r++) mvhline(sy + r, sx, ' ', w);
 	for (int i = 1; i < w - 1; i++) { mvaddstr(sy, sx + i, "─"); mvaddstr(sy + h - 1, sx + i, "─"); }
@@ -78,21 +147,13 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 	mvaddstr(sy, sx, "┌"); mvaddstr(sy, sx + w - 1, "┐");
 	mvaddstr(sy + h - 1, sx, "└"); mvaddstr(sy + h - 1, sx + w - 1, "┘");
 
-	if (!src || src->count == 0) return;
-	char target[MAX_PATH * 2];
-	const FileEntry *cur = &src->files[src->selected];
-	if (strcmp(cur->name, "..") == 0) snprintf(target, sizeof(target), "%s", src->current_path);
-	else panel_entry_full_path(src, src->selected, target, sizeof(target));
-
 	const char *bn = strrchr(target, '/'); bn = (bn && bn[1]) ? (bn + 1) : target;
 	attrset(COLOR_PAIR(2));
 	mvprintw(sy, sx + 2, " Info: %.*s ", w - 11, bn);
-
-	struct stat st;
-	if (lstat(target, &st) != 0) { attrset(COLOR_PAIR(1)); mvprintw(sy + 2, sx + 2, "Cannot stat target"); return; }
+	if (!st_ok) { attrset(COLOR_PAIR(1)); mvprintw(sy + 2, sx + 2, "Cannot stat target"); return; }
 
 	int iw = w - 4, y = sy + 1;
-	attrset(COLOR_PAIR(7)); print_fit_utf8(y++, sx + 2, iw, target);
+	attrset(COLOR_PAIR(7)); mvwprintw(stdscr, y++, sx + 2, "%.*s", iw, target);
 
 	char tline[128] = "Regular file";
 	if (S_ISLNK(st.st_mode)) {
@@ -109,17 +170,12 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 		else snprintf(tline, sizeof(tline), "Directory");
 	}
 	attrset(COLOR_PAIR(1));
-	if (y < sy + h - 1) { mvprintw(y, sx + 2, "Type:   "); attrset(COLOR_PAIR(8)); print_fit_utf8(y++, sx + 10, iw - 8, tline); }
+	if (y < sy + h - 1) { mvprintw(y, sx + 2, "Type:   "); attrset(COLOR_PAIR(8)); mvwprintw(stdscr, y++, sx + 10, "%.*s", iw - 8, tline); }
 
 	char szs[64];
 	if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
-		if (strcmp(g_cache_path, target) != 0) {
-			snprintf(g_cache_path, sizeof(g_cache_path), "%s", target);
-			g_cache_bytes = 0; g_cache_files = 0; g_cache_dirs = 0; g_cache_hid = 0; g_cache_trunc = 0;
-			int steps = 0; walk_dir_info(target, &steps);
-		}
 		fmt_sz(g_cache_bytes, szs, sizeof(szs));
-		if (y < sy + h - 1) { attrset(COLOR_PAIR(1)); mvprintw(y++, sx + 2, "Size:   %s%s", szs, g_cache_trunc ? "+" : ""); }
+		if (y < sy + h - 1) { attrset(COLOR_PAIR(1)); mvprintw(y++, sx + 2, "Size:   %s%s", szs, g_cache_trunc ? " (interrupted)" : ""); }
 		if (y < sy + h - 1) { mvprintw(y++, sx + 2, "Items:  %ld files, %ld dirs (%ld hid)%s", g_cache_files, g_cache_dirs, g_cache_hid, g_cache_trunc ? "+" : ""); }
 	} else {
 		fmt_sz(st.st_size, szs, sizeof(szs));

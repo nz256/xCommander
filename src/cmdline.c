@@ -110,11 +110,13 @@ void cmdline_insert_path(const Panel *p) {
 
 void cmdline_insert_filename(const Panel *p) {
 	if (!p || p->count == 0) return;
-	const char *name = p->files[p->selected].name;
+	const FileEntry *fe = &p->files[p->selected];
+	const char *name = fe->name;
 	if (!name || strcmp(name, "..") == 0) return;
-	char fmt[MAX_FILENAME + 8];
-	if (strchr(name, ' ') != NULL) snprintf(fmt, sizeof(fmt), "\"%s\" ", name);
-	else snprintf(fmt, sizeof(fmt), "%s ", name);
+	int as_cmd = (cmd_len == 0 && !fe->is_dir && fe->is_exec && !p->is_temp && p->archive_file[0] == '\0');
+	char fmt[MAX_FILENAME + 12];
+	if (strchr(name, ' ') != NULL) snprintf(fmt, sizeof(fmt), as_cmd ? "\"./%s\" " : "\"%s\" ", name);
+	else snprintf(fmt, sizeof(fmt), as_cmd ? "./%s " : "%s ", name);
 	wchar_t wadd[MAX_FILENAME + 8];
 	size_t n = mbstowcs(wadd, fmt, MAX_FILENAME + 7);
 	if (n == (size_t)-1 || n == 0) return;

@@ -12,6 +12,7 @@ int move_items(const Panel *src_panel, const Panel *dst_panel);
 int copy_items_inplace(const Panel *src_panel, const Panel *dst_panel);
 int move_items_inplace(const Panel *src_panel, const Panel *dst_panel);
 int make_directory(Panel *panel);
+int make_link_items(const Panel *src_panel, const Panel *dst_panel);
 int trash_items(const Panel *panel);
 int delete_items(const Panel *panel);
 int apply_command_to_items(const Panel *panel);

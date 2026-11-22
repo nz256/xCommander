@@ -1,4 +1,6 @@
 #define _GNU_SOURCE
+#include <fcntl.h>
+#define _GNU_SOURCE
 #include <time.h>
 #include "cmdline.h"
 #include <sys/time.h>
@@ -737,6 +739,9 @@ typedef struct {
 	int edit_mode;
 	int edit_line;
 	int edit_col;
+	const char *view_file;
+	int view_mode;
+	int view_line;
 } StartupOpts;
 
 static void print_cli_version(void) {
@@ -746,17 +751,44 @@ static void print_cli_version(void) {
 static void print_cli_help(const char *prog) {
 	printf("Usage: %s [OPTIONS] [LEFT_DIR] [RIGHT_DIR]\n\n", prog);
 	printf("Options:\n");
-	printf("  -e[LINE[:POS]] [FILE], --edit  Open FILE in built-in editor at LINE:POS\n");
-	printf("  -v, --version    Show version and build number\n");
-	printf("  -h, --help       Show this help message\n");
+	printf("  -e[LINE[:POS]] [FILE], --edit  Open FILE (or '-' for stdin) in built-in editor\n");
+	printf("  -v[LINE] [FILE], --view        Open FILE (or '-' for stdin) in built-in viewer\n");
+	printf("  -V, --version                  Show version and build number\n");
+	printf("  -h, --help                     Show this help message\n");
 }
 
 static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 	memset(opts, 0, sizeof(*opts));
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+		if (strcmp(argv[i], "-V") == 0 || strcmp(argv[i], "--version") == 0) {
 			print_cli_version();
 			return 1;
+		}
+		if (strncmp(argv[i], "-v", 2) == 0 && (argv[i][2] == '\0' || (argv[i][2] >= '0' && argv[i][2] <= '9'))) {
+			opts->view_mode = 1;
+			opts->view_line = 1;
+			const char *spec = argv[i] + 2;
+			if (*spec != '\0') {
+				char *endp = NULL;
+				long ln = strtol(spec, &endp, 10);
+				if (endp == spec || ln < 1 || *endp != '\0') {
+					fprintf(stderr, "Invalid viewer line in '%s'. Expected -v[LINE]\n", argv[i]);
+					return -1;
+				}
+				opts->view_line = (int)ln;
+			}
+			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
+				opts->view_file = argv[++i];
+			}
+			continue;
+		}
+		if (strcmp(argv[i], "--view") == 0) {
+			opts->view_mode = 1;
+			opts->view_line = 1;
+			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
+				opts->view_file = argv[++i];
+			}
+			continue;
 		}
 		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
 			print_cli_help(argv[0]);
@@ -786,7 +818,7 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 					opts->edit_col = (int)cl;
 				}
 			}
-			if (i + 1 < argc && argv[i + 1][0] != '-') {
+			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
 				opts->edit_file = argv[++i];
 			}
 			continue;
@@ -795,7 +827,7 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 			opts->edit_mode = 1;
 			opts->edit_line = 1;
 			opts->edit_col = 1;
-			if (i + 1 < argc && argv[i + 1][0] != '-') {
+			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
 				opts->edit_file = argv[++i];
 			}
 			continue;
@@ -815,6 +847,21 @@ int main(int argc, char **argv) {
 	int arg_res = parse_startup_args(argc, argv, &opts);
 	if (arg_res != 0) return (arg_res > 0) ? 0 : 1;
 
+	char pipe_tmp[64] = "";
+	if ((opts.view_mode && opts.view_file && strcmp(opts.view_file, "-") == 0) ||
+	    (opts.edit_mode && opts.edit_file && strcmp(opts.edit_file, "-") == 0)) {
+		snprintf(pipe_tmp, sizeof(pipe_tmp), "/tmp/xc_pipe_XXXXXX");
+		int pfd = mkstemp(pipe_tmp);
+		if (pfd >= 0) {
+			char rbuf[8192]; ssize_t rn;
+			while ((rn = read(STDIN_FILENO, rbuf, sizeof(rbuf))) > 0) (void)!write(pfd, rbuf, (size_t)rn);
+			close(pfd);
+			if (opts.view_mode) opts.view_file = pipe_tmp;
+			if (opts.edit_mode) opts.edit_file = pipe_tmp;
+			int tty_fd = open("/dev/tty", O_RDONLY);
+			if (tty_fd >= 0) { dup2(tty_fd, STDIN_FILENO); close(tty_fd); }
+		}
+	}
 	if (!isatty(STDIN_FILENO)) {
 		setenv("TERM", "xterm-256color", 1);
 		char self[MAX_PATH];
@@ -889,15 +936,25 @@ int main(int argc, char **argv) {
 	refresh();
 	input_enable_raw();
 
+	if (opts.view_mode) {
+		const char *target_file = (opts.view_file && opts.view_file[0] != '\0') ? opts.view_file : "";
+		if (target_file[0] != '\0') {
+			ui_view_file(target_file);
+			if (pipe_tmp[0] == '\0') { file_history_add_entry(NULL, "View", opts.view_line, 1, target_file); file_history_save(); }
+		}
+		if (pipe_tmp[0] != '\0') unlink(pipe_tmp);
+		free(left_panel.files); free(right_panel.files);
+		input_restore_sane(); endwin(); input_restore_sane();
+		return 0;
+	}
 	if (opts.edit_mode) {
 		const char *target_file = (opts.edit_file && opts.edit_file[0] != '\0') ? opts.edit_file : "untitled.txt";
 		int end_ln = opts.edit_line, end_cl = opts.edit_col;
 		ui_edit_file_ex(target_file, opts.edit_line, opts.edit_col, &end_ln, &end_cl);
-		file_history_add_entry(NULL, "Edit", end_ln, end_cl, target_file);
-		file_history_save();
-		input_restore_sane();
-		endwin();
-		input_restore_sane();
+		if (pipe_tmp[0] == '\0') { file_history_add_entry(NULL, "Edit", end_ln, end_cl, target_file); file_history_save(); }
+		if (pipe_tmp[0] != '\0') unlink(pipe_tmp);
+		free(left_panel.files); free(right_panel.files);
+		input_restore_sane(); endwin(); input_restore_sane();
 		return 0;
 	}
 
@@ -1371,7 +1428,8 @@ int main(int argc, char **argv) {
 				active_panel = &right_panel;
 				const KeyAction ra[5] = { ACT_CTRL_F3, ACT_CTRL_F4, ACT_CTRL_F5, ACT_CTRL_F6, ACT_ALT_F2 };
 				ev.action = ra[ma - MB_R_NAME];
-			} else if (ma == MB_F_APPLY)   ev.action = ACT_CTRL_G;
+			} else if (ma == MB_F_LINK)    ev.action = ACT_ALT_F6;
+			else if (ma == MB_F_APPLY)   ev.action = ACT_CTRL_G;
 			else if (ma == MB_F_ATTRS)   ev.action = ACT_CTRL_A;
 			else if (ma == MB_F_DIRSIZE)   ev.action = ACT_F3;
 			else if (ma == MB_F_FIND)      ev.action = ACT_ALT_F7;
@@ -1503,6 +1561,10 @@ int main(int argc, char **argv) {
 				load_directory(&left_panel);
 				load_directory(&right_panel);
 			}
+		}
+		else if (ev.action == ACT_ALT_F6) {
+			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
+			if (make_link_items(active_panel, oth) > 0) reload_panels_keep_cursor();
 		}
 		else if (ev.action == ACT_SHIFT_F6) {
 			Panel *oth = (active_panel == &left_panel) ? &right_panel : &left_panel;
