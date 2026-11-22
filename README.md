@@ -8,6 +8,8 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
 
 ## Features
 
+- **Dynamic Panels & Built-in `sudo` Privilege Elevation**: Unlimited directory size via dynamic `malloc`/`realloc` panels, plus an automatic red password prompt (`Operation requires privileges elevation`) with session caching on `EACCES`/`EPERM` when saving in the editor (`F4` -> `F2`), copying/moving (`F5`/`F6`), creating folders (`F7`), deleting (`F8`/`Shift+F8`), making links (`Alt+F6`), or changing attributes (`Ctrl+A`).
+- **FAR-Style Info Panel (`Ctrl+I`)**: Displays target path, type/symlink/Git branch, unlimited recursive folder size & item count (with live `Scanning the folder` progress popup and `Esc` interrupt), permissions, owner, timestamps, and filesystem mount/free space stats.
 - **Dual-Pane Navigation & Real-Time Updates**: Instant directory browsing with `inotify` auto-refresh, custom sorting (`Ctrl+F3`..`Ctrl+F6` with left-aligned header indicator), drive/bookmark menus (`Alt+F1` / `Alt+F2`) with USB safe-unmount, and toggleable 32-color auto file colorization by extension (`Alt+F12`).
 - **File Search by Mask & Content (`Alt+F7`)**: Fast recursive search supporting multi-masks (`*.c;*.h`), case-sensitive/insensitive text search with line numbers, and instant actions (`Enter` Go to, `F3` View, `F4` Edit at matched line, `Ctrl+J` Insert path).
 - **FAR-Style Temporary Panel (`TmpPanel`)**: Virtual collector panel (`Alt+F1` / `Alt+F2` -> `0`, or `[ Panel ]` from `Alt+F7` search results) holding references to scattered files/folders across directories; add via `F5`, remove via `F8`, jump to real location via `Ctrl+PgUp`.
@@ -15,7 +17,7 @@ A fast, lightweight dual-pane terminal file manager for Linux inspired by FAR Ma
 - **Built-in Viewer & IDE-like TUI Editor**: Text/Hex file viewer (`F3`) and full-featured TUI editor (`F4` / `Shift+F4`) with syntax highlighting, `Save As` (`Shift+F2`), cursor position memory per file, line/block duplication (`Ctrl+Shift+D`), moving lines up/down (`Ctrl+Shift+Up/Down`), line/block commenting (`Ctrl+/`), smart auto-indent (`Enter`) & block indent (`Tab` / `Shift+Tab`), full-line copy/cut without selection (`Ctrl+C` / `Ctrl+X`), and FAR-style persistent keyboard macros (`Ctrl+.` to record/stop & assign any hotkey, `Ctrl+M` to view/run/delete).
 - **4 Persistent History Journals & Dynamic 12-Key F-Bar**:
   - `Alt+F8` / `Ctrl+H`: Command History (512 items with timestamp & directory; live filter, Run / Insert / Jump / Delete)
-  - `Alt+F9` / `Ctrl+G`: File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete)
+  - `Alt+F9`: File History (512 viewed/edited files with saved cursor position; Edit / View / Jump / Delete)
   - `Alt+F10` / `Ctrl+D`: Folder History (512 visited steps; live filter, Go / Other panel / Insert / Delete; plus `Alt+Backspace` / `Alt+Shift+Backspace` Back/Forward)
   - `Alt+F11` / `Ctrl+L`: Multiline Script History (Run / Edit in built-in editor / Delete)
   - Hold `Alt` / `Ctrl` / `Shift` to dynamically switch the 12-button bottom F-bar.
@@ -33,9 +35,10 @@ make
 ### CLI Options
 
 - `xc` — launch dual-pane file manager in current directory
-- `xc -e [LINE[:COL]] [FILE]` — open file directly in built-in TUI editor
-- `xc -v` — print version and build number
-- `xc -h` — show command-line help
+- `xc -e [LINE[:COL]] [FILE]` / `--edit` — open file (or `-` for `stdin`) directly in built-in TUI editor
+- `xc -v [LINE] [FILE]` / `--view` — open file (or `-` for `stdin`) directly in built-in viewer
+- `xc -V` / `--version` — print version and build number
+- `xc -h` / `--help` — show command-line help
 
 ## Key Bindings
 
@@ -63,19 +66,22 @@ make
 | `Ctrl+O` (in editor) | Toggle terminal output screen to view previous command output (like FAR) |
 | `Alt+F8` (in editor) | Go to line (or `line:col`) dialog |
 | `F5` / `F6` | Copy (or extract from archive) / Move or rename (supports relative paths) |
+| `Alt+F6` | Make Symbolic (`ln -s`) or Hard (`ln`) link (supports `sudo` elevation) |
 | `Shift+F5` / `Shift+F6` | Copy / Rename single file in-place (prefills filename only; group unchanged) |
 | `Shift+F1` / `Alt+F5` | Pack selected items to archive (`.zip`, `.tar.gz`, `.tar.xz`, `.tar.zst`, `.7z`) |
 | `F7` / `F8` / `Shift+F8` | Create directory / Move to system Trash (or delete in archive) / Permanent delete |
 | `Ctrl+A` | File attributes, permissions, owner & timestamps dialog (`chmod`, `chown`, `mtime`/`atime`, recursive) |
+| `Ctrl+G` | Apply shell command to each selected file/dir (`!.!`, `!~`, `!.`, `!:`, `!/` FAR macros, persistent last command) |
+| `Ctrl+I` | Toggle FAR-style Info Panel (recursive folder stats with `Esc` cancel, permissions, disk info) |
 | `Alt+F7` | Find files by mask & content (`Go to`, `View`, `Edit`, `Insert`, `Panel` -> `TmpPanel`) |
 | `Alt+F8` / `Ctrl+H` | Open Command History (filter, Run / Insert / Jump / Delete) |
-| `Alt+F9` / `Ctrl+G` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
+| `Alt+F9` | Open File History with saved cursor position (Edit / View / Jump / Delete) |
 | `Alt+F10` / `Ctrl+D` | Open Folder History (filter, Go / Other / Insert / Delete) |
 | `Alt+F11` / `Ctrl+L` | Open Multiline Script History (Run / Edit / Delete) |
 | `Alt+F12` | Toggle 32-color auto file colorization by extension (persistent) |
 | `Alt+Backspace` / `Alt+Shift+Backspace` | Step Back / Forward through visited folder history |
 | `Alt+[` / `Alt+]` | Insert Left / Right panel path into command line |
-| `Alt+Enter` / `Ctrl+J` | Insert filename under cursor into command line |
+| `Ctrl+Enter` / `Alt+Enter` / `Ctrl+J` | Insert filename under cursor into command line (auto-prepends `./` for executables on empty line) |
 | `Shift+Enter` | Run entered command and open output directly in `F4` editor (when cmd is non-empty) |
 | `Up` / `Down` / `Right` (in cmd) | Navigate & accept inline command history popup (`Esc` dismisses popup) |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Smart copy / cut / paste (files, selection, or whole line in editor) |
