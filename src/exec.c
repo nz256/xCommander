@@ -774,6 +774,7 @@ static void sanitize_bg_cmd(const char *cmd, char *out, size_t out_sz) {
 
 void execute_system_command(const char *cmd) {
 	if (strlen(cmd) == 0) return;
+	if (ui_try_builtin_dialog_cmd(cmd)) return;
 
 	input_restore_sane();
 	if (!terminal_mode) {
@@ -1113,6 +1114,25 @@ int apply_command_to_items(const Panel *panel) {
 	snprintf(last_cmd, sizeof(last_cmd), "%s", cmd);
 	FILE *wf = fopen(cfg_path, "w");
 	if (wf) { fprintf(wf, "%s\n", last_cmd); fclose(wf); }
+
+	const char *cp = cmd;
+	while (*cp == ' ' || *cp == '\t') cp++;
+	if ((strncmp(cp, ":dialog", 7) == 0 && (cp[7] == '\0' || cp[7] == ' ' || cp[7] == '\t')) ||
+	    (strncmp(cp, ":D", 2) == 0 && (cp[2] == '\0' || cp[2] == ' ' || cp[2] == '\t'))) {
+		for (int k = 0; k < cnt; k++) {
+			int idx = idxs[k];
+			char full[MAX_PATH * 2], dir[MAX_PATH * 2], expanded[4096];
+			panel_entry_full_path(panel, idx, full, sizeof(full));
+			snprintf(dir, sizeof(dir), "%s", full);
+			char *sl = strrchr(dir, '/');
+			if (sl) { if (sl == dir) strcpy(dir, "/"); else *sl = '\0'; }
+			else snprintf(dir, sizeof(dir), "%s", panel->current_path);
+			expand_far_macros(cmd, dir, panel->files[idx].name, full, expanded, sizeof(expanded));
+			ui_try_builtin_dialog_cmd(expanded);
+		}
+		free(idxs);
+		return 1;
+	}
 
 	input_set_mouse(0);
 	endwin();

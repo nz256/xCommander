@@ -743,8 +743,16 @@ typedef struct {
 	int view_mode;
 	int view_line;
 	int dialog_mode;
+	int dialog_confirm;
+	int dialog_form;
+	int dialog_input;
+	int dialog_menu;
+	const char *dialog_menu_items[128];
+	int dialog_menu_count;
+	const char *dialog_bg;
 	const char *dialog_arg1;
 	const char *dialog_arg2;
+	const char *dialog_arg3;
 } StartupOpts;
 
 static void print_cli_version(void) {
@@ -756,7 +764,8 @@ static void print_cli_help(const char *prog) {
 	printf("Options:\n");
 	printf("  -e[LINE[:POS]] [FILE], --edit  Open FILE (or '-' for stdin) in built-in editor\n");
 	printf("  -v[LINE] [FILE], --view        Open FILE (or '-' for stdin) in built-in viewer\n");
-	printf("  -D, --dialog [TITLE] TEXT|FILE Show info dialog with TEXT, FILE, or '-' (stdin)\n");
+	printf("  -D, --dialog [msg|confirm|input|menu|form] ...    Show TUI dialog (outputs choice/text)\n");
+	printf("      --bg COLOR                 Dialog background (name, 0..255, or #RRGGBB)\n");
 	printf("  -V, --version                  Show version and build number\n");
 	printf("  -h, --help                     Show this help message\n");
 }
@@ -786,13 +795,33 @@ static int parse_startup_args(int argc, char **argv, StartupOpts *opts) {
 			}
 			continue;
 		}
+		if (strcmp(argv[i], "--bg") == 0 && i + 1 < argc) {
+			opts->dialog_bg = argv[++i];
+			continue;
+		}
+		if (strncmp(argv[i], "--bg=", 5) == 0) {
+			opts->dialog_bg = argv[i] + 5;
+			continue;
+		}
 		if (strcmp(argv[i], "-D") == 0 || strcmp(argv[i], "--dialog") == 0) {
 			opts->dialog_mode = 1;
-			if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
-				opts->dialog_arg1 = argv[++i];
-				if (i + 1 < argc && (argv[i + 1][0] != '-' || argv[i + 1][1] == '\0')) {
-					opts->dialog_arg2 = argv[++i];
+			while (i + 1 < argc) {
+				if (strcmp(argv[i + 1], "--bg") == 0 && i + 2 < argc) { opts->dialog_bg = argv[i + 2]; i += 2; continue; }
+				if (strncmp(argv[i + 1], "--bg=", 5) == 0) { opts->dialog_bg = argv[i + 1] + 5; i++; continue; }
+				if (argv[i + 1][0] == '-' && argv[i + 1][1] != '\0') break;
+				if (!opts->dialog_arg1 && !opts->dialog_confirm && !opts->dialog_form && !opts->dialog_input && !opts->dialog_menu && (strcmp(argv[i + 1], "confirm") == 0 || strcmp(argv[i + 1], "msg") == 0 || strcmp(argv[i + 1], "form") == 0 || strcmp(argv[i + 1], "input") == 0 || strcmp(argv[i + 1], "menu") == 0)) {
+					opts->dialog_confirm = (strcmp(argv[i + 1], "confirm") == 0) ? 1 : 0;
+					opts->dialog_form = (strcmp(argv[i + 1], "form") == 0) ? 1 : 0;
+					opts->dialog_input = (strcmp(argv[i + 1], "input") == 0) ? 1 : 0;
+					opts->dialog_menu = (strcmp(argv[i + 1], "menu") == 0) ? 1 : 0;
+					i++;
+					continue;
 				}
+				if (!opts->dialog_arg1) opts->dialog_arg1 = argv[++i];
+				else if (opts->dialog_menu && opts->dialog_menu_count < 128) opts->dialog_menu_items[opts->dialog_menu_count++] = argv[++i];
+				else if (!opts->dialog_arg2) opts->dialog_arg2 = argv[++i];
+				else if (!opts->dialog_arg3 && opts->dialog_input) opts->dialog_arg3 = argv[++i];
+				else break;
 			}
 			continue;
 		}
@@ -907,19 +936,27 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	setlocale(LC_ALL, "");
-	ui_init();
+	if (opts.dialog_mode && !opts.dialog_bg) ui_init_overlay();
+	else ui_init();
 	nonl();
 	idlok(stdscr, FALSE);
 	idcok(stdscr, FALSE);
 	scrollok(stdscr, FALSE);
 	input_enable_raw();
-	if (opts.dialog_mode || opts.view_mode || opts.edit_mode) {
+	if (opts.dialog_mode) {
+		if (opts.dialog_bg) {
+			if (ui_apply_bg_color(opts.dialog_bg) != 0) {
+				bkgd(COLOR_PAIR(1));
+				refresh();
+			}
+		}
+	} else if (opts.view_mode || opts.edit_mode) {
 		bkgd(COLOR_PAIR(1));
 		refresh();
-		if (opts.view_mode || opts.edit_mode) file_history_load();
+		file_history_load();
 	}
 	if (opts.dialog_mode) {
-		const char *d_title = "Message";
+		const char *d_title = opts.dialog_confirm ? "Confirm" : "Message";
 		const char *d_src = opts.dialog_arg1 ? opts.dialog_arg1 : "";
 		if (opts.dialog_arg1 && opts.dialog_arg2) { d_title = opts.dialog_arg1; d_src = opts.dialog_arg2; }
 		char *dyn_txt = NULL;
@@ -958,12 +995,37 @@ int main(int argc, char **argv) {
 				dyn_txt[w] = '\0';
 			}
 		}
-		ui_dialog_box(d_title, dyn_txt ? dyn_txt : d_src);
+		int d_ok = 1;
+		int form_has_bg = 0;
+		char in_res[2048] = "";
+		if (opts.dialog_menu) {
+			const char *mtitle = opts.dialog_arg1 ? opts.dialog_arg1 : "Select";
+			const char *mitems[128]; int mcnt = 0;
+			if (opts.dialog_menu_count == 1 && strcmp(opts.dialog_menu_items[0], "-") == 0 && dyn_txt) {
+				char *ln = strtok(dyn_txt, "\r\n");
+				while (ln && mcnt < 128) { if (*ln) mitems[mcnt++] = ln; ln = strtok(NULL, "\r\n"); }
+			} else {
+				for (int k = 0; k < opts.dialog_menu_count && mcnt < 128; k++) mitems[mcnt++] = opts.dialog_menu_items[k];
+			}
+			d_ok = ui_dialog_menu(mtitle, mitems, mcnt, in_res, sizeof(in_res));
+		} else if (opts.dialog_input) {
+			const char *ititle = opts.dialog_arg2 ? opts.dialog_arg1 : "Input";
+			const char *iprompt = opts.dialog_arg2 ? opts.dialog_arg2 : (opts.dialog_arg1 ? opts.dialog_arg1 : "Enter value:");
+			if (opts.dialog_arg3) snprintf(in_res, sizeof(in_res), "%s", opts.dialog_arg3);
+			d_ok = ui_dialog_input(ititle, iprompt, in_res, sizeof(in_res));
+		} else if (opts.dialog_form) {
+			const char *src_f = dyn_txt ? dyn_txt : d_src;
+			if (!opts.dialog_bg && src_f && (strstr(src_f, "\nbg=") || strncmp(src_f, "bg=", 3) == 0)) form_has_bg = 1;
+			d_ok = ui_dialog_run_form(src_f, opts.dialog_bg ? 0 : 1);
+		} else {
+			d_ok = ui_dialog_show(opts.dialog_confirm, d_title, dyn_txt ? dyn_txt : d_src);
+		}
 		free(dyn_txt);
 		if (pipe_tmp[0] != '\0') unlink(pipe_tmp);
 		free(left_panel.files); free(right_panel.files);
-		input_restore_sane(); endwin(); input_restore_sane();
-		return 0;
+		input_restore_sane(); if (opts.dialog_bg || form_has_bg) endwin(); input_restore_sane();
+		if ((opts.dialog_input || opts.dialog_menu) && d_ok) { printf("%s\n", in_res); fflush(stdout); }
+		return ((opts.dialog_confirm || opts.dialog_form || opts.dialog_input || opts.dialog_menu) && !d_ok) ? 1 : 0;
 	}
 	if (opts.view_mode) {
 		const char *target_file = (opts.view_file && opts.view_file[0] != '\0') ? opts.view_file : "";
@@ -1308,6 +1370,11 @@ int main(int argc, char **argv) {
 				if (terminal_mode) { printf("\r\n"); fflush(stdout); }
 				history_add(picked_cmd);
 				history_save();
+				if (ui_try_builtin_dialog_cmd(picked_cmd)) {
+					cmdline_clear();
+					if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+					continue;
+				}
 				execute_system_command(picked_cmd);
 				last_prompt_dir[0] = '\0';
 				if (!terminal_mode) reload_panels_keep_cursor();
@@ -1418,6 +1485,11 @@ int main(int argc, char **argv) {
 			}
 			history_add(full_cmd);
 			history_save();
+			if (ui_try_builtin_dialog_cmd(full_cmd)) {
+				cmdline_clear();
+				if (!terminal_mode) { draw_screen(); sync_refresh(); } else print_term_prompt_ex(cmd_wbuf, 1);
+				continue;
+			}
 			execute_system_command(full_cmd); last_prompt_dir[0] = '\0';
 			if (!terminal_mode) reload_panels_keep_cursor();
 			cmdline_clear();

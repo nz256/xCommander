@@ -37,7 +37,13 @@ make
 - `xc` — launch dual-pane file manager in current directory
 - `xc -e [LINE[:COL]] [FILE]` / `--edit` — open file (or `-` for `stdin`) directly in built-in TUI editor
 - `xc -v [LINE] [FILE]` / `--view` — open file (or `-` for `stdin`) directly in built-in viewer
-- `xc -D` / `--dialog [TITLE] TEXT|FILE|-` — show scrollable TUI info dialog with text, file, or `stdin`
+- `xc -D` / `--dialog [--bg COLOR] <subcommand> ...` — show TUI dialogs (transparent `/dev/tty` overlay by default, or colored background via `--bg` name / `0..255` / `#RRGGBB`):
+  - `msg [TITLE] TEXT|FILE|-` — scrollable message box
+  - `confirm [TITLE] TEXT|FILE|-` — `[ Yes ]` / `[ No ]` confirmation (exits `0` on Yes, `1` on No/Esc)
+  - `input [TITLE] PROMPT [DEFAULT]` — UTF-8 input field with selection & clipboard (prints result to `stdout`, exits `0`/`1`)
+  - `menu TITLE ITEM1 ITEM2...` or `menu TITLE -` — interactive selection menu from args or `stdin` (prints choice to `stdout`)
+  - `form FILE|-` — run dialog from key-value spec (`type=msg|confirm|input|menu`, `title=`, `bg=`, `text=`, `default=`, `items=a|b|c`)
+  - Built-in `:dialog` / `:D` inside `xc` (command line, `Ctrl+O`, `F2` User Menu, `Ctrl+G`), including `$(:dialog ...)` inline substitution and `&&` chains without spawning a child process
 - `xc -V` / `--version` — print version and build number
 - `xc -h` / `--help` — show command-line help
 

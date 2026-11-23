@@ -2,6 +2,8 @@
 #include <sys/ioctl.h>
 #include "cmdline.h"
 #include <unistd.h>
+#include <locale.h>
+#include <fcntl.h>
 #include <sys/statvfs.h>
 #include <ctype.h>
 #include <time.h>
@@ -141,7 +143,12 @@ static void mvwprint_utf8(WINDOW *win, int y, int x, int max_cols, const char *s
 	}
 }
 
-void ui_init(void) {
+static int g_dialog_overlay = 0;
+
+static void ui_init_ex(int overlay) {
+	setlocale(LC_ALL, "");
+	g_dialog_overlay = overlay;
+	if (overlay) { input_enable_raw(); return; }
 	setenv("NCURSES_NO_HARD_SCROLL", "1", 1);
 	const char *term = getenv("TERM");
 	if (!term || !*term || strcmp(term, "dumb") == 0) {
@@ -264,6 +271,55 @@ void ui_init(void) {
 	ui_theme_init_default();
 	ui_load_color_state();
 	bkgd(COLOR_PAIR(1));
+}
+
+void ui_init(void) { ui_init_ex(0); }
+void ui_init_overlay(void) { ui_init_ex(1); }
+
+int ui_apply_bg_color(const char *spec) {
+	if (!spec || !spec[0]) return -1;
+	use_default_colors();
+	int bg = -1;
+	if (strcasecmp(spec, "default") == 0 || strcasecmp(spec, "none") == 0) bg = -1;
+	else if (strcasecmp(spec, "black") == 0) bg = COLOR_BLACK;
+	else if (strcasecmp(spec, "red") == 0) bg = COLOR_RED;
+	else if (strcasecmp(spec, "green") == 0) bg = COLOR_GREEN;
+	else if (strcasecmp(spec, "yellow") == 0) bg = COLOR_YELLOW;
+	else if (strcasecmp(spec, "blue") == 0) bg = COLOR_BLUE;
+	else if (strcasecmp(spec, "magenta") == 0) bg = COLOR_MAGENTA;
+	else if (strcasecmp(spec, "cyan") == 0) bg = COLOR_CYAN;
+	else if (strcasecmp(spec, "white") == 0) bg = COLOR_WHITE;
+	else if (strcasecmp(spec, "gray") == 0 || strcasecmp(spec, "grey") == 0) bg = 8;
+	else if (strcasecmp(spec, "darkblue") == 0) bg = 17;
+	else if (strcasecmp(spec, "darkgreen") == 0) bg = 22;
+	else if (strcasecmp(spec, "darkred") == 0) bg = 52;
+	else if (strcasecmp(spec, "orange") == 0) bg = 208;
+	else if (strcasecmp(spec, "purple") == 0) bg = 93;
+	else {
+		const char *p = spec;
+		if (strncasecmp(p, "color", 5) == 0) p += 5;
+		if (*p == '#') p++;
+		char *endp = NULL;
+		if (strlen(p) == 6 && strspn(p, "0123456789abcdefABCDEF") == 6 && (spec[0] == '#' || strpbrk(p, "abcdefABCDEF") != NULL)) {
+			unsigned int rgb = (unsigned int)strtoul(p, NULL, 16);
+			int r = (int)((rgb >> 16) & 0xFF), g = (int)((rgb >> 8) & 0xFF), b = (int)(rgb & 0xFF);
+			if (can_change_color() && COLORS >= 256) {
+				init_color(250, (short)(r * 1000 / 255), (short)(g * 1000 / 255), (short)(b * 1000 / 255));
+				bg = 250;
+			} else {
+				int ri = (r * 5 + 127) / 255, gi = (g * 5 + 127) / 255, bi = (b * 5 + 127) / 255;
+				bg = 16 + 36 * ri + 6 * gi + bi;
+			}
+		} else {
+			long idx = strtol(p, &endp, 10);
+			if (endp != p && *endp == '\0' && idx >= 0 && idx < COLORS) bg = (int)idx;
+			else return -1;
+		}
+	}
+	init_pair(14, COLOR_WHITE, bg);
+	bkgd(COLOR_PAIR(14));
+	refresh();
+	return 0;
 }
 
 void draw_fkey_bar(int y, int width) {
@@ -822,19 +878,37 @@ void ui_message(const char *title, const char *msg) {
 	touchwin(stdscr);
 }
 
+void ui_dialog_box_overlay(const char *title, const char *text) {
+	int prev = g_dialog_overlay;
+	g_dialog_overlay = 1;
+	(void)ui_dialog_show(0, title, text);
+	g_dialog_overlay = prev;
+}
+
 void ui_dialog_box(const char *title, const char *text) {
-	if (!title || !title[0]) title = "Message";
+	(void)ui_dialog_show(0, title, text);
+}
+
+int ui_dialog_show(int is_confirm, const char *title, const char *text) {
+	if (!title || !title[0]) title = is_confirm ? "Confirm" : "Message";
 	if (!text) text = "";
 
-	int height, width;
-	getmaxyx(stdscr, height, width);
+	int height = 24, width = 80;
+	if (g_dialog_overlay) {
+		FILE *tty_out = fopen("/dev/tty", "w");
+		if (!tty_out) tty_out = stderr;
+		struct winsize ws;
+		if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) { height = ws.ws_row; width = ws.ws_col; }
+		if (tty_out != stderr) fclose(tty_out);
+	} else {
+		getmaxyx(stdscr, height, width);
+	}
 	int max_iw = (width - 8 < 24) ? 24 : (width - 8);
 	if (max_iw > 96) max_iw = 96;
 
-	/* Разбиваем текст на строки с переносом по max_iw */
 	int cap = 64, lcnt = 0;
 	char **lines = malloc((size_t)cap * sizeof(char *));
-	if (!lines) return;
+	if (!lines) return 0;
 
 	int max_cols = 0;
 	const char *p = text;
@@ -842,7 +916,6 @@ void ui_dialog_box(const char *title, const char *text) {
 		const char *nl = strchr(p, '\n');
 		size_t raw_len = nl ? (size_t)(nl - p) : strlen(p);
 		if (raw_len > 0 && p[raw_len - 1] == '\r') raw_len--;
-
 		size_t off = 0;
 		do {
 			size_t take = raw_len - off;
@@ -851,11 +924,10 @@ void ui_dialog_box(const char *title, const char *text) {
 			if (!seg) break;
 			memcpy(seg, p + off, take);
 			seg[take] = '\0';
-			/* Подрезаем по экранным колонкам UTF-8 */
 			while (take > 0) {
 				int cols = (int)mbstowcs(NULL, seg, 0);
 				if (cols >= 0 && cols <= max_iw) { if (cols > max_cols) max_cols = cols; break; }
-				if (cols < 0) { if ((int)take <= max_iw) { if ((int)take > max_cols) max_cols = (int)take; break; } }
+				if (cols < 0 && (int)take <= max_iw) { if ((int)take > max_cols) max_cols = (int)take; break; }
 				seg[--take] = '\0';
 			}
 			if (lcnt >= cap) {
@@ -867,7 +939,6 @@ void ui_dialog_box(const char *title, const char *text) {
 			lines[lcnt++] = seg;
 			off += take;
 		} while (off < raw_len);
-
 		if (!nl) break;
 		p = nl + 1;
 		if (*p == '\0') break;
@@ -876,55 +947,744 @@ void ui_dialog_box(const char *title, const char *text) {
 	int tcols = (int)mbstowcs(NULL, title, 0);
 	if (tcols < 0) tcols = (int)strlen(title);
 	int box_w = ((max_cols > tcols) ? max_cols : tcols) + 6;
-	if (box_w < 30) box_w = 30;
+	if (box_w < (is_confirm ? 32 : 30)) box_w = is_confirm ? 32 : 30;
 	if (box_w > width - 4) box_w = width - 4;
-
-	int max_vis = height - 6;
-	if (max_vis < 1) max_vis = 1;
+	int max_vis = (height - 6 < 1) ? 1 : (height - 6);
 	int vis_lines = (lcnt < max_vis) ? lcnt : max_vis;
-	int box_h = vis_lines + 4;
-	int start_y = (height - box_h) / 2;
-	int start_x = (width - box_w) / 2;
+	int box_h = vis_lines + 3;
+	int start_y = (height - box_h) / 2, start_x = (width - box_w) / 2;
+	int top = 0, sel = 0, res = 0;
 
-	curs_set(0);
-	wnoutrefresh(stdscr);
-	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
-	wbkgd(win, g_ui_theme.win_bg);
-
-	const char *blbls[1] = { "[ Enter ]" };
-	int btn_x = (box_w - 9 < 2) ? 2 : (box_w - 9) / 2;
-	UiButtonRow btns = { blbls, 1, box_h - 2, btn_x, 0, 0 };
-	int top = 0;
-
-	while (1) {
-		draw_win_box(win);
-		mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
-		for (int r = 0; r < vis_lines; r++) {
-			mvwhline(win, 1 + r, 2, ' ', box_w - 4);
-			if (top + r < lcnt) mvwprint_utf8(win, 1 + r, 2, box_w - 4, lines[top + r]);
+	if (g_dialog_overlay) {
+		FILE *tty_out = fopen("/dev/tty", "w");
+		if (!tty_out) tty_out = stderr;
+		fprintf(tty_out, "\033[s\033[?25l\033[?1000h\033[?1006h");
+		while (1) {
+			fprintf(tty_out, "\033[?2026h\033[30;48;5;252m\033[%d;%dH┌─ %.*s ", start_y + 1, start_x + 1, box_w - 6, title);
+			int used = 4 + (tcols > box_w - 6 ? box_w - 6 : tcols);
+			for (int c = used; c < box_w - 1; c++) fputs("─", tty_out);
+			fputs("┐", tty_out);
+			for (int r = 0; r < vis_lines; r++) {
+				fprintf(tty_out, "\033[%d;%dH│ ", start_y + 2 + r, start_x + 1);
+				int pcols = 0;
+				if (top + r < lcnt) {
+					const char *ln = lines[top + r];
+					fputs(ln, tty_out);
+					pcols = (int)mbstowcs(NULL, ln, 0);
+					if (pcols < 0) pcols = (int)strlen(ln);
+				}
+				for (int sp = pcols; sp < box_w - 4; sp++) fputc(' ', tty_out);
+				fputs(" │", tty_out);
+			}
+			fprintf(tty_out, "\033[%d;%dH│", start_y + 2 + vis_lines, start_x + 1);
+			int b1_x = is_confirm ? (box_w - 16) / 2 : (box_w - 9) / 2, b2_x = b1_x + 10;
+			for (int c = 1; c < b1_x; c++) fputc(' ', tty_out);
+			if (!is_confirm) {
+				fputs("\033[30;48;5;37m{ \033[1;93mE\033[22;30mnter }\033[30;48;5;252m", tty_out);
+				for (int c = b1_x + 9; c < box_w - 1; c++) fputc(' ', tty_out);
+				if (tty_out != stderr) fclose(tty_out);
+	} else {
+				if (sel == 0) fputs("\033[30;48;5;37m[ \033[93mY\033[30mes ]\033[30;48;5;252m", stdout);
+				else fputs("[ \033[34mY\033[30mes ]", stdout);
+				fputs("   ", stdout);
+				if (sel == 1) fputs("\033[30;48;5;37m[ \033[93mN\033[30mo ]\033[30;48;5;252m", stdout);
+				else fputs("[ \033[34mN\033[30mo ]", stdout);
+				for (int c = b2_x + 6; c < box_w - 1; c++) fputc(' ', stdout);
+			}
+			fputs("│", stdout);
+			printf("\033[%d;%dH└", start_y + box_h, start_x + 1);
+			char ind[32] = "";
+			if (lcnt > vis_lines) snprintf(ind, sizeof(ind), " %d/%d ", top + vis_lines, lcnt);
+			int ilen = (int)strlen(ind);
+			for (int c = 1; c < box_w - 1 - ilen; c++) fputs("─", stdout);
+			if (ilen > 0) fputs(ind, stdout);
+			fputs("┘\033[?2026l", stdout);
+			fflush(stdout);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { top -= 3; if (top < 0) top = 0; continue; }
+			if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { top += 3; if (top + vis_lines > lcnt) top = (lcnt > vis_lines) ? (lcnt - vis_lines) : 0; continue; }
+			if (ev.action == ACT_PGUP) { top -= vis_lines; if (top < 0) top = 0; continue; }
+			if (ev.action == ACT_PGDN) { top += vis_lines; if (top + vis_lines > lcnt) top = lcnt - vis_lines; if (top < 0) top = 0; continue; }
+			if (is_confirm && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB)) { sel = 1 - sel; continue; }
+			if (!is_confirm) {
+				if (ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L' ' || ev.ch == L'e' || ev.ch == L'E'))) { res = 1; break; }
+				if (ev.action == ACT_MOUSE_LEFT) { int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x; if (wy == box_h - 2 && wx >= b1_x && wx < b1_x + 9) { res = 1; break; } }
+			} else {
+				if (ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L'n' || ev.ch == L'N'))) { res = 0; break; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'y' || ev.ch == L'Y')) { res = 1; break; }
+				if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 0) ? 1 : 0; break; }
+				if (ev.action == ACT_MOUSE_LEFT) {
+					int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+					if (wy == box_h - 2 && wx >= b1_x && wx < b1_x + 7) { res = 1; break; }
+					if (wy == box_h - 2 && wx >= b2_x && wx < b2_x + 6) { res = 0; break; }
+				}
+			}
 		}
-		if (lcnt > vis_lines) {
-			mvwprintw(win, box_h - 1, box_w - 11, " %d/%d ", top + vis_lines, lcnt);
+		printf("\033[0m");
+		for (int r = 0; r < box_h; r++) printf("\033[%d;%dH%*s", start_y + 1 + r, start_x + 1, box_w, "");
+		printf("\033[?1006l\033[?1000l\033[?25h\033[u\033[0m");
+		fflush(stdout);
+	} else {
+		curs_set(0);
+		wnoutrefresh(stdscr);
+		WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+		wbkgd(win, g_ui_theme.win_bg);
+		const char *blbls1[1] = { "[ Enter ]" };
+		const char *blbls2[2] = { "[ Yes ]", "[ No ]" };
+		int btn_x = is_confirm ? ((box_w - 16 < 2) ? 2 : (box_w - 16) / 2) : ((box_w - 9 < 2) ? 2 : (box_w - 9) / 2);
+		UiButtonRow btns = { is_confirm ? blbls2 : blbls1, is_confirm ? 2 : 1, box_h - 2, btn_x, 3, 0 };
+		while (1) {
+			btns.focus_idx = sel;
+			draw_win_box(win);
+			mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
+			for (int r = 0; r < vis_lines; r++) {
+				mvwhline(win, 1 + r, 2, ' ', box_w - 4);
+				if (top + r < lcnt) mvwprint_utf8(win, 1 + r, 2, box_w - 4, lines[top + r]);
+			}
+			if (lcnt > vis_lines) mvwprintw(win, box_h - 1, box_w - 11, " %d/%d ", top + vis_lines, lcnt);
+			ui_btns_draw(&btns, win);
+			printf("\033[?2026h"); fflush(stdout); wnoutrefresh(win); doupdate(); printf("\033[?2026l"); fflush(stdout);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { top -= 3; if (top < 0) top = 0; continue; }
+			if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { top += 3; if (top + vis_lines > lcnt) top = (lcnt > vis_lines) ? (lcnt - vis_lines) : 0; continue; }
+			if (ev.action == ACT_PGUP) { top -= vis_lines; if (top < 0) top = 0; continue; }
+			if (ev.action == ACT_PGDN) { top += vis_lines; if (top + vis_lines > lcnt) top = lcnt - vis_lines; if (top < 0) top = 0; continue; }
+			if (is_confirm && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT || ev.action == ACT_TAB)) { sel = 1 - sel; continue; }
+			if (!is_confirm) {
+				if (ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L' ' || ev.ch == L'e' || ev.ch == L'E'))) { res = 1; break; }
+				if (ev.action == ACT_MOUSE_LEFT) { int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x; if (ui_btns_hit_test(&btns, wy, wx) == 0) { res = 1; break; } }
+			} else {
+				if (ev.action == ACT_ESC || (ev.action == ACT_CHAR && (ev.ch == L'n' || ev.ch == L'N'))) { res = 0; break; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'y' || ev.ch == L'Y')) { res = 1; break; }
+				if (ev.action == ACT_ENTER || (ev.action == ACT_CHAR && ev.ch == L' ')) { res = (sel == 0) ? 1 : 0; break; }
+				if (ev.action == ACT_MOUSE_LEFT) {
+					int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+					int hit = ui_btns_hit_test(&btns, wy, wx);
+					if (hit == 0) { res = 1; break; }
+					if (hit == 1) { res = 0; break; }
+				}
+			}
 		}
-		ui_btns_draw(&btns, win);
-		printf("\033[?2026h"); fflush(stdout);
-		wnoutrefresh(win); doupdate();
-		printf("\033[?2026l"); fflush(stdout);
-
-		InputEvent ev = input_read();
-		if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (top > 0) top--; continue; }
-		if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { if (top + vis_lines < lcnt) top++; continue; }
-		if (ev.action == ACT_PGUP) { top -= vis_lines; if (top < 0) top = 0; continue; }
-		if (ev.action == ACT_PGDN) { top += vis_lines; if (top + vis_lines > lcnt) top = lcnt - vis_lines; if (top < 0) top = 0; continue; }
-		if (ev.action == ACT_MOUSE_LEFT || ev.action == ACT_ENTER || ev.action == ACT_ESC || (ev.action == ACT_CHAR && ev.ch == L' ')) break;
+		delwin(win);
+		touchwin(stdscr);
 	}
-
 	for (int i = 0; i < lcnt; i++) free(lines[i]);
 	free(lines);
-	delwin(win);
-	touchwin(stdscr);
+	return res;
 }
 
+int ui_dialog_menu(const char *title, const char **items, int count, char *out_buf, size_t out_sz) {
+	if (!items || count <= 0 || !out_buf || out_sz == 0) return 0;
+	if (!title || !title[0]) title = "Select";
+
+	int height = 24, width = 80;
+	if (g_dialog_overlay) {
+		struct winsize ws;
+		int tfd = open("/dev/tty", O_RDWR);
+		if (ioctl(tfd >= 0 ? tfd : STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) { height = ws.ws_row; width = ws.ws_col; }
+		if (tfd >= 0) close(tfd);
+	} else getmaxyx(stdscr, height, width);
+
+	int max_c = (int)mbstowcs(NULL, title, 0);
+	if (max_c < 0) max_c = (int)strlen(title);
+	for (int i = 0; i < count; i++) {
+		int c = (int)mbstowcs(NULL, items[i], 0);
+		if (c < 0) c = (int)strlen(items[i]);
+		if (c > max_c) max_c = c;
+	}
+	int box_w = max_c + 8;
+	if (box_w < 30) box_w = 30;
+	if (box_w > width - 4) box_w = width - 4;
+	int iw = box_w - 4;
+	int max_vis = (height - 5 < 1) ? 1 : (height - 5);
+	int vis = (count < max_vis) ? count : max_vis;
+	int box_h = vis + 2;
+	int start_y = (height - box_h) / 2, start_x = (width - box_w) / 2;
+	int sel = 0, top = 0, res = 0;
+
+	if (g_dialog_overlay) {
+		FILE *tty_out = fopen("/dev/tty", "w");
+		if (!tty_out) tty_out = stderr;
+		fprintf(tty_out, "\033[s\033[?25l\033[?1000h\033[?1006h");
+		while (1) {
+			if (sel < top) top = sel;
+			if (sel >= top + vis) top = sel - vis + 1;
+			fprintf(tty_out, "\033[?2026h\033[30;48;5;252m\033[%d;%dH┌─ ", start_y + 1, start_x + 1);
+			wchar_t wt[256]; size_t wn = mbstowcs(wt, title, 255);
+			int tcols = 0, max_tc = box_w - 6;
+			if (wn != (size_t)-1) {
+				for (size_t k = 0; k < wn && tcols < max_tc; k++) { char mb[8]; int l = wctomb(mb, wt[k]); if (l > 0) { fwrite(mb, 1, (size_t)l, tty_out); tcols++; } }
+			} else { tcols = (int)strlen(title); if (tcols > max_tc) tcols = max_tc; fwrite(title, 1, (size_t)tcols, tty_out); }
+			fputc(' ', tty_out);
+			for (int c = 4 + tcols; c < box_w - 1; c++) fputs("─", tty_out);
+			fputs("┐", tty_out);
+
+			for (int r = 0; r < vis; r++) {
+				int idx = top + r;
+				fprintf(tty_out, "\033[%d;%dH│ ", start_y + 2 + r, start_x + 1);
+				if (idx == sel) fputs("\033[30;48;5;37m", tty_out);
+				const char *it = items[idx];
+				int ic = (int)mbstowcs(NULL, it, 0); if (ic < 0) ic = (int)strlen(it);
+				fprintf(tty_out, " %.*s", iw * 2, it);
+				for (int sp = ic + 1; sp < iw; sp++) fputc(' ', tty_out);
+				if (idx == sel) fputs("\033[30;48;5;252m", tty_out);
+				fputs(" │", tty_out);
+			}
+
+			fprintf(tty_out, "\033[%d;%dH└", start_y + box_h, start_x + 1);
+			char ind[32] = "";
+			if (count > vis) snprintf(ind, sizeof(ind), " %d/%d ", sel + 1, count);
+			int ilen = (int)strlen(ind);
+			for (int c = 1; c < box_w - 1 - ilen; c++) fputs("─", tty_out);
+			if (ilen > 0) fputs(ind, tty_out);
+			fputs("┘\033[?2026l", tty_out);
+			fflush(tty_out);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC) { res = 0; break; }
+			if (ev.action == ACT_ENTER) { res = 1; break; }
+			if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (sel > 0) sel--; continue; }
+			if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { if (sel + 1 < count) sel++; continue; }
+			if (ev.action == ACT_HOME) { sel = 0; continue; }
+			if (ev.action == ACT_END) { sel = count - 1; continue; }
+			if (ev.action == ACT_PGUP) { sel -= vis; if (sel < 0) sel = 0; continue; }
+			if (ev.action == ACT_PGDN) { sel += vis; if (sel >= count) sel = count - 1; continue; }
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+				if (wy >= 1 && wy <= vis && wx >= 1 && wx < box_w - 1) {
+					int hit = top + (wy - 1);
+					if (hit >= 0 && hit < count) { sel = hit; res = 1; break; }
+				}
+			}
+		}
+		fprintf(tty_out, "\033[0m");
+		for (int r = 0; r < box_h; r++) fprintf(tty_out, "\033[%d;%dH%*s", start_y + 1 + r, start_x + 1, box_w, "");
+		fprintf(tty_out, "\033[?1006l\033[?1000l\033[?25h\033[u\033[0m");
+		fflush(tty_out);
+		if (tty_out != stderr) fclose(tty_out);
+	} else {
+		curs_set(0);
+		wnoutrefresh(stdscr);
+		WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+		wbkgd(win, g_ui_theme.win_bg);
+		while (1) {
+			if (sel < top) top = sel;
+			if (sel >= top + vis) top = sel - vis + 1;
+			draw_win_box(win);
+			mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
+			for (int r = 0; r < vis; r++) {
+				int idx = top + r;
+				wattrset(win, (idx == sel) ? COLOR_PAIR(2) : (int)g_ui_theme.win_bg);
+				mvwhline(win, 1 + r, 2, ' ', iw);
+				mvwprint_utf8(win, 1 + r, 3, iw - 2, items[idx]);
+			}
+			wattrset(win, g_ui_theme.win_bg);
+			if (count > vis) mvwprintw(win, box_h - 1, box_w - 11, " %d/%d ", sel + 1, count);
+			printf("\033[?2026h"); fflush(stdout); wnoutrefresh(win); doupdate(); printf("\033[?2026l"); fflush(stdout);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC) { res = 0; break; }
+			if (ev.action == ACT_ENTER) { res = 1; break; }
+			if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (sel > 0) sel--; continue; }
+			if (ev.action == ACT_DOWN || ev.action == ACT_MOUSE_WHEEL_DOWN) { if (sel + 1 < count) sel++; continue; }
+			if (ev.action == ACT_HOME) { sel = 0; continue; }
+			if (ev.action == ACT_END) { sel = count - 1; continue; }
+			if (ev.action == ACT_PGUP) { sel -= vis; if (sel < 0) sel = 0; continue; }
+			if (ev.action == ACT_PGDN) { sel += vis; if (sel >= count) sel = count - 1; continue; }
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+				if (wy >= 1 && wy <= vis && wx >= 1 && wx < box_w - 1) {
+					int hit = top + (wy - 1);
+					if (hit >= 0 && hit < count) { sel = hit; res = 1; break; }
+				}
+			}
+		}
+		delwin(win);
+		touchwin(stdscr);
+	}
+	if (res) snprintf(out_buf, out_sz, "%s", items[sel]);
+	return res;
+}
+
+static int ui_input_ex(const char *title, const char *prompt, char *buf, int max_len, int max_w);
+
+int ui_dialog_input(const char *title, const char *prompt, char *out_buf, size_t out_sz) {
+	if (!g_dialog_overlay) return ui_input_ex(title ? title : "Input", prompt ? prompt : "Enter value:", out_buf, (int)out_sz, 68);
+	if (!out_buf || out_sz == 0) return 0;
+	if (!title || !title[0]) title = "Input";
+	if (!prompt || !prompt[0]) prompt = "Enter value:";
+
+	wchar_t wbuf[1024];
+	size_t wlen = mbstowcs(wbuf, out_buf, 1023);
+	if (wlen == (size_t)-1) wlen = 0;
+	wbuf[wlen] = L'\0';
+	int cur = (int)wlen, sel_anc = (wlen > 0) ? 0 : -1, scroll = 0, focus = 0, res = 0; /* focus: 0=input, 1=OK, 2=Cancel */
+
+	int height = 24, width = 80;
+	if (g_dialog_overlay) {
+		struct winsize ws;
+		if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) { height = ws.ws_row; width = ws.ws_col; }
+	} else getmaxyx(stdscr, height, width);
+
+	int box_w = width - 8;
+	if (box_w > 68) box_w = 68;
+	if (box_w < 36) box_w = 36;
+	if (box_w > width - 2) box_w = width - 2;
+	int iw = box_w - 4;
+	int box_h = 6;
+	int start_y = (height - box_h) / 2, start_x = (width - box_w) / 2;
+
+	if (g_dialog_overlay) {
+		FILE *tty_out = fopen("/dev/tty", "w");
+		if (!tty_out) tty_out = stderr;
+		fprintf(tty_out, "\033[s\033[?25l\033[?1000h\033[?1006h");
+		while (1) {
+			if (cur < scroll) scroll = cur;
+			if (cur > scroll + iw - 1) scroll = cur - iw + 1;
+			if (scroll < 0) scroll = 0;
+			fprintf(tty_out, "\033[?2026h\033[30;48;5;252m\033[%d;%dH┌─ ", start_y + 1, start_x + 1);
+			wchar_t wt[256]; size_t wn = mbstowcs(wt, title, 255);
+			int tcols = 0, max_tc = box_w - 6;
+			if (wn != (size_t)-1) {
+				for (size_t k = 0; k < wn && tcols < max_tc; k++) { char mb[8]; int l = wctomb(mb, wt[k]); if (l > 0) { fwrite(mb, 1, (size_t)l, tty_out); tcols++; } }
+			} else { tcols = (int)strlen(title); if (tcols > max_tc) tcols = max_tc; fwrite(title, 1, (size_t)tcols, tty_out); }
+			fputc(' ', tty_out);
+			for (int c = 4 + tcols; c < box_w - 1; c++) fputs("─", tty_out);
+			fputs("┐", tty_out);
+
+			fprintf(tty_out, "\033[%d;%dH│ ", start_y + 2, start_x + 1);
+			wchar_t wp[256]; size_t wpn = mbstowcs(wp, prompt, 255);
+			int pcols = 0;
+			if (wpn != (size_t)-1) {
+				for (size_t k = 0; k < wpn && pcols < iw; k++) { char mb[8]; int l = wctomb(mb, wp[k]); if (l > 0) { fwrite(mb, 1, (size_t)l, tty_out); pcols++; } }
+			} else { pcols = (int)strlen(prompt); if (pcols > iw) pcols = iw; fwrite(prompt, 1, (size_t)pcols, tty_out); }
+			for (int sp = pcols; sp < iw; sp++) fputc(' ', tty_out);
+			fputs(" │", tty_out);
+
+			fprintf(tty_out, "\033[%d;%dH│ \033[30;48;5;37m", start_y + 3, start_x + 1);
+			int drawn = 0;
+			for (int idx = scroll; idx < (int)wlen && drawn < iw; idx++) {
+				char mb[8]; int n = wctomb(mb, wbuf[idx]);
+				if (n > 0) {
+					int s0 = (sel_anc >= 0) ? (sel_anc < cur ? sel_anc : cur) : -1;
+					int s1 = (sel_anc >= 0) ? (sel_anc > cur ? sel_anc : cur) : -1;
+					int in_sel = (focus == 0 && s0 >= 0 && idx >= s0 && idx < s1);
+					if (focus == 0 && idx == cur) fputs("\033[97;48;5;16m", tty_out);
+					else if (in_sel) fputs("\033[97;48;5;16m", tty_out);
+					fwrite(mb, 1, (size_t)n, tty_out);
+					if ((focus == 0 && idx == cur) || in_sel) fputs("\033[30;48;5;37m", tty_out);
+					drawn++;
+				}
+			}
+			if (focus == 0 && cur == (int)wlen && drawn < iw) { fputs("\033[97;48;5;16m \033[30;48;5;37m", tty_out); drawn++; }
+			for (; drawn < iw; drawn++) fputc(' ', tty_out);
+			fputs("\033[30;48;5;252m │", tty_out);
+
+			fprintf(tty_out, "\033[%d;%dH│", start_y + 4, start_x + 1);
+			int b1_x = (box_w - 19) / 2, b2_x = b1_x + 9;
+			for (int c = 1; c < b1_x; c++) fputc(' ', tty_out);
+			if (focus == 1) fputs("\033[30;48;5;37m{ \033[1;93mO\033[22;30mK }\033[30;48;5;252m", tty_out);
+			else fputs("[ \033[1;93mO\033[22;30mK ]", tty_out);
+			fputs("   ", tty_out);
+			if (focus == 2) fputs("\033[30;48;5;37m{ \033[1;93mC\033[22;30mancel }\033[30;48;5;252m", tty_out);
+			else fputs("[ \033[1;93mC\033[22;30mancel ]", tty_out);
+			for (int c = b2_x + 10; c < box_w - 1; c++) fputc(' ', tty_out);
+			fputs("│", tty_out);
+
+			fprintf(tty_out, "\033[%d;%dH└", start_y + 5, start_x + 1);
+			for (int c = 1; c < box_w - 1; c++) fputs("─", tty_out);
+			fputs("┘\033[?2026l", tty_out);
+			fflush(tty_out);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC) { res = 0; break; }
+			if (ev.action == ACT_TAB) { focus = (focus + 1) % 3; continue; }
+			if (ev.action == ACT_UP) { focus = 0; continue; }
+			if (ev.action == ACT_DOWN) { if (focus == 0) focus = 1; continue; }
+			if (ev.action == ACT_ENTER) { res = (focus == 2) ? 0 : 1; break; }
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+				if (wy == 2 && wx >= 2 && wx < box_w - 2) { focus = 0; continue; }
+				if (wy == 3 && wx >= b1_x && wx < b1_x + 6) { res = 1; break; }
+				if (wy == 3 && wx >= b2_x && wx < b2_x + 10) { res = 0; break; }
+			}
+			if (focus != 0) {
+				if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) { focus = (focus == 1) ? 2 : 1; continue; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'o' || ev.ch == L'O')) { res = 1; break; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'c' || ev.ch == L'C')) { res = 0; break; }
+				continue;
+			}
+			if (ev.action == ACT_CTRL_A || (ev.action == ACT_CHAR && ev.ch == 1)) { sel_anc = 0; cur = (int)wlen; continue; }
+			if ((ev.action == ACT_CTRL_C || ev.action == ACT_CTRL_X) && sel_anc >= 0 && sel_anc != cur) {
+				int s0 = sel_anc < cur ? sel_anc : cur, s1 = sel_anc > cur ? sel_anc : cur;
+				wchar_t tmpw[1024]; int tl = s1 - s0; if (tl > 1023) tl = 1023;
+				wmemcpy(tmpw, wbuf + s0, (size_t)tl); tmpw[tl] = L'\0';
+				char cb[4096]; size_t cn = wcstombs(cb, tmpw, sizeof(cb) - 1);
+				if (cn != (size_t)-1) { cb[cn] = '\0'; FILE *pf = popen("xclip -selection clipboard 2>/dev/null || xsel -ib 2>/dev/null || wl-copy 2>/dev/null", "w"); if (pf) { fputs(cb, pf); pclose(pf); } }
+				if (ev.action == ACT_CTRL_X) { wmemmove(wbuf + s0, wbuf + s1, wlen - (size_t)s1 + 1); wlen -= (size_t)(s1 - s0); cur = s0; sel_anc = -1; }
+				continue;
+			}
+			if (ev.action == ACT_CTRL_V) {
+				FILE *pf = popen("xclip -o -selection clipboard 2>/dev/null || xsel -ob 2>/dev/null || wl-paste -n 2>/dev/null", "r");
+				if (pf) {
+					char pb[2048] = ""; size_t pr = fread(pb, 1, sizeof(pb) - 1, pf); pb[pr] = '\0'; pclose(pf);
+					pb[strcspn(pb, "\r\n")] = '\0';
+					wchar_t pw[1024]; size_t pwl = mbstowcs(pw, pb, 1023);
+					if (pwl != (size_t)-1 && pwl > 0) {
+						if (sel_anc >= 0 && sel_anc != cur) { int s0 = sel_anc < cur ? sel_anc : cur, s1 = sel_anc > cur ? sel_anc : cur; wmemmove(wbuf + s0, wbuf + s1, wlen - (size_t)s1 + 1); wlen -= (size_t)(s1 - s0); cur = s0; sel_anc = -1; }
+						if (wlen + pwl < 1020) { wmemmove(wbuf + cur + pwl, wbuf + cur, wlen - (size_t)cur + 1); wmemcpy(wbuf + cur, pw, pwl); wlen += pwl; cur += (int)pwl; }
+					}
+				}
+				continue;
+			}
+			if (ev.action == ACT_SHIFT_LEFT) { if (sel_anc < 0) sel_anc = cur; if (cur > 0) cur--; continue; }
+			if (ev.action == ACT_SHIFT_RIGHT) { if (sel_anc < 0) sel_anc = cur; if (cur < (int)wlen) cur++; continue; }
+			if (ev.action == ACT_SHIFT_HOME) { if (sel_anc < 0) sel_anc = cur; cur = 0; continue; }
+			if (ev.action == ACT_SHIFT_END) { if (sel_anc < 0) sel_anc = cur; cur = (int)wlen; continue; }
+			if (ev.action == ACT_CTRL_LEFT) { sel_anc = -1; while (cur > 0 && wbuf[cur - 1] == L' ') cur--; while (cur > 0 && wbuf[cur - 1] != L' ') cur--; continue; }
+			if (ev.action == ACT_CTRL_RIGHT) { sel_anc = -1; while (cur < (int)wlen && wbuf[cur] != L' ') cur++; while (cur < (int)wlen && wbuf[cur] == L' ') cur++; continue; }
+			if (ev.action == ACT_LEFT) { sel_anc = -1; if (cur > 0) cur--; continue; }
+			if (ev.action == ACT_RIGHT) { sel_anc = -1; if (cur < (int)wlen) cur++; continue; }
+			if (ev.action == ACT_HOME) { sel_anc = -1; cur = 0; continue; }
+			if (ev.action == ACT_END) { sel_anc = -1; cur = (int)wlen; continue; }
+			if (ev.action == ACT_BACKSPACE) {
+				if (sel_anc >= 0 && sel_anc != cur) { int s0 = sel_anc < cur ? sel_anc : cur, s1 = sel_anc > cur ? sel_anc : cur; wmemmove(wbuf + s0, wbuf + s1, wlen - (size_t)s1 + 1); wlen -= (size_t)(s1 - s0); cur = s0; sel_anc = -1; }
+				else if (cur > 0) { memmove(&wbuf[cur - 1], &wbuf[cur], (wlen - (size_t)cur + 1) * sizeof(wchar_t)); cur--; wlen--; }
+				continue;
+			}
+			if (ev.action == ACT_DELETE) {
+				if (cur < (int)wlen) { memmove(&wbuf[cur], &wbuf[cur + 1], (wlen - (size_t)cur) * sizeof(wchar_t)); wlen--; }
+				continue;
+			}
+			if (ev.action == ACT_CHAR && ev.ch >= 32 && wlen < 1020) {
+				if (sel_anc >= 0 && sel_anc != cur) { int s0 = sel_anc < cur ? sel_anc : cur, s1 = sel_anc > cur ? sel_anc : cur; wmemmove(wbuf + s0, wbuf + s1, wlen - (size_t)s1 + 1); wlen -= (size_t)(s1 - s0); cur = s0; sel_anc = -1; }
+				memmove(&wbuf[cur + 1], &wbuf[cur], (wlen - (size_t)cur + 1) * sizeof(wchar_t));
+				wbuf[cur++] = ev.ch; wlen++;
+			}
+		}
+		fprintf(tty_out, "\033[0m");
+		for (int r = 0; r < box_h; r++) fprintf(tty_out, "\033[%d;%dH%*s", start_y + 1 + r, start_x + 1, box_w, "");
+		fprintf(tty_out, "\033[?1006l\033[?1000l\033[?25h\033[u\033[0m");
+		fflush(tty_out);
+		if (tty_out != stderr) fclose(tty_out);
+	} else {
+		curs_set(0);
+		wnoutrefresh(stdscr);
+		WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+		wbkgd(win, g_ui_theme.win_bg);
+		const char *blbls[2] = { "[ OK ]", "[ Cancel ]" };
+		int b1_x = (box_w - 19) / 2;
+		UiButtonRow btns = { blbls, 2, 3, b1_x, 3, -1 };
+		while (1) {
+			if (cur < scroll) scroll = cur;
+			if (cur > scroll + iw - 1) scroll = cur - iw + 1;
+			if (scroll < 0) scroll = 0;
+			btns.focus_idx = (focus > 0) ? (focus - 1) : -1;
+			draw_win_box(win);
+			mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
+			mvwhline(win, 1, 2, ' ', iw);
+			mvwprint_utf8(win, 1, 2, iw, prompt);
+			wattron(win, g_ui_theme.input_attr);
+			mvwhline(win, 2, 2, ' ', iw);
+			int drawn = 0;
+			for (int idx = scroll; idx < (int)wlen && drawn < iw; idx++) {
+				char mb[8]; int n = wctomb(mb, wbuf[idx]);
+				if (n > 0) {
+					mb[n] = '\0';
+					if (focus == 0 && idx == cur) wattron(win, A_REVERSE);
+					mvwaddstr(win, 2, 2 + drawn, mb);
+					if (focus == 0 && idx == cur) wattroff(win, A_REVERSE);
+					drawn++;
+				}
+			}
+			if (focus == 0 && cur == (int)wlen && drawn < iw) { wattron(win, A_REVERSE); mvwaddch(win, 2, 2 + drawn, ' '); wattroff(win, A_REVERSE); }
+			wattroff(win, g_ui_theme.input_attr);
+			ui_btns_draw(&btns, win);
+			printf("\033[?2026h"); fflush(stdout); wnoutrefresh(win); doupdate(); printf("\033[?2026l"); fflush(stdout);
+			InputEvent ev = input_read();
+			if (ev.action == ACT_ESC) { res = 0; break; }
+			if (ev.action == ACT_TAB) { focus = (focus + 1) % 3; continue; }
+			if (ev.action == ACT_UP) { focus = 0; continue; }
+			if (ev.action == ACT_DOWN) { if (focus == 0) focus = 1; continue; }
+			if (ev.action == ACT_ENTER) { res = (focus == 2) ? 0 : 1; break; }
+			if (ev.action == ACT_MOUSE_LEFT) {
+				int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+				if (wy == 2 && wx >= 2 && wx < box_w - 2) { focus = 0; continue; }
+				int hit = ui_btns_hit_test(&btns, wy, wx);
+				if (hit == 0) { res = 1; break; }
+				if (hit == 1) { res = 0; break; }
+			}
+			if (focus != 0) {
+				if (ev.action == ACT_LEFT || ev.action == ACT_RIGHT) { focus = (focus == 1) ? 2 : 1; continue; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'o' || ev.ch == L'O')) { res = 1; break; }
+				if (ev.action == ACT_CHAR && (ev.ch == L'c' || ev.ch == L'C')) { res = 0; break; }
+				continue;
+			}
+			if (ev.action == ACT_LEFT) { if (cur > 0) cur--; continue; }
+			if (ev.action == ACT_RIGHT) { if (cur < (int)wlen) cur++; continue; }
+			if (ev.action == ACT_HOME) { cur = 0; continue; }
+			if (ev.action == ACT_END) { cur = (int)wlen; continue; }
+			if (ev.action == ACT_BACKSPACE) { if (cur > 0) { memmove(&wbuf[cur - 1], &wbuf[cur], (wlen - (size_t)cur + 1) * sizeof(wchar_t)); cur--; wlen--; } continue; }
+			if (ev.action == ACT_DELETE) { if (cur < (int)wlen) { memmove(&wbuf[cur], &wbuf[cur + 1], (wlen - (size_t)cur) * sizeof(wchar_t)); wlen--; } continue; }
+			if (ev.action == ACT_CHAR && ev.ch >= 32 && wlen < 1020) { memmove(&wbuf[cur + 1], &wbuf[cur], (wlen - (size_t)cur + 1) * sizeof(wchar_t)); wbuf[cur++] = ev.ch; wlen++; }
+		}
+		delwin(win);
+		touchwin(stdscr);
+	}
+	if (res) {
+		wbuf[wlen] = L'\0';
+		size_t n = wcstombs(out_buf, wbuf, out_sz - 1);
+		if (n == (size_t)-1) out_buf[0] = '\0';
+		else out_buf[n] = '\0';
+	}
+	return res;
+}
+
+int ui_dialog_run_form(const char *spec_text, int allow_bg) {
+	int mode = 0; /* 0=msg, 1=confirm, 2=input, 3=menu */
+	char title[256] = "", bg[64] = "", text[8192] = "", def_val[2048] = "", items_raw[4096] = "";
+	size_t tlen = 0;
+	const char *p = spec_text ? spec_text : "";
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		size_t len = nl ? (size_t)(nl - p) : strlen(p);
+		while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == ' ' || p[len - 1] == '\t')) len--;
+		size_t s = 0;
+		while (s < len && (p[s] == ' ' || p[s] == '\t')) s++;
+		if (s < len && p[s] != '#' && p[s] != ';') {
+			const char *eq = memchr(p + s, '=', len - s);
+			if (eq) {
+				size_t klen = (size_t)(eq - (p + s));
+				while (klen > 0 && (p[s + klen - 1] == ' ' || p[s + klen - 1] == '\t')) klen--;
+				const char *v = eq + 1;
+				size_t vlen = (size_t)((p + len) - v);
+				while (vlen > 0 && (*v == ' ' || *v == '\t')) { v++; vlen--; }
+				if (vlen >= 2 && ((*v == '"' && v[vlen - 1] == '"') || (*v == '\'' && v[vlen - 1] == '\''))) { v++; vlen -= 2; }
+				if (klen == 4 && strncasecmp(p + s, "type", 4) == 0) {
+					if (vlen == 7 && strncasecmp(v, "confirm", 7) == 0) mode = 1;
+					else if (vlen == 5 && strncasecmp(v, "input", 5) == 0) mode = 2;
+					else if (vlen == 4 && strncasecmp(v, "menu", 4) == 0) mode = 3;
+				} else if (klen == 7 && strncasecmp(p + s, "default", 7) == 0) { size_t cp = (vlen < sizeof(def_val) - 1) ? vlen : sizeof(def_val) - 1; memcpy(def_val, v, cp); def_val[cp] = '\0'; }
+				else if (klen == 5 && strncasecmp(p + s, "items", 5) == 0) { size_t cp = (vlen < sizeof(items_raw) - 1) ? vlen : sizeof(items_raw) - 1; memcpy(items_raw, v, cp); items_raw[cp] = '\0'; }
+				else if (klen == 5 && strncasecmp(p + s, "title", 5) == 0) { size_t cp = (vlen < sizeof(title) - 1) ? vlen : sizeof(title) - 1; memcpy(title, v, cp); title[cp] = '\0'; }
+				else if (klen == 2 && strncasecmp(p + s, "bg", 2) == 0) { size_t cp = (vlen < sizeof(bg) - 1) ? vlen : sizeof(bg) - 1; memcpy(bg, v, cp); bg[cp] = '\0'; }
+				else if (klen == 4 && strncasecmp(p + s, "text", 4) == 0) {
+					for (size_t k = 0; k < vlen && tlen + 2 < sizeof(text); k++) {
+						if (v[k] == '\\' && k + 1 < vlen && v[k + 1] == 'n') { text[tlen++] = '\n'; k++; }
+						else text[tlen++] = v[k];
+					}
+					text[tlen] = '\0';
+				}
+			}
+		}
+		if (!nl) break;
+		p = nl + 1;
+	}
+	int has_bg = (allow_bg && bg[0] != '\0');
+	if (has_bg) {
+		ui_init(); nonl(); idlok(stdscr, FALSE); idcok(stdscr, FALSE); scrollok(stdscr, FALSE); input_enable_raw();
+		if (ui_apply_bg_color(bg) != 0) { bkgd(COLOR_PAIR(1)); refresh(); }
+	}
+	int r = 0;
+	if (mode == 2) {
+		r = ui_dialog_input(title[0] ? title : NULL, text, def_val, sizeof(def_val));
+		if (r && allow_bg) { printf("%s\n", def_val); fflush(stdout); }
+	} else if (mode == 3) {
+		const char *arr[128]; int icnt = 0; char *tok = strtok(items_raw, "|");
+		while (tok && icnt < 128) { arr[icnt++] = tok; tok = strtok(NULL, "|"); }
+		char out_m[2048] = "";
+		r = ui_dialog_menu(title[0] ? title : NULL, arr, icnt, out_m, sizeof(out_m));
+		if (r && allow_bg) { printf("%s\n", out_m); fflush(stdout); }
+	} else {
+		r = ui_dialog_show(mode == 1, title[0] ? title : NULL, text);
+	}
+	if (has_bg) { input_restore_sane(); endwin(); input_restore_sane(); }
+	return r;
+}
+
+static int ui_exec_single_dialog(const char *cmd_part, char *out_val, size_t out_sz) {
+	if (out_val && out_sz > 0) out_val[0] = '\0';
+	const char *p = cmd_part;
+	while (*p == ' ' || *p == '\t') p++;
+	if (strncmp(p, ":dialog", 7) == 0 && (p[7] == '\0' || p[7] == ' ' || p[7] == '\t')) p += 7;
+	else if (strncmp(p, ":D", 2) == 0 && (p[2] == '\0' || p[2] == ' ' || p[2] == '\t')) p += 2;
+	else return -1;
+
+	char args[64][1024];
+	int argc_d = 0;
+	while (*p && argc_d < 64) {
+		while (*p == ' ' || *p == '\t') p++;
+		if (!*p) break;
+		char q = 0;
+		if (*p == '"' || *p == '\'') q = *p++;
+		size_t w = 0;
+		while (*p) {
+			if (q) { if (*p == q) { p++; break; } }
+			else if (*p == ' ' || *p == '\t') break;
+			if (*p == '\\' && p[1] == 'n') { if (w + 1 < sizeof(args[0])) args[argc_d][w++] = '\n'; p += 2; continue; }
+			if (*p == '\\' && (p[1] == '"' || p[1] == '\'' || p[1] == '\\')) p++;
+			if (w + 1 < sizeof(args[0])) args[argc_d][w++] = *p;
+			p++;
+		}
+		args[argc_d][w] = '\0';
+		argc_d++;
+	}
+
+	int mode = 0, off_a = 0;
+	if (argc_d > 0) {
+		if (strcmp(args[0], "msg") == 0) { mode = 0; off_a = 1; }
+		else if (strcmp(args[0], "confirm") == 0) { mode = 1; off_a = 1; }
+		else if (strcmp(args[0], "input") == 0) { mode = 2; off_a = 1; }
+		else if (strcmp(args[0], "menu") == 0) { mode = 3; off_a = 1; }
+		else if (strcmp(args[0], "form") == 0) { mode = 4; off_a = 1; }
+	}
+	int rem = argc_d - off_a;
+	int prev_ov = g_dialog_overlay;
+	if (terminal_mode) g_dialog_overlay = 1;
+	int ok = 1;
+
+	if (mode == 2) {
+		const char *ititle = (rem >= 2) ? args[off_a] : "Input";
+		const char *iprompt = (rem >= 2) ? args[off_a + 1] : (rem == 1 ? args[off_a] : "Enter value:");
+		char buf[2048] = "";
+		if (rem >= 3) snprintf(buf, sizeof(buf), "%s", args[off_a + 2]);
+		ok = ui_dialog_input(ititle, iprompt, buf, sizeof(buf));
+		if (ok) { setenv("XC_DIALOG_OUT", buf, 1); if (out_val && out_sz > 0) snprintf(out_val, out_sz, "%s", buf); }
+	} else if (mode == 3) {
+		const char *mtitle = (rem >= 1) ? args[off_a] : "Select";
+		const char *mitems[64]; int mcnt = 0;
+		for (int k = 1; k < rem && mcnt < 64; k++) mitems[mcnt++] = args[off_a + k];
+		char out_m[1024] = "";
+		ok = (mcnt > 0) ? ui_dialog_menu(mtitle, mitems, mcnt, out_m, sizeof(out_m)) : 0;
+		if (ok) { setenv("XC_DIALOG_OUT", out_m, 1); if (out_val && out_sz > 0) snprintf(out_val, out_sz, "%s", out_m); }
+	} else {
+		const char *title = (rem >= 2) ? args[off_a] : (mode == 1 ? "Confirm" : "Message");
+		const char *src = (rem >= 2) ? args[off_a + 1] : (rem == 1 ? args[off_a] : "");
+		char *dyn_txt = NULL;
+		if (src[0] != '\0') {
+			char fpath[MAX_PATH * 2];
+			if (src[0] != '/' && active_panel && active_panel->current_path[0] != '\0')
+				snprintf(fpath, sizeof(fpath), "%s/%s", active_panel->current_path, src);
+			else snprintf(fpath, sizeof(fpath), "%s", src);
+			struct stat st;
+			if (stat(fpath, &st) == 0 && S_ISREG(st.st_mode)) {
+				if (rem == 1) { const char *bn = strrchr(fpath, '/'); title = (bn && bn[1]) ? (bn + 1) : fpath; }
+				dyn_txt = calloc(1, 1);
+				FILE *fp = fopen(fpath, "rb");
+				if (fp && st.st_size > 0 && st.st_size < 1024 * 1024) {
+					char *nb = realloc(dyn_txt, (size_t)st.st_size + 1);
+					if (nb) { dyn_txt = nb; size_t rd = fread(dyn_txt, 1, (size_t)st.st_size, fp); dyn_txt[rd] = '\0'; }
+				}
+				if (fp) fclose(fp);
+			}
+		}
+		if (mode == 4) ok = ui_dialog_run_form(dyn_txt ? dyn_txt : src, 0);
+		else ok = ui_dialog_show(mode == 1, title, dyn_txt ? dyn_txt : src);
+		free(dyn_txt);
+	}
+	g_dialog_overlay = prev_ov;
+	return ok ? 1 : 0;
+}
+
+int ui_try_builtin_dialog_cmd(const char *raw_cmd) {
+	if (!raw_cmd) return 0;
+	/* Шаг A: развернуть все подстановки $(:dialog ...) и $(:D ...) в строке */
+	char buf[MAX_CMD * 2];
+	snprintf(buf, sizeof(buf), "%s", raw_cmd);
+	while (1) {
+		char *sub = strstr(buf, "$(:dialog");
+		if (!sub) sub = strstr(buf, "$(:D");
+		if (!sub) break;
+		const char *after = sub + (strncmp(sub, "$(:dialog", 9) == 0 ? 9 : 4);
+		if (*after != ' ' && *after != '\t' && *after != ')') break;
+		char q = 0; char *endp = NULL;
+		for (char *c = sub + 2; *c; c++) {
+			if (q) { if (*c == '\\' && c[1]) { c++; continue; } if (*c == q) q = 0; }
+			else { if (*c == '"' || *c == '\'') q = *c; else if (*c == ')') { endp = c; break; } }
+		}
+		if (!endp) break;
+		*endp = '\0';
+		char val[2048] = "";
+		int ok = ui_exec_single_dialog(sub + 2, val, sizeof(val));
+		if (!ok) return 1; /* Пользователь нажал Esc/Cancel — прерываем команду */
+		char tmp[MAX_CMD * 2];
+		*sub = '\0';
+		snprintf(tmp, sizeof(tmp), "%s%s%s", buf, val, endp + 1);
+		snprintf(buf, sizeof(buf), "%s", tmp);
+	}
+
+	/* Шаг B: проверить наличие :dialog или :D вне кавычек в строке */
+	int has_dlg = 0; char q0 = 0;
+	for (const char *c = buf; *c; c++) {
+		if (q0) { if (*c == '\\' && c[1]) { c++; continue; } if (*c == q0) q0 = 0; continue; }
+		if (*c == '"' || *c == '\'') { q0 = *c; continue; }
+		if ((c == buf || c[-1] == ' ' || c[-1] == '\t' || c[-1] == '&' || c[-1] == ';') &&
+		    ((strncmp(c, ":dialog", 7) == 0 && (c[7] == '\0' || c[7] == ' ' || c[7] == '\t')) ||
+		     (strncmp(c, ":D", 2) == 0 && (c[2] == '\0' || c[2] == ' ' || c[2] == '\t')))) { has_dlg = 1; break; }
+	}
+	if (!has_dlg) {
+		if (strcmp(buf, raw_cmd) != 0) { execute_system_command(buf); return 1; }
+		return 0;
+	}
+
+	/* Выполняем цепочку команд через &&, сохраняя присваивания VAR=val для последующих :dialog */
+	char chain[MAX_CMD * 2];
+	snprintf(chain, sizeof(chain), "%s", buf);
+	char *cur = chain;
+	while (cur && *cur) {
+		char q = 0; char *amp = NULL;
+		for (char *c = cur; *c; c++) {
+			if (q) { if (*c == '\\' && c[1]) { c++; continue; } if (*c == q) q = 0; }
+			else { if (*c == '"' || *c == '\'') q = *c; else if (*c == '&' && c[1] == '&') { amp = c; break; } }
+		}
+		if (amp) *amp = '\0';
+		while (*cur == ' ' || *cur == '\t') cur++;
+		char *end_c = cur + strlen(cur);
+		while (end_c > cur && (end_c[-1] == ' ' || end_c[-1] == '\t')) *(--end_c) = '\0';
+
+		/* Подставляем $VAR и ${VAR} из переменных окружения (включая присвоенные в этой же цепочке) */
+		char exp_seg[MAX_CMD * 2];
+		size_t ew = 0;
+		for (const char *s1 = cur; *s1 && ew + 2 < sizeof(exp_seg); ) {
+			if (*s1 == '$') {
+				const char *vn = s1 + 1; int br = 0;
+				if (*vn == '{') { br = 1; vn++; }
+				char vname[128]; size_t vl = 0;
+				while ((isalnum((unsigned char)*vn) || *vn == '_') && vl + 1 < sizeof(vname)) vname[vl++] = *vn++;
+				vname[vl] = '\0';
+				if (vl > 0 && (!br || *vn == '}')) {
+					if (br) vn++;
+					const char *vv = getenv(vname);
+					if (vv) { size_t vvl = strlen(vv); if (ew + vvl < sizeof(exp_seg)) { memcpy(exp_seg + ew, vv, vvl); ew += vvl; } }
+					s1 = vn; continue;
+				}
+			}
+			exp_seg[ew++] = *s1++;
+		}
+		exp_seg[ew] = '\0';
+
+		/* Если сегмент вида VAR=VALUE без пробелов до '=' — сохраняем в окружение */
+		char *eq = strchr(exp_seg, '=');
+		int is_assign = 0;
+		if (eq && eq > exp_seg) {
+			is_assign = 1;
+			for (char *k = exp_seg; k < eq; k++) if (!isalnum((unsigned char)*k) && *k != '_') { is_assign = 0; break; }
+			if (is_assign) {
+				*eq = '\0';
+				char *valp = eq + 1;
+				size_t vlen = strlen(valp);
+				if (vlen >= 2 && ((valp[0] == '"' && valp[vlen - 1] == '"') || (valp[0] == '\'' && valp[vlen - 1] == '\''))) { valp[vlen - 1] = '\0'; valp++; }
+				setenv(exp_seg, valp, 1);
+			}
+		}
+		if (!is_assign) {
+			int r = ui_exec_single_dialog(exp_seg, NULL, 0);
+			if (r == -1) {
+				if (amp) { *amp = '&'; execute_system_command(cur); break; }
+				execute_system_command(exp_seg);
+			} else if (r == 0) break;
+		}
+		cur = amp ? (amp + 2) : NULL;
+	}
+	return 1;
+}
 
 static int ui_input_ex(const char *title, const char *prompt, char *buf, int max_len, int max_w) {
 	int height, width;
@@ -1237,7 +1997,8 @@ void ui_help(void) {
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
 		"  Ctrl+O             Toggle terminal mode (native mouse scroll/select)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
-		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [TITLE] TEXT|FILE|- | -V | -h",
+		"  Built-in :dialog   :dialog / :D [msg|confirm|input|menu|form] (also $(:dialog ...))",
+		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [--bg C] msg|confirm|input|menu|form",
 		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"
 	};
 #ifndef XC_BUILD
@@ -1292,6 +2053,7 @@ void ui_editor_help(void) {
 		"  Ctrl+O             Toggle terminal output screen (like FAR)",
 		"  Hold Ctrl/Shift    Dynamic 12-key F1..F12 bar highlights active keys",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
+		"  CLI / Dialogs      xc -e [LINE[:COL]] [FILE|-]; .dialog keys: type/title/bg/text/default/items",
 		"  F1                 Open this Editor Help",
 		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"
 	};
@@ -3355,7 +4117,7 @@ void print_term_prompt_ex(const wchar_t *wcmd, int with_header) {
 
 	struct winsize ws;
 	int term_cols = 80;
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+	if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
 		term_cols = ws.ws_col;
 	}
 

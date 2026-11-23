@@ -17,6 +17,10 @@ int ui_cmd_history(CmdHistoryEntry *hist, int *hist_count, char *out_cmd, size_t
 int ui_dir_history(DirHistoryEntry *hist, int *hist_count, char *out_dir, size_t dir_size);
 int ui_file_history(FileHistoryEntry *hist, int *hist_count, char *out_path, size_t path_size, int *out_line, int *out_col);
 void ui_message(const char *title, const char *msg);
+int ui_dialog_show(int is_confirm, const char *title, const char *text);
+int ui_dialog_run_form(const char *spec_text, int allow_bg);
+int ui_dialog_input(const char *title, const char *prompt, char *out_buf, size_t out_sz);
+int ui_dialog_menu(const char *title, const char **items, int count, char *out_buf, size_t out_sz);
 void ui_dialog_box(const char *title, const char *text);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
 int ui_input_narrow(const char *title, const char *prompt, char *buf, int max_len);
@@ -42,6 +46,12 @@ extern int cmd_suggest_dismissed;
 extern int cmd_suggest_y, cmd_suggest_x, cmd_suggest_w, cmd_suggest_h;
 void cmd_suggest_reset(void);
 
+void ui_init_overlay(void);
+int ui_apply_bg_color(const char *spec);
+int ui_dialog_show(int is_confirm, const char *title, const char *text);
+void ui_dialog_box(const char *title, const char *text);
+void ui_dialog_box_overlay(const char *title, const char *text);
+int ui_try_builtin_dialog_cmd(const char *raw_cmd);
 #endif
 
 extern int g_auto_colorize;

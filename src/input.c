@@ -46,14 +46,18 @@ void input_enable_raw(void) {
 	}
 	g_mod_ctrl = 0; g_mod_alt = 0; g_mod_shift = 0;
 	const char *on = "\033[>27u\033[?1l\033>\033[?1000;1006h\033[?1004h";
-	ssize_t w = write(STDOUT_FILENO, on, strlen(on));
+	int tfd = open("/dev/tty", O_WRONLY);
+	ssize_t w = write(tfd >= 0 ? tfd : STDOUT_FILENO, on, strlen(on));
+	if (tfd >= 0) close(tfd);
 	(void)w;
 }
 
 void input_restore_sane(void) {
 	fflush(stdout);
 	const char *off = "\033[?1004l\033[?1000;1006l\033[?1l\033>\033[<99u\033[>4;0m";
-	ssize_t w = write(STDOUT_FILENO, off, strlen(off));
+	int tfd = open("/dev/tty", O_WRONLY);
+	ssize_t w = write(tfd >= 0 ? tfd : STDOUT_FILENO, off, strlen(off));
+	if (tfd >= 0) close(tfd);
 	(void)w;
 	tcdrain(STDOUT_FILENO);
 	usleep(120000);
