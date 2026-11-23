@@ -1679,9 +1679,15 @@ int ui_multiline_paste(const char *text) {
 			int len = nl ? (int)(nl - p) : (int)strlen(p);
 			if (len > 0 && p[len - 1] == '\r') len--;
 			char line[256];
-			if (len >= (int)sizeof(line)) len = (int)sizeof(line) - 1;
-			memcpy(line, p, (size_t)len);
-			line[len] = '\0';
+			int out_i = 0;
+			for (int k = 0; k < len && out_i < (int)sizeof(line) - 5; k++) {
+				if (p[k] == '\t') {
+					for (int sp = 0; sp < 4; sp++) line[out_i++] = ' ';
+				} else if ((unsigned char)p[k] >= 32) {
+					line[out_i++] = p[k];
+				}
+			}
+			line[out_i] = '\0';
 			mvwprint_utf8(win, 1 + row, 2, box_w - 4, line);
 			if (!nl) break;
 			p = nl + 1;

@@ -37,6 +37,7 @@ make
 - `xc` — launch dual-pane file manager in current directory
 - `xc -e [LINE[:COL]] [FILE]` / `--edit` — open file (or `-` for `stdin`) directly in built-in TUI editor
 - `xc -v [LINE] [FILE]` / `--view` — open file (or `-` for `stdin`) directly in built-in viewer
+- `xc -D` / `--dialog [TITLE] TEXT|FILE|-` — show scrollable TUI info dialog with text, file, or `stdin`
 - `xc -V` / `--version` — print version and build number
 - `xc -h` / `--help` — show command-line help
 
