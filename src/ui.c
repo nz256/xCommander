@@ -799,6 +799,7 @@ void ui_message(const char *title, const char *msg) {
 	curs_set(0);
 	wnoutrefresh(stdscr);
 	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	idlok(win, FALSE); idcok(win, FALSE);
 	wbkgd(win, g_ui_theme.win_bg);
 	draw_win_box(win);
 
@@ -896,17 +897,19 @@ void ui_dialog_box(const char *title, const char *text) {
 	int top = 0;
 
 	while (1) {
-		werase(win);
 		draw_win_box(win);
 		mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
-		for (int r = 0; r < vis_lines && top + r < lcnt; r++) {
-			mvwprint_utf8(win, 1 + r, 2, box_w - 4, lines[top + r]);
+		for (int r = 0; r < vis_lines; r++) {
+			mvwhline(win, 1 + r, 2, ' ', box_w - 4);
+			if (top + r < lcnt) mvwprint_utf8(win, 1 + r, 2, box_w - 4, lines[top + r]);
 		}
 		if (lcnt > vis_lines) {
 			mvwprintw(win, box_h - 1, box_w - 11, " %d/%d ", top + vis_lines, lcnt);
 		}
 		ui_btns_draw(&btns, win);
-		wrefresh(win);
+		printf("\033[?2026h"); fflush(stdout);
+		wnoutrefresh(win); doupdate();
+		printf("\033[?2026l"); fflush(stdout);
 
 		InputEvent ev = input_read();
 		if (ev.action == ACT_UP || ev.action == ACT_MOUSE_WHEEL_UP) { if (top > 0) top--; continue; }
@@ -1234,7 +1237,7 @@ void ui_help(void) {
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
 		"  Ctrl+O             Toggle terminal mode (native mouse scroll/select)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
-		"  CLI Options        xc -e[LINE[:POS]] [FILE|-] | -v[LINE] [FILE|-] | -V | -h",
+		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [TITLE] TEXT|FILE|- | -V | -h",
 		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"
 	};
 #ifndef XC_BUILD

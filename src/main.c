@@ -912,48 +912,12 @@ int main(int argc, char **argv) {
 	idlok(stdscr, FALSE);
 	idcok(stdscr, FALSE);
 	scrollok(stdscr, FALSE);
-	
-	
-        history_load();
-	dir_history_load();
-	file_history_load();
-
-	char cwd[MAX_PATH];
-	if (getcwd(cwd, sizeof(cwd)) == NULL) strcpy(cwd, ".");
-	char saved_l[MAX_PATH] = {0}, saved_r[MAX_PATH] = {0};
-	int act_right = 0;
-	int has_state = state_load(saved_l, sizeof(saved_l), saved_r, sizeof(saved_r), &act_right);
-
-	if (opts.left_dir && opts.left_dir[0] != '\0') {
-		snprintf(left_panel.current_path, MAX_PATH, "%s", opts.left_dir);
-		if (opts.right_dir && opts.right_dir[0] != '\0') snprintf(right_panel.current_path, MAX_PATH, "%s", opts.right_dir);
-		else if (has_state && access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
-		else strcpy(right_panel.current_path, cwd);
-		act_right = 0;
-	} else if (has_state) {
-		if (access(saved_l, R_OK | X_OK) == 0) snprintf(left_panel.current_path, MAX_PATH, "%s", saved_l);
-		else strcpy(left_panel.current_path, cwd);
-		if (access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
-		else strcpy(right_panel.current_path, cwd);
-	} else {
-		strcpy(left_panel.current_path, cwd);
-		strcpy(right_panel.current_path, cwd);
-	}
-
-	left_panel.parent_name[0] = '\0';
-	right_panel.parent_name[0] = '\0';
-	left_panel.watch_fd = -1;
-	right_panel.watch_fd = -1;
-
-	load_directory(&left_panel);
-	load_directory(&right_panel);
-	active_panel = act_right ? &right_panel : &left_panel;
-
-	bkgd(COLOR_PAIR(1));
-	draw_screen();
-	refresh();
 	input_enable_raw();
-
+	if (opts.dialog_mode || opts.view_mode || opts.edit_mode) {
+		bkgd(COLOR_PAIR(1));
+		refresh();
+		if (opts.view_mode || opts.edit_mode) file_history_load();
+	}
 	if (opts.dialog_mode) {
 		const char *d_title = "Message";
 		const char *d_src = opts.dialog_arg1 ? opts.dialog_arg1 : "";
@@ -1022,6 +986,45 @@ int main(int argc, char **argv) {
 		input_restore_sane(); endwin(); input_restore_sane();
 		return 0;
 	}
+
+        history_load();
+	dir_history_load();
+	file_history_load();
+
+	char cwd[MAX_PATH];
+	if (getcwd(cwd, sizeof(cwd)) == NULL) strcpy(cwd, ".");
+	char saved_l[MAX_PATH] = {0}, saved_r[MAX_PATH] = {0};
+	int act_right = 0;
+	int has_state = state_load(saved_l, sizeof(saved_l), saved_r, sizeof(saved_r), &act_right);
+
+	if (opts.left_dir && opts.left_dir[0] != '\0') {
+		snprintf(left_panel.current_path, MAX_PATH, "%s", opts.left_dir);
+		if (opts.right_dir && opts.right_dir[0] != '\0') snprintf(right_panel.current_path, MAX_PATH, "%s", opts.right_dir);
+		else if (has_state && access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
+		else strcpy(right_panel.current_path, cwd);
+		act_right = 0;
+	} else if (has_state) {
+		if (access(saved_l, R_OK | X_OK) == 0) snprintf(left_panel.current_path, MAX_PATH, "%s", saved_l);
+		else strcpy(left_panel.current_path, cwd);
+		if (access(saved_r, R_OK | X_OK) == 0) snprintf(right_panel.current_path, MAX_PATH, "%s", saved_r);
+		else strcpy(right_panel.current_path, cwd);
+	} else {
+		strcpy(left_panel.current_path, cwd);
+		strcpy(right_panel.current_path, cwd);
+	}
+
+	left_panel.parent_name[0] = '\0';
+	right_panel.parent_name[0] = '\0';
+	left_panel.watch_fd = -1;
+	right_panel.watch_fd = -1;
+
+	load_directory(&left_panel);
+	load_directory(&right_panel);
+	active_panel = act_right ? &right_panel : &left_panel;
+
+	bkgd(COLOR_PAIR(1));
+	draw_screen();
+	refresh();
 
 	cmdline_init();
 	static char last_prompt_dir[MAX_PATH] = "";
