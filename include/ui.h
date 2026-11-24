@@ -23,6 +23,8 @@ int ui_dialog_input(const char *title, const char *prompt, char *out_buf, size_t
 int ui_dialog_menu(const char *title, const char **items, int count, char *out_buf, size_t out_sz);
 void ui_dialog_box(const char *title, const char *text);
 int ui_input(const char *title, const char *prompt, char *buf, int max_len);
+int ui_input_path(const char *title, const char *prompt, char *buf, int max_len);
+int ui_input_newfile(const char *title, const char *prompt, char *buf, int max_len);
 int ui_input_narrow(const char *title, const char *prompt, char *buf, int max_len);
 int ui_search_dialog(char *search_buf, int s_max, int *case_sens, int *use_regex);
 int ui_replace_dialog(char *search_buf, int s_max, char *replace_buf, int r_max, int *case_sens, int *use_regex);

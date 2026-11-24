@@ -235,7 +235,7 @@ int create_and_edit_file(Panel *panel) {
 	if (!panel) return 0;
 
 	char filename[MAX_FILENAME] = "";
-	if (!ui_input("Create File (Shift+F4)", "Enter new file name:", filename, sizeof(filename))) {
+	if (!ui_input_newfile("Create File (Shift+F4)", "Enter new file name:", filename, sizeof(filename))) {
 		return 0;
 	}
 	if (strlen(filename) == 0) return 0;
@@ -300,7 +300,7 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		char prompt[MAX_FILENAME + 64];
 		snprintf(prompt, sizeof(prompt), "Copy \"%s\" to:", item->name);
 
-		if (!ui_input(inplace ? "Copy (Shift+F5)" : "Copy (F5)", prompt, dest_input, sizeof(dest_input))) return 0;
+		if (!ui_input_path(inplace ? "Copy (Shift+F5)" : "Copy (F5)", prompt, dest_input, sizeof(dest_input))) return 0;
 		if (strlen(dest_input) == 0) return 0;
 
 		char src_full[MAX_PATH * 2];
@@ -348,7 +348,7 @@ static int copy_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 	char prompt[64];
 	snprintf(prompt, sizeof(prompt), "Copy selected (%d items) to:", marked);
 
-	if (!ui_input("Copy Group (F5)", prompt, dest_dir, sizeof(dest_dir))) return 0;
+	if (!ui_input_path("Copy Group (F5)", prompt, dest_dir, sizeof(dest_dir))) return 0;
 	if (strlen(dest_dir) == 0) return 0;
 	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 
@@ -410,7 +410,7 @@ static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		char prompt[MAX_FILENAME + 64];
 		snprintf(prompt, sizeof(prompt), "Move or rename \"%s\" to:", item->name);
 
-		if (!ui_input(inplace ? "Rename / Move (Shift+F6)" : "Move / Rename (F6)", prompt, dest_input, sizeof(dest_input))) return 0;
+		if (!ui_input_path(inplace ? "Rename / Move (Shift+F6)" : "Move / Rename (F6)", prompt, dest_input, sizeof(dest_input))) return 0;
 		if (strlen(dest_input) == 0) return 0;
 
 		char src_full[MAX_PATH * 2];
@@ -449,7 +449,7 @@ static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 	char prompt[64];
 	snprintf(prompt, sizeof(prompt), "Move selected (%d items) to:", marked);
 
-	if (!ui_input("Move Group (F6)", prompt, dest_dir, sizeof(dest_dir))) return 0;
+	if (!ui_input_path("Move Group (F6)", prompt, dest_dir, sizeof(dest_dir))) return 0;
 	if (strlen(dest_dir) == 0) return 0;
 	resolve_dest_path(src_panel, dest_dir, sizeof(dest_dir));
 

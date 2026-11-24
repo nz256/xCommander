@@ -3,6 +3,7 @@
 #include "cmdline.h"
 #include <unistd.h>
 #include <fnmatch.h>
+#include <dirent.h>
 #include <locale.h>
 #include <fcntl.h>
 #include <sys/statvfs.h>
@@ -1784,6 +1785,295 @@ int ui_input_narrow(const char *title, const char *prompt, char *buf, int max_le
 	return ui_input_ex(title, prompt, buf, max_len, 36);
 }
 
+static void get_user_menu_path(char *out, size_t out_size);
+
+static void get_copy_hist_path(char *out, size_t sz) {
+	char mp[MAX_PATH + 32]; get_user_menu_path(mp, sizeof(mp));
+	char *sl = strrchr(mp, '/');
+	if (sl) { *sl = '\0'; snprintf(out, sz, "%s/copy_history", mp); }
+	else snprintf(out, sz, "/tmp/xc_copy_history");
+}
+
+static void copy_hist_add(const char *val) {
+	if (!val || !val[0]) return;
+	char hp[MAX_PATH + 32]; get_copy_hist_path(hp, sizeof(hp));
+	char items[128][MAX_PATH]; int cnt = 0;
+	snprintf(items[cnt++], sizeof(items[0]), "%s", val);
+	FILE *f = fopen(hp, "r");
+	if (f) {
+		char ln[MAX_PATH];
+		while (fgets(ln, sizeof(ln), f) && cnt < 128) {
+			ln[strcspn(ln, "\r\n")] = '\0';
+			if (!ln[0] || strcmp(ln, val) == 0) continue;
+			snprintf(items[cnt++], sizeof(items[0]), "%s", ln);
+		}
+		fclose(f);
+	}
+	f = fopen(hp, "w");
+	if (f) { for (int i = 0; i < cnt; i++) fprintf(f, "%s\n", items[i]); fclose(f); }
+}
+
+static int build_path_suggestions(const char *typed, int show_all, char out[64][MAX_PATH], int is_dir_tag[64]) {
+	int cnt = 0;
+	const char *base_dir = (active_panel && active_panel->current_path[0]) ? active_panel->current_path : ".";
+	char scan_dir[MAX_PATH * 2], prefix[MAX_PATH] = "", dir_pref[MAX_PATH] = "";
+	snprintf(scan_dir, sizeof(scan_dir), "%s", base_dir);
+	if (!show_all && typed && typed[0]) {
+		const char *sl = strrchr(typed, '/');
+		if (sl) {
+			size_t dlen = (size_t)(sl - typed + 1);
+			if (dlen >= sizeof(dir_pref)) dlen = sizeof(dir_pref) - 1;
+			memcpy(dir_pref, typed, dlen); dir_pref[dlen] = '\0';
+			snprintf(prefix, sizeof(prefix), "%s", sl + 1);
+			if (dir_pref[0] == '/') snprintf(scan_dir, sizeof(scan_dir), "%s", dir_pref);
+			else snprintf(scan_dir, sizeof(scan_dir), "%s/%s", base_dir, dir_pref);
+		} else snprintf(prefix, sizeof(prefix), "%s", typed);
+	}
+	DIR *d = opendir(scan_dir);
+	if (d) {
+		struct dirent *de;
+		while ((de = readdir(d)) != NULL && cnt < 32) {
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+			char full[MAX_PATH * 2]; snprintf(full, sizeof(full), "%s/%s", scan_dir, de->d_name);
+			struct stat st; if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+			if (prefix[0] && strncasecmp(de->d_name, prefix, strlen(prefix)) != 0) continue;
+			snprintf(out[cnt], sizeof(out[0]), "%s%s/", dir_pref, de->d_name);
+			is_dir_tag[cnt] = 1; cnt++;
+		}
+		closedir(d);
+	}
+	char hp[MAX_PATH + 32]; get_copy_hist_path(hp, sizeof(hp));
+	FILE *f = fopen(hp, "r");
+	if (f) {
+		char ln[MAX_PATH];
+		while (fgets(ln, sizeof(ln), f) && cnt < 64) {
+			ln[strcspn(ln, "\r\n")] = '\0';
+			if (!ln[0]) continue;
+			if (!show_all && typed && typed[0] && !strcasestr(ln, typed)) continue;
+			int dup = 0; for (int k = 0; k < cnt; k++) if (strcmp(out[k], ln) == 0) { dup = 1; break; }
+			if (dup) continue;
+			snprintf(out[cnt], sizeof(out[0]), "%s", ln);
+			is_dir_tag[cnt] = 0; cnt++;
+		}
+		fclose(f);
+	}
+	return cnt;
+}
+
+static void get_newfile_hist_path(char *out, size_t sz) {
+	char mp[MAX_PATH + 32]; get_user_menu_path(mp, sizeof(mp));
+	char *sl = strrchr(mp, '/');
+	if (sl) { *sl = '\0'; snprintf(out, sz, "%s/newfile_history", mp); }
+	else snprintf(out, sz, "/tmp/xc_newfile_history");
+}
+
+static void newfile_hist_add(const char *val) {
+	if (!val || !val[0]) return;
+	char hp[MAX_PATH + 32]; get_newfile_hist_path(hp, sizeof(hp));
+	char items[128][MAX_PATH]; int cnt = 0;
+	snprintf(items[cnt++], sizeof(items[0]), "%s", val);
+	FILE *f = fopen(hp, "r");
+	if (f) {
+		char ln[MAX_PATH];
+		while (fgets(ln, sizeof(ln), f) && cnt < 128) {
+			ln[strcspn(ln, "\r\n")] = '\0';
+			if (!ln[0] || strcmp(ln, val) == 0) continue;
+			snprintf(items[cnt++], sizeof(items[0]), "%s", ln);
+		}
+		fclose(f);
+	}
+	f = fopen(hp, "w");
+	if (f) { for (int i = 0; i < cnt; i++) fprintf(f, "%s\n", items[i]); fclose(f); }
+}
+
+static int build_newfile_suggestions(const char *typed, int show_all, char out[64][MAX_PATH], int tag_type[64]) {
+	/* tag_type: 0=[HST], 1=[DIR], 2=[FIL] */
+	int cnt = 0;
+	char hp[MAX_PATH + 32]; get_newfile_hist_path(hp, sizeof(hp));
+	FILE *f = fopen(hp, "r");
+	if (f) {
+		char ln[MAX_PATH];
+		while (fgets(ln, sizeof(ln), f) && cnt < 24) {
+			ln[strcspn(ln, "\r\n")] = '\0';
+			if (!ln[0]) continue;
+			if (!show_all && typed && typed[0] && !strcasestr(ln, typed)) continue;
+			snprintf(out[cnt], sizeof(out[0]), "%s", ln);
+			tag_type[cnt] = 0; cnt++;
+		}
+		fclose(f);
+	}
+	const char *base_dir = (active_panel && active_panel->current_path[0]) ? active_panel->current_path : ".";
+	char scan_dir[MAX_PATH * 2], prefix[MAX_PATH] = "", dir_pref[MAX_PATH] = "";
+	snprintf(scan_dir, sizeof(scan_dir), "%s", base_dir);
+	if (!show_all && typed && typed[0]) {
+		const char *sl = strrchr(typed, '/');
+		if (sl) {
+			size_t dlen = (size_t)(sl - typed + 1);
+			if (dlen >= sizeof(dir_pref)) dlen = sizeof(dir_pref) - 1;
+			memcpy(dir_pref, typed, dlen); dir_pref[dlen] = '\0';
+			snprintf(prefix, sizeof(prefix), "%s", sl + 1);
+			if (dir_pref[0] == '/') snprintf(scan_dir, sizeof(scan_dir), "%s", dir_pref);
+			else snprintf(scan_dir, sizeof(scan_dir), "%s/%s", base_dir, dir_pref);
+		} else snprintf(prefix, sizeof(prefix), "%s", typed);
+	}
+	DIR *d = opendir(scan_dir);
+	if (d) {
+		struct dirent *de;
+		while ((de = readdir(d)) != NULL && cnt < 64) {
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+			if (prefix[0] && strncasecmp(de->d_name, prefix, strlen(prefix)) != 0) continue;
+			char full[MAX_PATH * 2]; snprintf(full, sizeof(full), "%s/%s", scan_dir, de->d_name);
+			struct stat st; int is_d = (stat(full, &st) == 0 && S_ISDIR(st.st_mode));
+			char cand[MAX_PATH]; snprintf(cand, sizeof(cand), "%s%s%s", dir_pref, de->d_name, is_d ? "/" : "");
+			int dup = 0; for (int k = 0; k < cnt; k++) if (strcmp(out[k], cand) == 0) { dup = 1; break; }
+			if (dup) continue;
+			snprintf(out[cnt], sizeof(out[0]), "%s", cand);
+			tag_type[cnt] = is_d ? 1 : 2; cnt++;
+		}
+		closedir(d);
+	}
+	return cnt;
+}
+
+static int ui_input_combo_ex(const char *title, const char *prompt, char *buf, int max_len, int mode) {
+	int height, width; getmaxyx(stdscr, height, width);
+	int box_w = width - 4; if (box_w > 70) box_w = 70; if (box_w < 36) box_w = 36;
+	int box_h = 6, start_y = (height - box_h) / 2, start_x = (width - box_w) / 2;
+	WINDOW *win = newwin(box_h, box_w, start_y, start_x);
+	keypad(win, TRUE); wbkgd(win, g_ui_theme.win_bg);
+
+	wchar_t wbuf[MAX_PATH];
+	size_t conv = mbstowcs(wbuf, buf, MAX_PATH - 1);
+	int len = (conv == (size_t)-1) ? 0 : (int)conv; wbuf[len] = L'\0';
+	int field_w = box_w - 9;
+	UiTextField tf; ui_tf_init(&tf, wbuf, MAX_PATH - 2, 1); ui_tf_set_bounds(&tf, 2, 3, field_w);
+
+	const char *btn_labels[2] = { "[ OK ]", "[ Cancel ]" };
+	int btn_x = (box_w - 20) / 2; if (btn_x < 2) btn_x = 2;
+	UiButtonRow btns = { btn_labels, 2, 4, btn_x, 4, -1 };
+
+	char sugs[64][MAX_PATH]; int sug_dir[64];
+	int sug_cnt = 0, sug_sel = -1, sug_top = 0, popup_open = 0, res = 0, focus = 0;
+
+	while (1) {
+		touchwin(stdscr); wnoutrefresh(stdscr);
+		werase(win); draw_win_box(win);
+		mvwprintw(win, 0, 2, " %s ", title);
+		mvwprint_utf8(win, 1, 3, box_w - 6, prompt);
+		ui_tf_draw(&tf, win, focus == 0);
+		wattrset(win, popup_open ? (chtype)COLOR_PAIR(2) : (chtype)g_ui_theme.btn_normal);
+		mvwaddstr(win, 2, 3 + field_w, "[↓]");
+		btns.focus_idx = (focus == 1) ? 0 : ((focus == 2) ? 1 : -1);
+		ui_btns_draw(&btns, win);
+		wnoutrefresh(win);
+
+		WINDOW *pwin = NULL;
+		int ph = 0, py = start_y + box_h, pw = box_w - 6, px = start_x + 3;
+		if (popup_open && sug_cnt > 0) {
+			int max_vis = height - py - 1; if (max_vis > 8) max_vis = 8;
+			if (max_vis >= 2) {
+				ph = (sug_cnt < max_vis ? sug_cnt : max_vis) + 2;
+				if (sug_sel < sug_top) sug_top = sug_sel >= 0 ? sug_sel : 0;
+				if (sug_sel >= sug_top + (ph - 2)) sug_top = sug_sel - (ph - 2) + 1;
+				pwin = newwin(ph, pw, py, px); wbkgd(pwin, g_ui_theme.win_bg); draw_win_box(pwin);
+				mvwprintw(pwin, 0, 2, mode ? " History & Files (%d) " : " Dirs & History (%d) ", sug_cnt);
+				for (int r = 0; r < ph - 2 && sug_top + r < sug_cnt; r++) {
+					int idx = sug_top + r;
+					wattrset(pwin, (idx == sug_sel) ? (chtype)COLOR_PAIR(2) : (chtype)g_ui_theme.win_bg);
+					mvwhline(pwin, r + 1, 1, ' ', pw - 2);
+					char lbl[MAX_PATH + 16];
+					const char *tg = (sug_dir[idx] == 1) ? "[DIR]" : ((sug_dir[idx] == 2) ? "[FIL]" : "[HST]");
+					snprintf(lbl, sizeof(lbl), "%s %s", tg, sugs[idx]);
+					mvwprint_utf8(pwin, r + 1, 2, pw - 4, lbl);
+				}
+				wnoutrefresh(pwin);
+			}
+		}
+		if (focus == 0) { ui_tf_place_cursor(&tf, win); wnoutrefresh(win); } else curs_set(0);
+		doupdate();
+
+		InputEvent ev = input_read();
+		if (pwin) { delwin(pwin); pwin = NULL; }
+		if (ev.action == ACT_NONE) continue;
+
+		if (ev.action == ACT_MOUSE_LEFT) {
+			int wy = ev.mouse_y - start_y, wx = ev.mouse_x - start_x;
+			if (popup_open && sug_cnt > 0 && ev.mouse_y > py && ev.mouse_y < py + ph - 1 && ev.mouse_x > px && ev.mouse_x < px + pw - 1) {
+				int pick = sug_top + (ev.mouse_y - py - 1);
+				if (pick >= 0 && pick < sug_cnt) {
+					size_t nl = mbstowcs(wbuf, sugs[pick], MAX_PATH - 2);
+					if (nl != (size_t)-1) { wbuf[nl] = L'\0'; tf.len = tf.pos = (int)nl; tf.anchor = -1; }
+					popup_open = 0; sug_sel = -1; focus = 0;
+				}
+				continue;
+			}
+			if (wy == 2 && wx >= 3 + field_w && wx < 6 + field_w) {
+				popup_open = !popup_open;
+				if (popup_open) { sug_cnt = (mode ? build_newfile_suggestions : build_path_suggestions)("", 1, sugs, sug_dir); sug_sel = sug_cnt > 0 ? 0 : -1; sug_top = 0; }
+				continue;
+			}
+			if (wy < 0 || wy >= box_h || wx < 0 || wx >= box_w) { res = 0; break; }
+			if (ui_tf_handle_mouse(&tf, wy, wx)) { focus = 0; popup_open = 0; continue; }
+			int hit = ui_btns_hit_test(&btns, wy, wx);
+			if (hit == 0) { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; if (mode) newfile_hist_add(buf); else copy_hist_add(buf); res = 1; break; }
+			if (hit == 1) { res = 0; break; }
+			continue;
+		}
+		if (ev.action == ACT_ESC) { if (popup_open) { popup_open = 0; sug_sel = -1; continue; } res = 0; break; }
+		if (focus == 0 && (ev.action == ACT_DOWN || ev.action == ACT_ALT_F8 || ev.action == ACT_CTRL_H)) {
+			if (!popup_open) {
+				char cur_u[MAX_PATH]; wcstombs(cur_u, wbuf, sizeof(cur_u) - 1); cur_u[sizeof(cur_u) - 1] = '\0';
+				int all_m = (tf.anchor == 0 && tf.pos == tf.len) || cur_u[0] == '\0';
+				sug_cnt = (mode ? build_newfile_suggestions : build_path_suggestions)(cur_u, all_m, sugs, sug_dir);
+				if (sug_cnt > 0) { popup_open = 1; sug_sel = 0; sug_top = 0; }
+			} else if (sug_cnt > 0) sug_sel = (sug_sel + 1) % sug_cnt;
+			continue;
+		}
+		if (popup_open && ev.action == ACT_UP && sug_cnt > 0) { sug_sel = (sug_sel <= 0) ? (sug_cnt - 1) : (sug_sel - 1); continue; }
+		if (popup_open && sug_sel >= 0 && sug_sel < sug_cnt && (ev.action == ACT_RIGHT || ev.action == ACT_ENTER)) {
+			size_t nl = mbstowcs(wbuf, sugs[sug_sel], MAX_PATH - 2);
+			if (nl != (size_t)-1) { wbuf[nl] = L'\0'; tf.len = tf.pos = (int)nl; tf.anchor = -1; }
+			popup_open = 0; sug_sel = -1;
+			if (ev.action == ACT_RIGHT) {
+				char cur_u[MAX_PATH]; wcstombs(cur_u, wbuf, sizeof(cur_u) - 1); cur_u[sizeof(cur_u) - 1] = '\0';
+				sug_cnt = (mode ? build_newfile_suggestions : build_path_suggestions)(cur_u, 0, sugs, sug_dir);
+				if (sug_cnt > 0) { popup_open = 1; sug_sel = 0; sug_top = 0; }
+			}
+			continue;
+		}
+		if (ev.action == ACT_TAB) { popup_open = 0; focus = (focus + 1) % 3; continue; }
+		if (ev.action == ACT_SHIFT_TAB) { popup_open = 0; focus = (focus + 2) % 3; continue; }
+		if (ev.action == ACT_DOWN) { focus = (focus == 0) ? 1 : 0; continue; }
+		if (ev.action == ACT_UP) { focus = 0; continue; }
+		if (ev.action == ACT_ENTER || ((focus == 1 || focus == 2) && ev.action == ACT_CHAR && ev.ch == L' ')) {
+			if (focus == 2) res = 0;
+			else { wcstombs(buf, wbuf, (size_t)max_len); buf[max_len - 1] = '\0'; if (mode) newfile_hist_add(buf); else copy_hist_add(buf); res = 1; }
+			break;
+		}
+		if (focus > 0 && (ev.action == ACT_LEFT || ev.action == ACT_RIGHT)) { focus = (focus == 1) ? 2 : 1; continue; }
+		if (ui_tf_handle_event(&tf, &ev)) {
+			focus = 0;
+			char cur_u[MAX_PATH]; wcstombs(cur_u, wbuf, sizeof(cur_u) - 1); cur_u[sizeof(cur_u) - 1] = '\0';
+			if (cur_u[0] != '\0') {
+				sug_cnt = (mode ? build_newfile_suggestions : build_path_suggestions)(cur_u, 0, sugs, sug_dir);
+				popup_open = (sug_cnt > 0) ? 1 : 0; sug_sel = popup_open ? 0 : -1; sug_top = 0;
+			} else popup_open = 0;
+			continue;
+		}
+	}
+
+	curs_set(0); delwin(win); touchwin(stdscr);
+	return res;
+}
+
+int ui_input_path(const char *title, const char *prompt, char *buf, int max_len) {
+	return ui_input_combo_ex(title, prompt, buf, max_len, 0);
+}
+
+int ui_input_newfile(const char *title, const char *prompt, char *buf, int max_len) {
+	return ui_input_combo_ex(title, prompt, buf, max_len, 1);
+}
+
 static void ui_show_help_lines(const char *title, const char **lines, int total) {
 	int top = 0;
 	char filter[128] = "";
@@ -1960,9 +2250,9 @@ void ui_help(void) {
 		"  Ctrl+I             Toggle Info Panel (dir size, Git branch, perms, disk)",
 		"  F3                 View file (Text/Hex) or calculate folder(s) size",
 		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
-		"  Shift+F4           Create new file and open in built-in Editor",
+		"  Shift+F4           Create new file in Editor (Down / [v]: history & dir files)",
 		"  F5 / F6            Copy / Move or rename (with progress bar & Esc cancel)",
-		"  Shift+F5 / F6      Copy / Rename single file in-place (name only)",
+		"  Shift+F5 / F6      Copy / Rename in-place (Down / [v]: subdirs & history)",
 		"  Alt+F6             Make symbolic (ln -s) or hard (ln) link",
 		"  F7 / F8 / Sh+F8    MkDir / Trash / Permanent Delete (with progress bar)",
 		"  Ctrl+A             File attributes, owner & timestamps (chmod/chown/time)",
@@ -2002,7 +2292,7 @@ void ui_help(void) {
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
 		"  Built-in :dialog   :dialog / :D [msg|confirm|input|menu|form] (also $(:dialog ...))",
 		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [--bg C] msg|confirm|input|menu|form",
-		"  Configs            ~/.config/xcommander/{menu,assoc,prompt,bookmarks}"
+		"  Configs            ~/.config/xcommander/{menu,assoc,copy_history,bookmarks}"
 	};
 #ifndef XC_BUILD
 #define XC_BUILD 0
