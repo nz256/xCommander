@@ -35,7 +35,7 @@ make
 ### CLI Options
 
 - `xc` — launch dual-pane file manager in current directory
-- `xc -e [LINE[:COL]] [FILE]` / `--edit` — open file (or `-` for `stdin`) directly in built-in TUI editor
+- `xc -e [LINE[:COL]] [FILE]` / `--edit` — open file (or `-` for `stdin`) directly in built-in TUI editor (full guide: [docs/EDITOR.md](docs/EDITOR.md))
 - `xc -v [LINE] [FILE]` / `--view` — open file (or `-` for `stdin`) directly in built-in viewer
 - `xc -D` / `--dialog [--bg COLOR] <subcommand> ...` — show TUI dialogs (transparent `/dev/tty` overlay by default, or colored background via `--bg` name / `0..255` / `#RRGGBB`):
   - `msg [TITLE] TEXT|FILE|-` — scrollable message box
