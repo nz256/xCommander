@@ -478,11 +478,12 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 	int sort_cols = (int)mbstowcs(NULL, sort_info, 0);
 	if (sort_cols < 0) sort_cols = (int)strlen(sort_info);
 
-	attrset(is_active ? (A_NORMAL | COLOR_PAIR(2)) : (attr_t)normal_attr);
+	attrset((attr_t)normal_attr);
 	mvprintw(start_y, start_x + 1, "%s", sort_info);
 
 	int path_x = start_x + 1 + sort_cols;
 	int max_path_cols = (start_x + width - 1) - path_x - 2;
+	attrset(is_active ? (A_NORMAL | COLOR_PAIR(2)) : (attr_t)normal_attr);
 	if (max_path_cols > 0) {
 		wchar_t wpath[MAX_PATH * 2] = {0};
 		size_t wlen = mbstowcs(wpath, disp_path, MAX_PATH * 2 - 1);
