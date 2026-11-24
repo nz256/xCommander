@@ -31,6 +31,8 @@ int ui_overwrite_prompt(const char *filename, off_t src_size, time_t src_mtime, 
 void ui_help(void);
 void ui_editor_help(void);
 void ui_user_menu(void);
+int ui_try_file_assoc(const char *filename, int key_mode);
+void ui_file_assoc_menu(void);
 void ui_drive_menu(Panel *target_panel, int is_right);
 int ui_file_attributes(Panel *panel);
 void panel_calc_dir_sizes(Panel *panel);

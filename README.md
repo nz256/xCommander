@@ -65,6 +65,7 @@ make
 | `Alt+<char>` | Quick search by filename prefix (auto EN/RU layout) |
 | `F1` | Open Help guide with live search filter |
 | `F2` / `F9` | Open User Menu (`~/.config/xcommander/menu`) / Top Configuration Menu |
+| `F9` -> `Commands` | **File Associations** (`~/.config/xcommander/assoc`): bind commands to masks (`mask \| desc \| enter \| f3 \| f4`) for `Enter` & optional `F3`/`F4` (FAR macros `!.!` & `:dialog`) |
 | `F3` | View file (Text / Hex) or calculate folder(s) / current dir (`..`) size (`Esc` cancels) |
 | `F4` / `Shift+F4` | Edit file (remembers cursor pos) / Create new file (`Shift+F2`: Save As in editor) |
 | `Ctrl+Shift+D` / `Ctrl+/` | Duplicate line/block / Toggle line or block comment in editor |

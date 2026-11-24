@@ -46,7 +46,7 @@ MenuBarAction ui_top_menu(void) {
 	MItem items[5][6] = {
 		{ {"Sort by Name", 'N', L'т', "Ctrl+F3", MB_L_NAME}, {"Sort by Ext", 'E', L'у', "Ctrl+F4", MB_L_EXT}, {"Sort by Time", 'T', L'е', "Ctrl+F5", MB_L_TIME}, {"Sort by Size", 'S', L'ы', "Ctrl+F6", MB_L_SIZE}, {"Drive / Bookmarks", 'D', L'в', "Alt+F1", MB_L_DRIVE}, {NULL,0,0,NULL,0} },
 		{ {"Attributes / Time", 'A', L'ф', "Ctrl+A", MB_F_ATTRS}, {"Folder Size", 'F', L'а', "F3", MB_F_DIRSIZE}, {"Find Files...", 'I', L'ш', "Alt+F7", MB_F_FIND}, {"Pack Archive...", 'P', L'з', "Shift+F1", MB_F_PACK}, {NULL,0,0,NULL,0}, {NULL,0,0,NULL,0} },
-		{ {"Compare Dirs", 'C', L'с', "", MB_C_COMPARE}, {"Temporary Panel", 'T', L'е', "Alt+F1/0", MB_C_TMPPANEL}, {"Swap Panels", 'S', L'ы', "Ctrl+U", MB_C_SWAP}, {"User Menu", 'U', L'г', "F2", MB_C_USERMENU}, {NULL,0,0,NULL,0}, {NULL,0,0,NULL,0} },
+		{ {"Compare Dirs", 'C', L'с', "", MB_C_COMPARE}, {"Temporary Panel", 'T', L'е', "Alt+F1/0", MB_C_TMPPANEL}, {"Swap Panels", 'S', L'ы', "Ctrl+U", MB_C_SWAP}, {"User Menu", 'U', L'г', "F2", MB_C_USERMENU}, {"File associations", 'A', L'ф', "", MB_C_ASSOC}, {NULL,0,0,NULL,0} },
 		{ {col_lbl, 'C', L'с', "Alt+F12", MB_O_COLORIZE}, {hid_lbl, 'H', L'р', "", MB_O_HIDDEN}, {NULL,0,0,NULL,0}, {NULL,0,0,NULL,0}, {NULL,0,0,NULL,0}, {NULL,0,0,NULL,0} },
 		{ {"Sort by Name", 'N', L'т', "Ctrl+F3", MB_R_NAME}, {"Sort by Ext", 'E', L'у', "Ctrl+F4", MB_R_EXT}, {"Sort by Time", 'T', L'е', "Ctrl+F5", MB_R_TIME}, {"Sort by Size", 'S', L'ы', "Ctrl+F6", MB_R_SIZE}, {"Drive / Bookmarks", 'D', L'в', "Alt+F2", MB_R_DRIVE}, {NULL,0,0,NULL,0} }
 	};

@@ -2,6 +2,7 @@
 #include <sys/ioctl.h>
 #include "cmdline.h"
 #include <unistd.h>
+#include <fnmatch.h>
 #include <locale.h>
 #include <fcntl.h>
 #include <sys/statvfs.h>
@@ -1173,7 +1174,7 @@ int ui_dialog_menu(const char *title, const char **items, int count, char *out_b
 			mvwprintw(win, 0, 2, " %.*s ", box_w - 6, title);
 			for (int r = 0; r < vis; r++) {
 				int idx = top + r;
-				wattrset(win, (idx == sel) ? COLOR_PAIR(2) : (int)g_ui_theme.win_bg);
+				wattrset(win, (idx == sel) ? (chtype)COLOR_PAIR(2) : (chtype)g_ui_theme.win_bg);
 				mvwhline(win, 1 + r, 2, ' ', iw);
 				mvwprint_utf8(win, 1 + r, 3, iw - 2, items[idx]);
 			}
@@ -1953,7 +1954,8 @@ void ui_help(void) {
 		"",
 		"=== 2. VIEWER, EDITOR & FILE OPERATIONS ===",
 		"  F1                 Open this Help guide (type to live-filter)",
-		"  F2 / F9            Open User Menu / Top Menu (Compare Dirs, Hidden, Sort)",
+		"  F2 / F9            Open User Menu / Top Menu (Compare Dirs, File Assoc, Sort)",
+		"  File Associations  ~/.config/xcommander/assoc (Enter / F3 / F4 rules; F9->Commands)",
 		"  Ctrl+I             Toggle Info Panel (dir size, Git branch, perms, disk)",
 		"  F3                 View file (Text/Hex) or calculate folder(s) size",
 		"  F4                 Built-in TUI Editor (F1 help; Ctrl+. / Ctrl+M macros)",
@@ -1999,7 +2001,7 @@ void ui_help(void) {
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
 		"  Built-in :dialog   :dialog / :D [msg|confirm|input|menu|form] (also $(:dialog ...))",
 		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [--bg C] msg|confirm|input|menu|form",
-		"  Configs            ~/.config/xcommander/{menu,prompt,bookmarks}"
+		"  Configs            ~/.config/xcommander/{menu,assoc,prompt,bookmarks}"
 	};
 #ifndef XC_BUILD
 #define XC_BUILD 0
@@ -2098,9 +2100,25 @@ static void expand_menu_cmd(const char *tmpl, char *out, size_t out_size) {
 	const char *act_path = (active_panel) ? active_panel->current_path : ".";
 	Panel *other = (active_panel == &left_panel) ? &right_panel : &left_panel;
 	const char *oth_path = (other) ? other->current_path : ".";
+	char name_noext[MAX_FILENAME], ext_only[MAX_FILENAME], full_fp[MAX_PATH * 2], dir_sl[MAX_PATH + 2];
+	snprintf(name_noext, sizeof(name_noext), "%s", cur_name);
+	ext_only[0] = '\0';
+	char *dot = strrchr(name_noext, '.');
+	if (dot && dot != name_noext) { snprintf(ext_only, sizeof(ext_only), "%s", dot + 1); *dot = '\0'; }
+	if (strcmp(act_path, "/") == 0) { snprintf(full_fp, sizeof(full_fp), "/%s", cur_name); snprintf(dir_sl, sizeof(dir_sl), "/"); }
+	else { snprintf(full_fp, sizeof(full_fp), "%s/%s", act_path, cur_name); snprintf(dir_sl, sizeof(dir_sl), "%s/", act_path); }
 
 	size_t j = 0;
 	for (size_t i = 0; tmpl[i] != '\0' && j + 1 < out_size; i++) {
+		if (tmpl[i] == '!' && tmpl[i + 1] != '\0') {
+			const char *rep = NULL; size_t skip = 1;
+			if (tmpl[i + 1] == '.' && tmpl[i + 2] == '!') { rep = cur_name; skip = 2; }
+			else if (tmpl[i + 1] == '~') rep = name_noext;
+			else if (tmpl[i + 1] == '.') rep = ext_only;
+			else if (tmpl[i + 1] == ':') rep = full_fp;
+			else if (tmpl[i + 1] == '/') rep = dir_sl;
+			if (rep) { size_t rl = strlen(rep); if (j + rl >= out_size) rl = out_size - 1 - j; memcpy(out + j, rep, rl); j += rl; i += skip; continue; }
+		}
 		if (tmpl[i] == '%' && tmpl[i + 1] != '\0') {
 			const char *rep = NULL;
 			if (tmpl[i + 1] == 'f') rep = cur_name;
@@ -2208,6 +2226,117 @@ static MenuNode *load_user_menu_tree(const char *path) {
 	}
 	fclose(f);
 	return root;
+}
+
+static void get_assoc_path(char *out, size_t out_size) {
+	const char *cfg = getenv("XDG_CONFIG_HOME");
+	char dir[MAX_PATH];
+	if (cfg && *cfg) snprintf(dir, sizeof(dir), "%s/xcommander", cfg);
+	else {
+		const char *home = getenv("HOME");
+		if (!home || !*home) home = "/tmp";
+		char cdir[MAX_PATH];
+		snprintf(cdir, sizeof(cdir), "%s/.config", home); mkdir(cdir, 0755);
+		snprintf(dir, sizeof(dir), "%s/.config/xcommander", home);
+	}
+	mkdir(dir, 0755);
+	snprintf(out, out_size, "%s/assoc", dir);
+}
+
+static void ensure_default_assoc(const char *path) {
+	struct stat st;
+	if (stat(path, &st) == 0) return;
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	fputs("# xCommander File Associations\n", f);
+	fputs("# Format: mask1,mask2 | Description | Enter_cmd | F3_cmd (optional) | F4_cmd (optional)\n", f);
+	fputs("# Macros: !.! (filename), !~ (name without ext), !. (ext), !: (active dir), !/ (passive dir), :dialog\n", f);
+	fputs("*.jpg,*.jpeg,*.png,*.webp,*.gif | Images | xdg-open \"!.!\" >/dev/null 2>&1 & | |\n", f);
+	fputs("*.pdf | PDF Documents | xdg-open \"!.!\" >/dev/null 2>&1 & | pdftotext \"!.!\" - |\n", f);
+	fputs("*.mp4,*.mkv,*.avi,*.webm,*.mp3,*.flac | Media | xdg-open \"!.!\" >/dev/null 2>&1 & | |\n", f);
+	fclose(f);
+}
+
+static int assoc_mask_match(const char *masks, const char *filename) {
+	char buf[512];
+	snprintf(buf, sizeof(buf), "%s", masks);
+	char *save = NULL, *tok = strtok_r(buf, ",", &save);
+	while (tok) {
+		while (*tok == ' ' || *tok == '\t') tok++;
+		size_t l = strlen(tok);
+		while (l > 0 && (tok[l - 1] == ' ' || tok[l - 1] == '\t')) tok[--l] = '\0';
+		if (l > 0 && fnmatch(tok, filename, FNM_CASEFOLD) == 0) return 1;
+		tok = strtok_r(NULL, ",", &save);
+	}
+	return 0;
+}
+
+int ui_try_file_assoc(const char *filename, int key_mode) {
+	if (!filename || !filename[0] || strcmp(filename, "..") == 0) return 0;
+	char path[MAX_PATH + 32];
+	get_assoc_path(path, sizeof(path));
+	ensure_default_assoc(path);
+	FILE *f = fopen(path, "r");
+	if (!f) return 0;
+
+	char descs[32][128], cmds[32][MAX_CMD];
+	const char *menu_items[32];
+	int mcnt = 0;
+	char line[2048];
+	while (fgets(line, sizeof(line), f) && mcnt < 32) {
+		size_t len = strlen(line);
+		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+		char *p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (!*p || *p == '#' || *p == ';') continue;
+		char *cols[5] = { p, NULL, NULL, NULL, NULL };
+		int ncol = 1;
+		for (char *c = p; *c && ncol < 5; c++) if (*c == '|') { *c = '\0'; cols[ncol++] = c + 1; }
+		for (int k = 0; k < ncol; k++) {
+			while (*cols[k] == ' ' || *cols[k] == '\t') cols[k]++;
+			size_t cl = strlen(cols[k]);
+			while (cl > 0 && (cols[k][cl - 1] == ' ' || cols[k][cl - 1] == '\t')) cols[k][--cl] = '\0';
+		}
+		int cmd_col = 2 + key_mode; /* 2=Enter, 3=F3, 4=F4 */
+		if (ncol <= cmd_col || !cols[cmd_col] || !cols[cmd_col][0]) continue;
+		if (!assoc_mask_match(cols[0], filename)) continue;
+		snprintf(descs[mcnt], sizeof(descs[0]), "%s", (ncol > 1 && cols[1][0]) ? cols[1] : cols[cmd_col]);
+		snprintf(cmds[mcnt], sizeof(cmds[0]), "%s", cols[cmd_col]);
+		menu_items[mcnt] = descs[mcnt];
+		mcnt++;
+	}
+	fclose(f);
+	if (mcnt == 0) return 0;
+
+	int pick = 0;
+	if (mcnt > 1) {
+		char chosen[128] = "";
+		if (!ui_dialog_menu(filename, menu_items, mcnt, chosen, sizeof(chosen))) return 1;
+		for (int i = 0; i < mcnt; i++) if (strcmp(descs[i], chosen) == 0) { pick = i; break; }
+	}
+	char final_cmd[MAX_CMD];
+	expand_menu_cmd(cmds[pick], final_cmd, sizeof(final_cmd));
+	if (!ui_try_builtin_dialog_cmd(final_cmd)) {
+		char lkeep[MAX_FILENAME] = "", rkeep[MAX_FILENAME] = "";
+		int lsel = left_panel.selected, rsel = right_panel.selected;
+		if (left_panel.count > 0 && lsel < left_panel.count) snprintf(lkeep, sizeof(lkeep), "%s", left_panel.files[lsel].name);
+		if (right_panel.count > 0 && rsel < right_panel.count) snprintf(rkeep, sizeof(rkeep), "%s", right_panel.files[rsel].name);
+		execute_system_command(final_cmd);
+		load_directory(&left_panel);
+		load_directory(&right_panel);
+		if (lkeep[0]) { int f = 0; for (int i = 0; i < left_panel.count; i++) if (strcmp(left_panel.files[i].name, lkeep) == 0) { left_panel.selected = i; f = 1; break; } if (!f && left_panel.count > 0) left_panel.selected = (lsel < left_panel.count) ? lsel : (left_panel.count - 1); }
+		if (rkeep[0]) { int f = 0; for (int i = 0; i < right_panel.count; i++) if (strcmp(right_panel.files[i].name, rkeep) == 0) { right_panel.selected = i; f = 1; break; } if (!f && right_panel.count > 0) right_panel.selected = (rsel < right_panel.count) ? rsel : (right_panel.count - 1); }
+	}
+	return 1;
+}
+
+void ui_file_assoc_menu(void) {
+	char path[MAX_PATH + 32];
+	get_assoc_path(path, sizeof(path));
+	ensure_default_assoc(path);
+	if (ui_dialog_show(1, "File Associations", "Edit ~/.config/xcommander/assoc in built-in editor (F4)?")) {
+		ui_edit_file(path);
+	}
 }
 
 void ui_user_menu(void) {

@@ -1579,6 +1579,7 @@ int main(int argc, char **argv) {
 			else if (ma == MB_C_TMPPANEL)  { temp_panel_open(active_panel); draw_screen(); sync_refresh(); continue; }
 			else if (ma == MB_C_SWAP)      ev.action = ACT_CTRL_U;
 			else if (ma == MB_C_USERMENU)  ev.action = ACT_F2;
+			else if (ma == MB_C_ASSOC)     { ui_file_assoc_menu(); draw_screen(); sync_refresh(); continue; }
 			else if (ma == MB_O_COLORIZE)  ev.action = ACT_ALT_F12;
 			else if (ma == MB_O_HIDDEN)    { g_show_hidden = !g_show_hidden; reload_panels_keep_cursor(); draw_screen(); sync_refresh(); continue; }
 		}
@@ -1625,7 +1626,7 @@ int main(int argc, char **argv) {
 						ui_view_file(tfp); unlink(tfp);
 						char *sl = strrchr(tfp, '/'); if (sl) { *sl = '\0'; rmdir(tfp); }
 					} else ui_message("Archive View", "Failed to extract file from archive");
-				} else {
+				} else if (!ui_try_file_assoc(cur->name, 1)) {
 					char fp[MAX_PATH * 2];
 					panel_entry_full_path(active_panel, active_panel->selected, fp, sizeof(fp));
 					file_history_add_entry(NULL, "View", 0, 0, fp);
@@ -1635,7 +1636,7 @@ int main(int argc, char **argv) {
 			}
 		} else if (ev.action == ACT_F4 && active_panel->count > 0) {
 			FileEntry *cur = &active_panel->files[active_panel->selected];
-			if (!cur->is_dir && strcmp(cur->name, "..") != 0) {
+			if (!cur->is_dir && strcmp(cur->name, "..") != 0 && !ui_try_file_assoc(cur->name, 2)) {
 				if (active_panel->archive_file[0] != '\0') {
 					char inner[MAX_PATH * 2], tfp[MAX_PATH];
 					if (active_panel->archive_dir[0] != '\0') snprintf(inner, sizeof(inner), "%s/%s", active_panel->archive_dir, cur->name);
@@ -1879,7 +1880,7 @@ int main(int argc, char **argv) {
 				active_panel->archive_dir[0] = '\0'; active_panel->parent_name[0] = '\0';
 				archive_load_dir(active_panel);
 			}
-			else {
+			else if (!ui_try_file_assoc(cur->name, 0)) {
 				char fp[MAX_PATH * 2];
 				if (strcmp(active_panel->current_path, "/") == 0) snprintf(fp, sizeof(fp), "/%s", cur->name);
 				else snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
