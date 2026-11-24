@@ -44,6 +44,7 @@ make
   - `menu TITLE ITEM1 ITEM2...` or `menu TITLE -` — interactive selection menu from args or `stdin` (prints choice to `stdout`)
   - `form FILE|-` — run dialog from key-value spec (`type=msg|confirm|input|menu`, `title=`, `bg=`, `text=`, `default=`, `items=a|b|c`)
   - Built-in `:dialog` / `:D` inside `xc` (command line, `Ctrl+O`, `F2` User Menu, `Ctrl+G`), including `$(:dialog ...)` inline substitution and `&&` chains without spawning a child process
+  - Full guide and examples: [docs/DIALOGS.md](docs/DIALOGS.md)
 - `xc -V` / `--version` — print version and build number
 - `xc -h` / `--help` — show command-line help
 
