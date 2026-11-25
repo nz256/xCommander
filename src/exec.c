@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <termios.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -53,13 +54,21 @@ static int check_overwrite(const char *src_path, const char *dst_path) {
 	return -1;
 }
 
+static void preserve_times(const char *dst_path, const struct stat *st, int follow_links) {
+	struct timespec times[2];
+	times[0] = st->st_atim;
+	times[1] = st->st_mtim;
+	utimensat(AT_FDCWD, dst_path, times, follow_links ? 0 : AT_SYMLINK_NOFOLLOW);
+}
+
 static int copy_single_file(const char *src_path, const char *dst_path, mode_t mode) {
 	int ovr = check_overwrite(src_path, dst_path);
 	if (ovr == 0) { if (g_prog) g_prog->done_files++; return 0; }
 	if (ovr < 0) return -2;
 
 	struct stat st;
-	off_t fsize = (lstat(src_path, &st) == 0) ? st.st_size : 0;
+	int st_ok = (lstat(src_path, &st) == 0);
+	off_t fsize = st_ok ? st.st_size : 0;
 	off_t cur_done = 0;
 	if (g_prog && progress_update(g_prog, src_path, dst_path, 0, fsize, 1)) return -2;
 
@@ -95,6 +104,7 @@ static int copy_single_file(const char *src_path, const char *dst_path, mode_t m
 
 	if (err == 0) {
 		chmod(dst_path, mode);
+		if (st_ok) preserve_times(dst_path, &st, 1);
 		if (g_prog) g_prog->done_files++;
 	} else if (err == -2) {
 		unlink(dst_path);
@@ -124,6 +134,7 @@ static int copy_recursive(const char *src_path, const char *dst_path) {
 			snprintf(g_copy_err, sizeof(g_copy_err), "%s: %s", dst_path, strerror(errno));
 			return -1;
 		}
+		preserve_times(dst_path, &st, 0);
 		if (g_prog) {
 			g_prog->done_files++;
 			if (progress_update(g_prog, src_path, dst_path, 0, 0, 0)) return -2;
@@ -161,6 +172,7 @@ static int copy_recursive(const char *src_path, const char *dst_path) {
 		}
 		closedir(d);
 		chmod(dst_path, st.st_mode & 07777);
+		preserve_times(dst_path, &st, 1);
 		if (g_prog) g_prog->done_files++;
 		return 0;
 	} else {
