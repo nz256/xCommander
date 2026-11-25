@@ -2258,7 +2258,7 @@ void ui_help(void) {
 		"  Ctrl+A             File attributes, owner & timestamps (chmod/chown/time)",
 		"  Auto sudo          Red password prompt on EACCES/EPERM (F2/F5-F8/Alt+F6/Ctrl+A)",
 		"  Ctrl+G             Apply command to selected items (macros: !.! !~ !. !: !/)",
-		"  Alt+F7             Find files by mask & text (Go to, View, Edit, Panel)",
+		"  Alt+F7             Find files with live progress & Esc stop (Go/View/Edit/Panel)",
 		"  Ctrl+PgUp (TmpPnl) Jump to real directory of item in Temporary Panel",
 		"  Enter / Ctrl+PgDn  Enter archive (.zip, .tar.*, .7z, .jar, .apk)",
 		"                       Inside: F3 View, F4 Edit+Upd, F5 Extract, F8 Del",

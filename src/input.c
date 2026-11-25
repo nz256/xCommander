@@ -358,6 +358,29 @@ static int poll_stdin_or_inotify(void) {
 	}
 }
 
+
+int input_check_esc(void) {
+	while (wait_byte(0)) {
+		unsigned char b = 0;
+		if (!read_byte(&b)) break;
+		if (b == 27) {
+			if (!wait_byte(15)) return 1;
+			unsigned char b2 = 0;
+			if (!read_byte(&b2) || b2 == 27) return 1;
+			if (b2 == 91) {
+				char seq[32] = {0}; int idx = 0; unsigned char c = 0;
+				while (idx < 30 && wait_byte(10) && read_byte(&c)) {
+					seq[idx++] = (char)c;
+					if (c >= 0x40 && c <= 0x7E) break;
+				}
+				if (strncmp(seq, "27u", 3) == 0 || strncmp(seq, "27;", 3) == 0) return 1;
+			}
+			while (wait_byte(5)) { unsigned char d = 0; if (!read_byte(&d)) break; }
+		}
+	}
+	return 0;
+}
+
 InputEvent input_read(void) {
 	struct termios cur_t;
 	if (tcgetattr(STDIN_FILENO, &cur_t) == 0 && (cur_t.c_lflag & (ICANON | ECHO))) {

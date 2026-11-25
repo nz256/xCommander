@@ -36,5 +36,6 @@ void input_enable_raw(void);
 void input_set_mouse(int enable);
 void input_restore_sane(void);
 InputEvent input_read(void);
+int input_check_esc(void);
 
 #endif

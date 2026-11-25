@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <fnmatch.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <ncurses.h>
 #include <wchar.h>
@@ -41,7 +42,44 @@ typedef struct {
 	int recursive;
 	int case_sens;
 	int skip_hidden;
+	long scanned;
+	int aborted;
+	long last_draw_ms;
+	WINDOW *prog_win;
+	int prog_w;
+	char cur_dir[MAX_PATH];
 } FindCtx;
+
+static long find_now_ms(void) {
+	struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+
+static void find_draw_progress(FindCtx *ctx, int force) {
+	if (!ctx->prog_win) return;
+	long now = find_now_ms();
+	if (!force && (now - ctx->last_draw_ms) < 45) return;
+	ctx->last_draw_ms = now;
+	if (input_check_esc()) { ctx->aborted = 1; return; }
+
+	int bw = ctx->prog_w;
+	const char spin[4] = { '|', '/', '-', '\\' };
+	char sp = spin[(now / 90) % 4];
+	werase(ctx->prog_win); box(ctx->prog_win, 0, 0);
+	mvwprintw(ctx->prog_win, 0, 2, " Searching (%c) [Esc: Stop] ", sp);
+	mvwprintw(ctx->prog_win, 1, 2, "Found: %-6d   Scanned: %-9ld", ctx->count, ctx->scanned);
+
+	int bar_w = bw - 4; if (bar_w < 10) bar_w = 10;
+	int pos = (int)((now / 60) % (bar_w - 4));
+	mvwhline(ctx->prog_win, 2, 2, ACS_HLINE, bar_w);
+	mvwaddstr(ctx->prog_win, 2, 2 + pos, "<==>");
+
+	int dmax = bw - 4; if (dmax < 8) dmax = 8;
+	int dlen = (int)strlen(ctx->cur_dir);
+	if (dlen <= dmax) mvwprintw(ctx->prog_win, 3, 2, "%-*s", dmax, ctx->cur_dir);
+	else mvwprintw(ctx->prog_win, 3, 2, "...%s", ctx->cur_dir + (dlen - (dmax - 3)));
+	wrefresh(ctx->prog_win);
+}
 
 static int match_multi_mask(const char *name, const char *mask_list) {
 	if (!mask_list || !*mask_list || strcmp(mask_list, "*") == 0) return 1;
@@ -58,7 +96,7 @@ static int match_multi_mask(const char *name, const char *mask_list) {
 	return 0;
 }
 
-static int search_file_content(const char *path, const char *needle, int case_sens, int *out_line) {
+static int search_file_content(FindCtx *ctx, const char *path, const char *needle, int case_sens, int *out_line) {
 	if (!needle || !*needle) { if (out_line) *out_line = 1; return 1; }
 	FILE *f = fopen(path, "rb");
 	if (!f) return 0;
@@ -74,6 +112,7 @@ static int search_file_content(const char *path, const char *needle, int case_se
 	int ln = 0;
 	while (fgets(line, sizeof(line), f)) {
 		ln++;
+		if ((ln & 511) == 0 && ctx) { find_draw_progress(ctx, 0); if (ctx->aborted) { fclose(f); return 0; } }
 		const char *hit = case_sens ? strstr(line, needle) : strcasestr(line, needle);
 		if (hit) {
 			if (out_line) *out_line = ln;
@@ -103,12 +142,17 @@ static void find_add_result(FindCtx *ctx, const char *rel, const char *full, off
 }
 
 static void find_walk_dir(FindCtx *ctx, const char *abs_dir, const char *rel_prefix) {
-	if (ctx->count >= MAX_FIND_RESULTS) return;
+	if (ctx->count >= MAX_FIND_RESULTS || ctx->aborted) return;
+	if (!strcmp(abs_dir, "/proc") || !strcmp(abs_dir, "/sys") || !strcmp(abs_dir, "/dev")) return;
+	snprintf(ctx->cur_dir, sizeof(ctx->cur_dir), "%s", abs_dir);
+	find_draw_progress(ctx, 0);
 	DIR *d = opendir(abs_dir);
 	if (!d) return;
 	struct dirent *de;
 	while ((de = readdir(d)) != NULL) {
-		if (ctx->count >= MAX_FIND_RESULTS) break;
+		if (ctx->count >= MAX_FIND_RESULTS || ctx->aborted) break;
+		ctx->scanned++;
+		if ((ctx->scanned & 31) == 0) find_draw_progress(ctx, 0);
 		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
 		if (ctx->skip_hidden && de->d_name[0] == '.') continue;
 		if (!strcmp(de->d_name, ".git")) continue;
@@ -129,7 +173,7 @@ static void find_walk_dir(FindCtx *ctx, const char *abs_dir, const char *rel_pre
 				find_add_result(ctx, rel, full, is_d ? 0 : st.st_size, is_d, 1);
 			} else if (!is_d && S_ISREG(st.st_mode)) {
 				int mline = 1;
-				if (search_file_content(full, ctx->text, ctx->case_sens, &mline)) {
+				if (search_file_content(ctx, full, ctx->text, ctx->case_sens, &mline)) {
 					find_add_result(ctx, rel, full, st.st_size, 0, mline);
 				}
 			}
@@ -227,7 +271,7 @@ static int ui_find_prompt(FindCtx *ctx) {
 int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 	if (!start_dir || !*start_dir) return 0;
 	static char last_mask[128] = "*", last_text[256] = "";
-	static int last_rec = 1, last_cs = 0, last_skip = 1;
+	static int last_rec = 1, last_cs = 0, last_skip = 0;
 
 	FindCtx ctx; memset(&ctx, 0, sizeof(ctx));
 	snprintf(ctx.base_dir, sizeof(ctx.base_dir), "%s", start_dir);
@@ -241,8 +285,24 @@ int ui_find_files(const char *start_dir, char *out_path, size_t out_sz) {
 	last_rec = ctx.recursive; last_cs = ctx.case_sens; last_skip = ctx.skip_hidden;
 	if (ctx.mask[0] == '\0') strcpy(ctx.mask, "*");
 
+	touchwin(stdscr); refresh();
+	int sh, sw; getmaxyx(stdscr, sh, sw);
+	int pw = (sw - 10 > 62) ? 62 : (sw - 4); if (pw < 34) pw = sw - 2;
+	int ph = 5, psy = (sh - ph) / 2, psx = (sw - pw) / 2;
+	ctx.prog_w = pw;
+	ctx.prog_win = newwin(ph, pw, psy, psx);
+	if (ctx.prog_win) { wbkgd(ctx.prog_win, g_ui_theme.win_bg); }
+	snprintf(ctx.cur_dir, sizeof(ctx.cur_dir), "%s", ctx.base_dir);
+	find_draw_progress(&ctx, 1);
+
 	find_walk_dir(&ctx, ctx.base_dir, "");
-	if (ctx.count == 0) { ui_message("Find Files", "No matching files found"); free(ctx.items); return 0; }
+
+	if (ctx.prog_win) { delwin(ctx.prog_win); ctx.prog_win = NULL; touchwin(stdscr); refresh(); }
+	if (ctx.count == 0) {
+		ui_message("Find Files", ctx.aborted ? "Search stopped (0 matches)" : "No matching files found");
+		free(ctx.items);
+		return 0;
+	}
 
 	int h, w; getmaxyx(stdscr, h, w);
 	int bw = (w - 6 > 96) ? 96 : (w - 4); if (bw < 52) bw = w - 2;
