@@ -11,6 +11,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <wchar.h>
 #include "info_panel.h"
 #include "ui.h"
 
@@ -121,6 +122,39 @@ static void find_mount_info(const char *path, char *mnt, size_t msz, char *fstyp
 	fclose(f);
 }
 
+static int info_print_wrapped(int y, int max_y, int x, int max_cols, const char *label, const char *text, int val_pair) {
+	if (y >= max_y || max_cols < 8) return y;
+	wchar_t wbuf[MAX_PATH * 2];
+	size_t wl = mbstowcs(wbuf, text ? text : "", MAX_PATH * 2 - 1);
+	if (wl == (size_t)-1) {
+		attrset(COLOR_PAIR(1)); mvprintw(y, x, "%s", label);
+		attrset(COLOR_PAIR(val_pair)); mvprintw(y, x + 8, "%.*s", max_cols - 8, text ? text : "");
+		return y + 1;
+	}
+	wbuf[wl] = L'\0';
+	attrset(COLOR_PAIR(1)); mvprintw(y, x, "%s", label);
+	attrset(COLOR_PAIR(val_pair));
+	size_t pos = 0;
+	int lines = 0;
+	while (pos < wl && y < max_y && lines < 4) {
+		int cx = (lines == 0) ? (x + 8) : (x + 2);
+		int avail = (lines == 0) ? (max_cols - 8) : (max_cols - 2);
+		if (avail < 4) break;
+		int used = 0;
+		size_t start = pos;
+		while (pos < wl) {
+			int cw = wcwidth(wbuf[pos]); if (cw < 1) cw = 1;
+			if (used + cw > avail) break;
+			used += cw; pos++;
+		}
+		if (pos == start) pos++;
+		mvaddnwstr(y, cx, wbuf + start, (int)(pos - start));
+		y++; lines++;
+	}
+	if (lines == 0) y++;
+	return y;
+}
+
 void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 	if (!src || src->count == 0) return;
 	char target[MAX_PATH * 2];
@@ -148,12 +182,32 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 	mvaddstr(sy + h - 1, sx, "└"); mvaddstr(sy + h - 1, sx + w - 1, "┘");
 
 	const char *bn = strrchr(target, '/'); bn = (bn && bn[1]) ? (bn + 1) : target;
+	char dir_only[MAX_PATH * 2];
+	snprintf(dir_only, sizeof(dir_only), "%s", target);
+	char *dsl = strrchr(dir_only, '/');
+	if (dsl) { if (dsl == dir_only) dir_only[1] = '\0'; else *dsl = '\0'; }
+	else snprintf(dir_only, sizeof(dir_only), ".");
+
 	attrset(COLOR_PAIR(2));
-	mvprintw(sy, sx + 2, " Info: %.*s ", w - 11, bn);
+	if (w > 12) {
+		wchar_t wbn[MAX_FILENAME];
+		size_t bl = mbstowcs(wbn, bn, MAX_FILENAME - 1);
+		mvaddstr(sy, sx + 2, " Info: ");
+		int cur_c = sx + 9, lim_c = sx + w - 4;
+		if (bl != (size_t)-1) {
+			for (size_t k = 0; k < bl; k++) {
+				int cw = wcwidth(wbn[k]); if (cw < 1) cw = 1;
+				if (cur_c + cw > lim_c) { mvaddstr(sy, cur_c, "..."); cur_c += 3; break; }
+				mvaddnwstr(sy, cur_c, wbn + k, 1); cur_c += cw;
+			}
+		}
+		mvaddch(sy, cur_c, ' ');
+	}
 	if (!st_ok) { attrset(COLOR_PAIR(1)); mvprintw(sy + 2, sx + 2, "Cannot stat target"); return; }
 
-	int iw = w - 4, y = sy + 1;
-	attrset(COLOR_PAIR(7)); mvwprintw(stdscr, y++, sx + 2, "%.*s", iw, target);
+	int iw = w - 4, y = sy + 1, max_y = sy + h - 1;
+	y = info_print_wrapped(y, max_y, sx + 2, iw, "Dir:    ", dir_only, 7);
+	y = info_print_wrapped(y, max_y, sx + 2, iw, "Name:   ", bn, 8);
 
 	char tline[128] = "Regular file";
 	if (S_ISLNK(st.st_mode)) {
@@ -169,8 +223,7 @@ void draw_info_panel(const Panel *src, int sy, int sx, int w, int h) {
 		if (bname) snprintf(tline, sizeof(tline), "Directory (Git: %s)", bname + 1);
 		else snprintf(tline, sizeof(tline), "Directory");
 	}
-	attrset(COLOR_PAIR(1));
-	if (y < sy + h - 1) { mvprintw(y, sx + 2, "Type:   "); attrset(COLOR_PAIR(8)); mvwprintw(stdscr, y++, sx + 10, "%.*s", iw - 8, tline); }
+	y = info_print_wrapped(y, max_y, sx + 2, iw, "Type:   ", tline, 8);
 
 	char szs[64];
 	if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {

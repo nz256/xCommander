@@ -417,6 +417,38 @@ static void format_perms(mode_t m, char out[10]) {
 	out[9] = '\0';
 }
 
+static void mvwprint_utf8_mid(WINDOW *win, int y, int x, int max_cols, const char *str) {
+	if (!str || max_cols <= 0) return;
+	wchar_t wbuf[MAX_FILENAME * 2];
+	size_t wl = mbstowcs(wbuf, str, MAX_FILENAME * 2 - 1);
+	if (wl == (size_t)-1) { mvwprint_utf8(win, y, x, max_cols, str); return; }
+	wbuf[wl] = L'\0';
+	int total_w = 0;
+	for (size_t i = 0; i < wl; i++) { int cw = wcwidth(wbuf[i]); total_w += (cw > 0 ? cw : 1); }
+	if (total_w <= max_cols || max_cols <= 4) { mvwprint_utf8(win, y, x, max_cols, str); return; }
+
+	int avail = max_cols - 3;
+	int head_w = (avail + 1) / 2;
+	int tail_w = avail - head_w;
+
+	size_t hi = 0; int hw = 0;
+	while (hi < wl) {
+		int cw = wcwidth(wbuf[hi]); if (cw < 1) cw = 1;
+		if (hw + cw > head_w) break;
+		hw += cw; hi++;
+	}
+	size_t ti = wl; int tw = 0;
+	while (ti > hi) {
+		int cw = wcwidth(wbuf[ti - 1]); if (cw < 1) cw = 1;
+		if (tw + cw > tail_w) break;
+		tw += cw; ti--;
+	}
+	wmove(win, y, x);
+	if (hi > 0) waddnwstr(win, wbuf, (int)hi);
+	waddstr(win, "...");
+	if (ti < wl) waddnwstr(win, wbuf + ti, (int)(wl - ti));
+}
+
 void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int is_active) {
 	char disp_path[MAX_PATH * 2];
 	if (p->is_temp) {
@@ -628,7 +660,7 @@ void draw_panel(Panel *p, int start_y, int start_x, int width, int height, int i
 			int meta_len = (int)strlen(meta);
 			int left_avail = inner_w - 2 - meta_len - 2;
 			if (left_avail > 0) {
-				mvwprint_utf8(stdscr, info_y, start_x + 2, left_avail, cur->name);
+				mvwprint_utf8_mid(stdscr, info_y, start_x + 2, left_avail, cur->name);
 			}
 			if (inner_w - 2 >= meta_len) {
 				mvprintw(info_y, start_x + width - 2 - meta_len, "%s", meta);
@@ -751,7 +783,7 @@ void draw_screen(void) {
 		draw_panel(&right_panel, 0, panel_width, width - panel_width, panel_height, active_panel == &right_panel);
 
 	char prompt[MAX_PATH + 16];
-	int prompt_cols = build_cmd_prompt(prompt, sizeof(prompt), width);
+	int prompt_cols = build_cmd_prompt(prompt, sizeof(prompt), width / 2);
 	int avail = width - prompt_cols;
 	if (avail < 4) avail = 4;
 
