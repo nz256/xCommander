@@ -192,7 +192,7 @@ static void ui_init_ex(int overlay) {
 	set_escdelay(25);
 
 	if (COLORS >= 256) {
-		init_pair(12, 18, 252);
+		init_pair(12, 16, 46);  /* Парные скобки/кавычки (ярко-жёлтый на сине-фиолетовом) */
 		init_pair(1, 51, 18);    /* Рамки и обычные файлы (ярко-голубой на тёмно-синем) */
 		init_pair(2, 16, 37);    /* Чёрный текст на бирюзовом */
 		init_pair(3, 226, 18);   /* Выделенные файлы (ярко-жёлтый на тёмно-синем) */
@@ -239,7 +239,7 @@ static void ui_init_ex(int overlay) {
 			init_pair(52 + ci, cidx, 37);
 		}
 	} else {
-		init_pair(12, COLOR_BLUE, COLOR_WHITE);
+		init_pair(12, COLOR_BLACK, COLOR_GREEN);
 		init_pair(1, COLOR_CYAN, COLOR_BLUE);
 		init_pair(2, COLOR_BLACK, COLOR_CYAN);
 		init_pair(3, COLOR_YELLOW, COLOR_BLUE);
@@ -2531,7 +2531,7 @@ void ui_editor_help(void) {
 		"  Ctrl+Sh+Home / End Select from cursor to start / end of entire file",
 		"  Ctrl+Shift+Arrows  Select whole words (also Alt+Shift+Arrows)",
 		"  F3                 Toggle MARK selection mode (move cursor to extend)",
-		"  Alt+Shift+]        Select entire block between matching pair",
+		"  Alt+Shift+]        Select inside matching brackets/quotes (press again to include them)",
 		"  Ctrl+A             Select entire file",
 		"  Ctrl+C             Copy selected block to system clipboard",
 		"  Ctrl+X             Cut selected block (or line) to clipboard",
@@ -2546,7 +2546,7 @@ void ui_editor_help(void) {
 		"  Insert             Toggle Insert (INS) / Overwrite (OVR) mode",
 		"  Ctrl+Z / Ctrl+R    Undo / Redo changes (up to 64 steps)",
 		"  Ctrl+Y             Delete entire current line",
-		"  Ctrl+Shift+D / /   Duplicate line/block / Toggle line or block comment",
+		"  Ctrl+Sh+D / Ctrl+/ Duplicate line/block / Toggle line or block comment",
 		"  Ctrl+Shift+Up/Dn   Move current line or selected block up / down",
 		"  F2 / Shift+F2      Save file (auto sudo prompt if needed) / Save As",
 		"  F7                 Find text (Case sensitive & RegExp options)",
@@ -2556,7 +2556,7 @@ void ui_editor_help(void) {
 		"  Ctrl+O             Toggle terminal output screen (like FAR)",
 		"  Hold Ctrl/Shift    Dynamic 12-key F1..F12 bar highlights active keys",
 		"  F9                 Toggle Auto-Indent (Ind:On / Ind:Of)",
-		"  CLI / Dialogs      xc -e [LINE[:COL]] [FILE|-]; .dialog keys: type/title/bg/text/default/items",
+		"  CLI / Dialogs      xc -e [LINE[:COL]] [FILE|-]; .dialog: msg/confirm/input/menu, -> VAR, ${FILE}, if/else/endif, ! cmd",
 		"  F1                 Open this Editor Help",
 		"  Esc / F10 / Ctrl+Q Exit editor (Yes / No / Cancel if modified)"
 	};

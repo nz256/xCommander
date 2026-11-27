@@ -53,7 +53,7 @@ The editor automatically detects the language by file extension and highlights k
 * **`Ctrl+Shift+Arrows`** (or `Alt+Shift+Arrows`) — select whole words.
 * **`Ctrl+Shift+Home` / `Ctrl+Shift+End`** — select from cursor to start/end of the entire file.
 * **`F3`** — toggle `MARK` selection mode (moving the cursor extends selection without holding `Shift`).
-* **`Alt+Shift+]`** — select the entire block between matching brackets/quotes.
+* **`Alt+Shift+]`** — select inside matching brackets/quotes (press again to expand and include the brackets/quotes themselves; picks the innermost enclosing pair).
 * **`Ctrl+A`** — select the entire file.
 * **`Ctrl+C` / `Ctrl+X` / `Ctrl+V` (`Shift+Ins`)** — copy, cut (block or current line), and paste (supports multi-line paste via X11/Wayland clipboard).
 

@@ -963,6 +963,7 @@ static void ed_find_enclosing_pair(const EditorState *ed, int *y1, int *x1, int 
 	if (ed->cur_y < 0 || ed->cur_y >= ed->line_count) return;
 
 	/* 1. Проверяем, находится ли курсор внутри кавычек в текущей строке */
+	int qy1 = -1, qx1 = -1, qy2 = -1, qx2 = -1;
 	const EditorLine *cur_ln = &ed->lines[ed->cur_y];
 	wchar_t active_q = 0;
 	int q_start = -1;
@@ -975,9 +976,9 @@ static void ed_find_enclosing_pair(const EditorState *ed, int *y1, int *x1, int 
 				q_start = x;
 			} else if (active_q == c) {
 				if (ed->cur_x > q_start && ed->cur_x <= x) {
-					*y1 = ed->cur_y; *x1 = q_start;
-					*y2 = ed->cur_y; *x2 = x;
-					return;
+					qy1 = ed->cur_y; qx1 = q_start;
+					qy2 = ed->cur_y; qx2 = x;
+					break;
 				}
 				active_q = 0;
 				q_start = -1;
@@ -1017,29 +1018,37 @@ static void ed_find_enclosing_pair(const EditorState *ed, int *y1, int *x1, int 
 		y--;
 		if (y >= 0) x = ed->lines[y].len - 1;
 	}
-	return;
+	goto pick_best;
 
 found_open:
-	*y1 = found_y;
-	*x1 = found_x;
-	int depth = 0;
-	y = found_y;
-	x = found_x;
-	steps = 0;
-	while (y < ed->line_count && steps < 200000) {
-		const EditorLine *ln = &ed->lines[y];
-		while (x < ln->len) {
-			wchar_t c = ln->text[x];
-			if (c == open_c) depth++;
-			else if (c == close_c) depth--;
-			if (depth == 0) { *y2 = y; *x2 = x; return; }
-			x++;
-			steps++;
+	{
+		int by1 = found_y, bx1 = found_x, by2 = -1, bx2 = -1;
+		int depth = 0;
+		y = found_y;
+		x = found_x;
+		steps = 0;
+		while (y < ed->line_count && steps < 200000) {
+			const EditorLine *ln = &ed->lines[y];
+			while (x < ln->len) {
+				wchar_t c = ln->text[x];
+				if (c == open_c) depth++;
+				else if (c == close_c) depth--;
+				if (depth == 0) { by2 = y; bx2 = x; goto done_brack; }
+				x++;
+				steps++;
+			}
+			y++;
+			x = 0;
 		}
-		y++;
-		x = 0;
+done_brack:
+		if (by2 >= 0) {
+			int brack_inner = (qy1 < 0) || ((by1 > qy1 || (by1 == qy1 && bx1 > qx1)) && (by2 < qy2 || (by2 == qy2 && bx2 < qx2)));
+			if (brack_inner) { *y1 = by1; *x1 = bx1; *y2 = by2; *x2 = bx2; return; }
+		}
 	}
-	*y1 = *x1 = -1;
+
+pick_best:
+	if (qy1 >= 0 && qy2 >= 0) { *y1 = qy1; *x1 = qx1; *y2 = qy2; *x2 = qx2; }
 }
 
 static void ed_draw(EditorState *ed, int *out_scr_y, int *out_scr_x) {
@@ -1105,7 +1114,7 @@ static void ed_draw(EditorState *ed, int *out_scr_y, int *out_scr_x) {
 			int is_pair = ((line_idx == m_y1 && i == m_x1) || (line_idx == m_y2 && i == m_x2));
 			attr_t tok_attr = toks ? (attr_t)ed_token_attr(toks[i]) : (attr_t)COLOR_PAIR(1);
 			if (is_sel) attrset(COLOR_PAIR(2));
-			else if (is_pair) attrset(m_unmatched ? (COLOR_PAIR(17) | A_BOLD) : (COLOR_PAIR(4) | A_BOLD));
+			else if (is_pair) attrset(m_unmatched ? (COLOR_PAIR(17) | A_BOLD) : (COLOR_PAIR(12) | A_BOLD));
 			else attrset(tok_attr);
 
 			for (int k = 0; k < cw; k++) {
@@ -2344,16 +2353,22 @@ void ui_edit_file_ex(const char *filepath, int start_line, int start_col, int *o
 			int m_y1 = -1, m_x1 = -1, m_y2 = -1, m_x2 = -1;
 			ed_find_enclosing_pair(&ed, &m_y1, &m_x1, &m_y2, &m_x2);
 			if (m_y1 >= 0 && m_y2 >= 0) {
-				ed.sel_active = 1;
 				int forward = (m_y1 < m_y2 || (m_y1 == m_y2 && m_x1 <= m_x2));
-				if (forward) {
-					ed.sel_start_y = m_y1; ed.sel_start_x = m_x1;
-					ed.sel_end_y = m_y2;   ed.sel_end_x = m_x2 + 1;
-					ed.cur_y = m_y2;       ed.cur_x = m_x2 + 1;
+				int oy = forward ? m_y1 : m_y2, ox = forward ? m_x1 : m_x2;
+				int cy = forward ? m_y2 : m_y1, cx = forward ? m_x2 : m_x1;
+				int has_inner = (oy < cy || (oy == cy && ox + 1 < cx));
+				int sy, sx, ey, ex;
+				ed_norm_sel(&ed, &sy, &sx, &ey, &ex);
+				int inner_already = (ed.sel_active && sy == oy && sx == ox + 1 && ey == cy && ex == cx);
+				ed.sel_active = 1;
+				if (has_inner && !inner_already) {
+					ed.sel_start_y = oy; ed.sel_start_x = ox + 1;
+					ed.sel_end_y = cy;   ed.sel_end_x = cx;
+					ed.cur_y = cy;       ed.cur_x = cx;
 				} else {
-					ed.sel_start_y = m_y2; ed.sel_start_x = m_x2;
-					ed.sel_end_y = m_y1;   ed.sel_end_x = m_x1 + 1;
-					ed.cur_y = m_y1;       ed.cur_x = m_x1 + 1;
+					ed.sel_start_y = oy; ed.sel_start_x = ox;
+					ed.sel_end_y = cy;   ed.sel_end_x = cx + 1;
+					ed.cur_y = cy;       ed.cur_x = cx + 1;
 				}
 			}
 		} else if (ev.action == ACT_CTRL_Y) {
