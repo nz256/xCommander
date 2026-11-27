@@ -26,10 +26,12 @@ static void draw_bar(WINDOW *w, int y, int x, int bar_w, int pct) {
 	for (int i = 0; i < fill; i++) waddch(w, ' ');
 	wattrset(w, COLOR_PAIR(5));
 	for (int i = fill; i < bar_w; i++) waddch(w, '.');
-	mvwprintw(w, y, x + 1 + bar_w, "] %3d%%", pct);
+	mvwprintw(w, y, x + 1 + bar_w, "]%*d%%", 4, pct);
 }
 
 void progress_open(UiProgress *p, const char *title, int two_bars) {
+	draw_screen();
+	refresh();
 	memset(p, 0, sizeof(*p));
 	snprintf(p->title, sizeof(p->title), "%s", title ? title : "Progress");
 	p->two_bars = two_bars;
@@ -39,7 +41,7 @@ void progress_open(UiProgress *p, const char *title, int two_bars) {
 	getmaxyx(stdscr, h, w);
 	int bw = (w - 6 > 64) ? 64 : (w - 4);
 	if (bw < 42) bw = w - 2;
-	int bh = two_bars ? 11 : 8;
+	int bh = two_bars ? 10 : 7;
 	p->win = newwin(bh, bw, (h - bh) / 2, (w - bw) / 2);
 	wbkgd(p->win, COLOR_PAIR(5));
 	box(p->win, 0, 0);
@@ -111,7 +113,7 @@ int progress_update(UiProgress *p, const char *src, const char *dst, off_t cur_d
 	int bh, bw;
 	getmaxyx(p->win, bh, bw);
 	int inner = bw - 4;
-	int bar_w = bw - 10;
+	int bar_w = bw - 11;
 	if (bar_w < 10) bar_w = 10;
 
 	werase(p->win);
@@ -142,7 +144,7 @@ int progress_update(UiProgress *p, const char *src, const char *dst, off_t cur_d
 			fmt_bytes((off_t)spd, sb, sizeof(sb));
 			long eta = (spd > 1.0 && p->total_bytes > p->done_bytes)
 			         ? (long)((p->total_bytes - p->done_bytes) / spd) : 0;
-			mvwprintw(p->win, 8, 2, "Speed: %s/s   ETA: %02ld:%02ld", sb, eta / 60, eta % 60);
+			mvwprintw(p->win, 7, 2, "Speed: %s/s   ETA: %02ld:%02ld", sb, eta / 60, eta % 60);
 		}
 	} else {
 		mvwprintw(p->win, 3, 2, "Progress: %ld / %ld items", p->done_files, p->total_files);

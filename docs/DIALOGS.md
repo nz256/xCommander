@@ -84,3 +84,46 @@ t:	Test Chain | VAL=\((:dialog input "Input" "Name:" "test") && :dialog "Result"
 * Variable assignments (`VAR=value`) in `&&` chains are stored in the process environment and expanded as `$VAR` / `${VAR}` in subsequent commands.
 * Standalone `:dialog input ...` or `:dialog menu ...` also exports the result to **`$XC_DIALOG_OUT`** for subsequent commands (e.g. `:dialog "Result" "Selected: $XC_DIALOG_OUT"`).
 * In `Ctrl+G`, FAR-style macros are supported: `:dialog "File" "Name: !.!\nDir: !/"`.
+
+---
+
+## 4. `.dialog` Script Files (Compact One-Line & `key=value` Formats)
+
+Any `.dialog` file can be run directly via **`Enter`** in `xCommander` panels (configured in `~/.config/xcommander/assoc`), via **`:dialog file.dialog`**, or from the terminal via **`xc -D file.dialog`**.
+
+### 4.1. Compact One-Line Scripting Syntax
+Each line is a step (`msg`, `confirm`, `input`, `menu`, `if`/`else`/`endif`, or `!` shell command). Pressing `Cancel` or `Esc` at any prompt aborts the remaining steps:
+```ini
+confirm "Build Check" "Script works!\nStart build?" bg=#1e1e2e
+input "Release" "Archive name:" "backup_test" -> NAME
+menu "Format" "tar.gz|zip|7z" -> EXT
+msg "Summary" "Creating NAME.{EXT}"
+! echo "Done: NAME.{EXT}"
+```
+
+### 4.2. Built-in Panel Context Variables
+Inside `.dialog` scripts, panel context variables are automatically populated:
+* `${FILE}` — filename or directory under cursor
+* `${NAME}` — filename without extension
+* `${EXT}` — file extension (without dot)
+* `${DIR}` — active panel directory path
+* `${OTHER_DIR}` — passive panel directory path
+* `${SELECTED}` — space-separated quoted marked filenames (or `"${FILE}"` if none marked)
+* `${COUNT}` — number of marked items (or `1`)
+
+### 4.3. Conditional Branching (`if` / `else` / `endif`)
+Supports nested `if ${VAR} == "..."` (or `=`), `if ${VAR} != "..."`, `else`, and `endif` (or `fi`):
+```ini
+menu "Action for \${FILE}" "Archive|Permissions|Delete" -> ACT
+if \${ACT} == "Archive"
+    input "Archive" "Output filename:" "\${NAME}.tar.gz" -> ARCH
+    ! tar -czf "ARCH" {SELECTED}
+else
+    if \${ACT} == "Permissions"
+        ! ls -ld \${SELECTED}
+    else
+        confirm "Delete" "Delete \${FILE}?"
+        ! rm -rf "\${FILE}"
+    endif
+endif
+```

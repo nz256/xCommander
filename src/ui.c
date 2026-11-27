@@ -1472,8 +1472,184 @@ int ui_dialog_input(const char *title, const char *prompt, char *out_buf, size_t
 	return res;
 }
 
+static void dlg_subst_vars(const char *src, char *dst, size_t dsz, char names[32][64], char vals[32][4096], int vcnt) {
+	size_t j = 0;
+	for (size_t i = 0; src[i] && j + 1 < dsz; ) {
+		if (src[i] == '$' && src[i + 1] == '{') {
+			const char *end = strchr(src + i + 2, '}');
+			if (end) {
+				size_t nl = (size_t)(end - (src + i + 2));
+				const char *rep = NULL;
+				for (int k = vcnt - 1; k >= 0; k--) {
+					if (strlen(names[k]) == nl && strncmp(names[k], src + i + 2, nl) == 0) { rep = vals[k]; break; }
+				}
+				if (!rep && nl < 63) { char vn[64]; memcpy(vn, src + i + 2, nl); vn[nl] = '\0'; rep = getenv(vn); }
+				if (rep) { size_t rl = strlen(rep); if (j + rl >= dsz) rl = dsz - 1 - j; memcpy(dst + j, rep, rl); j += rl; }
+				i = (size_t)(end - src) + 1;
+				continue;
+			}
+		}
+		if (src[i] == '\\' && src[i + 1] == 'n') { dst[j++] = '\n'; i += 2; continue; }
+		dst[j++] = src[i++];
+	}
+	dst[j] = '\0';
+}
+
+static int dlg_split_args(const char *line, char argv[16][1024]) {
+	int argc = 0; const char *p = line;
+	while (*p && argc < 16) {
+		while (*p == ' ' || *p == '\t') p++;
+		if (!*p) break;
+		char q = 0; if (*p == '"' || *p == '\'') q = *p++;
+		size_t j = 0;
+		while (*p && (q ? (*p != q) : (*p != ' ' && *p != '\t'))) {
+			if (*p == '\\' && p[1] == 'n') { if (j + 1 < 1023) argv[argc][j++] = '\n'; p += 2; }
+			else if (*p == '\\' && p[1]) { p++; if (j + 1 < 1023) argv[argc][j++] = *p++; }
+			else { if (j + 1 < 1023) argv[argc][j++] = *p++; else p++; }
+		}
+		if (q && *p == q) p++;
+		argv[argc][j] = '\0'; argc++;
+	}
+	return argc;
+}
+
 int ui_dialog_run_form(const char *spec_text, int allow_bg) {
-	int mode = 0; /* 0=msg, 1=confirm, 2=input, 3=menu */
+	int is_oneline = 0;
+	const char *chk = spec_text ? spec_text : "";
+	while (*chk) {
+		while (*chk == ' ' || *chk == '\t' || *chk == '\r' || *chk == '\n') chk++;
+		if (!*chk) break;
+		if (*chk == '#' || *chk == ';') { while (*chk && *chk != '\n') chk++; continue; }
+		if (*chk == '!' || !strncasecmp(chk, "msg", 3) || !strncasecmp(chk, "confirm", 7) ||
+		    !strncasecmp(chk, "input", 5) || !strncasecmp(chk, "menu", 4) || !strncasecmp(chk, "exec", 4) || !strncasecmp(chk, "if", 2)) is_oneline = 1;
+		break;
+	}
+	if (is_oneline) {
+		char vnames[32][64], vvals[32][4096]; int vcnt = 0, bg_init = 0, ok = 1;
+		if (active_panel) {
+			snprintf(vnames[vcnt], 64, "DIR"); snprintf(vvals[vcnt++], 4096, "%s", active_panel->current_path);
+			snprintf(vnames[vcnt], 64, "OTHER_DIR"); snprintf(vvals[vcnt++], 4096, "%s", ((active_panel == &left_panel) ? right_panel.current_path : left_panel.current_path));
+			const char *fn = (active_panel->count > 0 && active_panel->selected >= 0) ? active_panel->files[active_panel->selected].name : "";
+			if (strcmp(fn, "..") == 0) fn = "";
+			snprintf(vnames[vcnt], 64, "FILE"); snprintf(vvals[vcnt++], 4096, "%s", fn);
+			char nm[MAX_FILENAME] = "", ex[MAX_FILENAME] = "";
+			snprintf(nm, sizeof(nm), "%s", fn);
+			char *dot = strrchr(nm, '.');
+			if (dot && dot != nm) { *dot = '\0'; snprintf(ex, sizeof(ex), "%s", dot + 1); }
+			snprintf(vnames[vcnt], 64, "NAME"); snprintf(vvals[vcnt++], 4096, "%s", nm);
+			snprintf(vnames[vcnt], 64, "EXT"); snprintf(vvals[vcnt++], 4096, "%s", ex);
+			char sel_buf[4096] = ""; size_t soff = 0; int scnt = 0;
+			for (int i = 0; i < active_panel->count; i++) {
+				if (active_panel->files[i].is_selected && strcmp(active_panel->files[i].name, "..") != 0) {
+					scnt++;
+					if (soff + strlen(active_panel->files[i].name) + 4 < sizeof(sel_buf))
+						soff += (size_t)snprintf(sel_buf + soff, sizeof(sel_buf) - soff, "%s\"%s\"", soff ? " " : "", active_panel->files[i].name);
+				}
+			}
+			if (scnt == 0 && fn[0]) { snprintf(sel_buf, sizeof(sel_buf), "\"%s\"", fn); scnt = 1; }
+			snprintf(vnames[vcnt], 64, "SELECTED"); snprintf(vvals[vcnt++], 4096, "%s", sel_buf);
+			snprintf(vnames[vcnt], 64, "COUNT"); snprintf(vvals[vcnt++], 4096, "%d", scnt);
+		} else {
+			char cwd[MAX_PATH] = "";
+			if (getcwd(cwd, sizeof(cwd))) { snprintf(vnames[vcnt], 64, "DIR"); snprintf(vvals[vcnt++], 4096, "%s", cwd); }
+		}
+		int if_act[16], if_did[16], if_sp = 0;
+		const char *lp = spec_text;
+		while (*lp && ok) {
+			const char *nl = strchr(lp, '\n');
+			size_t ll = nl ? (size_t)(nl - lp) : strlen(lp);
+			char raw[2048], sub[2048];
+			if (ll >= sizeof(raw)) ll = sizeof(raw) - 1;
+			memcpy(raw, lp, ll); raw[ll] = '\0';
+			lp = nl ? (nl + 1) : (lp + ll);
+			char *t = raw; while (*t == ' ' || *t == '\t') t++;
+			size_t tl = strlen(t); while (tl > 0 && (t[tl - 1] == '\r' || t[tl - 1] == ' ' || t[tl - 1] == '\t')) t[--tl] = '\0';
+			if (!*t || *t == '#' || *t == ';') continue;
+			int parent_ok = (if_sp == 0) ? 1 : if_act[if_sp - 1];
+			if (strcasecmp(t, "endif") == 0 || strcasecmp(t, "fi") == 0) {
+				if (if_sp > 0) if_sp--;
+				continue;
+			}
+			if (strcasecmp(t, "else") == 0) {
+				if (if_sp > 0) {
+					int p_ok = (if_sp <= 1) ? 1 : if_act[if_sp - 2];
+					if_act[if_sp - 1] = (p_ok && !if_did[if_sp - 1]) ? 1 : 0;
+					if (if_act[if_sp - 1]) if_did[if_sp - 1] = 1;
+				}
+				continue;
+			}
+			if (strncasecmp(t, "if", 2) == 0 && (t[2] == ' ' || t[2] == '\t')) {
+				int cond = 0;
+				if (parent_ok) {
+					dlg_subst_vars(t + 2, sub, sizeof(sub), vnames, vvals, vcnt);
+					char *op = strstr(sub, "!="), *op2 = strstr(sub, "=="), *op1 = strchr(sub, '=');
+					if (op || op2 || op1) {
+						int is_neq = (op != NULL), oplen = (op || op2) ? 2 : 1;
+						char *p_op = op ? op : (op2 ? op2 : op1);
+						*p_op = '\0';
+						char *lhs = sub, *rhs = p_op + oplen;
+						while (*lhs == ' ' || *lhs == '\t') lhs++;
+						size_t ll2 = strlen(lhs); while (ll2 > 0 && (lhs[ll2 - 1] == ' ' || lhs[ll2 - 1] == '\t')) lhs[--ll2] = '\0';
+						if (ll2 >= 2 && ((lhs[0] == '"' && lhs[ll2 - 1] == '"') || (lhs[0] == '\'' && lhs[ll2 - 1] == '\''))) { lhs[ll2 - 1] = '\0'; lhs++; }
+						while (*rhs == ' ' || *rhs == '\t') rhs++;
+						size_t rl2 = strlen(rhs); while (rl2 > 0 && (rhs[rl2 - 1] == ' ' || rhs[rl2 - 1] == '\t')) rhs[--rl2] = '\0';
+						if (rl2 >= 2 && ((rhs[0] == '"' && rhs[rl2 - 1] == '"') || (rhs[0] == '\'' && rhs[rl2 - 1] == '\''))) { rhs[rl2 - 1] = '\0'; rhs++; }
+						int eq = (strcmp(lhs, rhs) == 0);
+						cond = is_neq ? !eq : eq;
+					} else {
+						char *lhs = sub; while (*lhs == ' ' || *lhs == '\t') lhs++;
+						cond = (*lhs != '\0' && strcmp(lhs, "0") != 0);
+					}
+				}
+				if (if_sp < 16) { if_act[if_sp] = cond; if_did[if_sp] = cond; if_sp++; }
+				continue;
+			}
+			if (!parent_ok) continue;
+			dlg_subst_vars(t, sub, sizeof(sub), vnames, vvals, vcnt);
+			if (sub[0] == '!' || (strncasecmp(sub, "exec", 4) == 0 && (sub[4] == ' ' || sub[4] == '\t'))) {
+				const char *cmd = (sub[0] == '!') ? (sub + 1) : (sub + 4);
+				while (*cmd == ' ' || *cmd == '\t') cmd++;
+				if (bg_init && !isendwin()) { input_restore_sane(); endwin(); input_restore_sane(); bg_init = 0; }
+				if (*cmd) { if (active_panel) execute_system_command(cmd); else { int rc = system(cmd); (void)rc; } }
+				continue;
+			}
+			char av[16][1024]; int ac = dlg_split_args(sub, av);
+			if (ac <= 0) continue;
+			char var_to[64] = "", bg_c[64] = ""; int pos_c = 0; char pos[8][1024];
+			for (int k = 1; k < ac; k++) {
+				if (strcmp(av[k], "->") == 0 && k + 1 < ac) { snprintf(var_to, sizeof(var_to), "%s", av[++k]); }
+				else if (strncmp(av[k], "bg=", 3) == 0) { snprintf(bg_c, sizeof(bg_c), "%s", av[k] + 3); }
+				else if (pos_c < 8) { snprintf(pos[pos_c++], sizeof(pos[0]), "%s", av[k]); }
+			}
+			if (allow_bg && bg_c[0] && !bg_init) {
+				ui_init(); nonl(); idlok(stdscr, FALSE); idcok(stdscr, FALSE); scrollok(stdscr, FALSE); input_enable_raw();
+				if (ui_apply_bg_color(bg_c) != 0) { bkgd(COLOR_PAIR(1)); refresh(); }
+				bg_init = 1;
+			}
+			const char *ttl = (pos_c >= 1 && pos[0][0]) ? pos[0] : NULL;
+			const char *txt = (pos_c >= 2) ? pos[1] : "";
+			char res_v[1024] = ""; int has_out = 0;
+			if (strcasecmp(av[0], "msg") == 0) ok = ui_dialog_show(0, ttl, txt);
+			else if (strcasecmp(av[0], "confirm") == 0) ok = ui_dialog_show(1, ttl, txt);
+			else if (strcasecmp(av[0], "input") == 0) {
+				if (pos_c >= 3) snprintf(res_v, sizeof(res_v), "%s", pos[2]);
+				ok = ui_dialog_input(ttl, txt, res_v, sizeof(res_v)); has_out = 1;
+			} else if (strcasecmp(av[0], "menu") == 0) {
+				const char *arr[128]; int ic = 0; char *tok = strtok(pos[1], "|");
+				while (tok && ic < 128) { arr[ic++] = tok; tok = strtok(NULL, "|"); }
+				ok = (ic > 0) ? ui_dialog_menu(ttl, arr, ic, res_v, sizeof(res_v)) : 0; has_out = 1;
+			}
+			if (ok && has_out) {
+				if (var_to[0] && vcnt < 32) {
+					snprintf(vnames[vcnt], sizeof(vnames[0]), "%s", var_to);
+					snprintf(vvals[vcnt], sizeof(vvals[0]), "%s", res_v);
+					vcnt++;
+				} else if (allow_bg) { printf("%s\n", res_v); fflush(stdout); }
+			}
+		}
+		if (bg_init && !isendwin()) { input_restore_sane(); endwin(); input_restore_sane(); }
+		return ok;
+	}	int mode = 0; /* 0=msg, 1=confirm, 2=input, 3=menu */
 	char title[256] = "", bg[64] = "", text[8192] = "", def_val[2048] = "", items_raw[4096] = "";
 	size_t tlen = 0;
 	const char *p = spec_text ? spec_text : "";
@@ -1569,6 +1745,7 @@ static int ui_exec_single_dialog(const char *cmd_part, char *out_val, size_t out
 		else if (strcmp(args[0], "input") == 0) { mode = 2; off_a = 1; }
 		else if (strcmp(args[0], "menu") == 0) { mode = 3; off_a = 1; }
 		else if (strcmp(args[0], "form") == 0) { mode = 4; off_a = 1; }
+		else if (strlen(args[0]) > 7 && strcasecmp(args[0] + strlen(args[0]) - 7, ".dialog") == 0) { mode = 4; off_a = 0; }
 	}
 	int rem = argc_d - off_a;
 	int prev_ov = g_dialog_overlay;
@@ -2322,8 +2499,9 @@ void ui_help(void) {
 		"  F-Bar Click        Click any F1-F10 button on bottom bar",
 		"  Ctrl+O             Toggle terminal mode (native mouse scroll/select)",
 		"  F10 / Ctrl+Q       Save panel paths & history and quit",
-		"  Built-in :dialog   :dialog / :D [msg|confirm|input|menu|form] (also $(:dialog ...))",
-		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [--bg C] msg|confirm|input|menu|form",
+		"  Built-in :dialog   :dialog / :D [msg|confirm|input|menu|file.dialog] (also $(:dialog ...))",
+		"  .dialog Scripts    Run *.dialog via Enter; supports -> VAR, ${FILE}/${SELECTED}, if/else/endif, ! cmd",
+		"  CLI Options        xc -e [FILE|-] | -v [FILE|-] | -D [--bg C] msg|confirm|input|menu|file.dialog",
 		"  Configs            ~/.config/xcommander/{menu,assoc,copy_history,bookmarks}"
 	};
 #ifndef XC_BUILD
@@ -2574,6 +2752,7 @@ static void ensure_default_assoc(const char *path) {
 	fputs("# xCommander File Associations\n", f);
 	fputs("# Format: mask1,mask2 | Description | Enter_cmd | F3_cmd (optional) | F4_cmd (optional)\n", f);
 	fputs("# Macros: !.! (filename), !~ (name without ext), !. (ext), !: (active dir), !/ (passive dir), :dialog\n", f);
+	fputs("*.dialog | xCommander Dialog Script | :dialog !.! | |\n", f);
 	fputs("*.jpg,*.jpeg,*.png,*.webp,*.gif | Images | xdg-open \"!.!\" >/dev/null 2>&1 & | |\n", f);
 	fputs("*.pdf | PDF Documents | xdg-open \"!.!\" >/dev/null 2>&1 & | pdftotext \"!.!\" - |\n", f);
 	fputs("*.mp4,*.mkv,*.avi,*.webm,*.mp3,*.flac | Media | xdg-open \"!.!\" >/dev/null 2>&1 & | |\n", f);

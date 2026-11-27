@@ -1013,17 +1013,17 @@ int main(int argc, char **argv) {
 			const char *iprompt = opts.dialog_arg2 ? opts.dialog_arg2 : (opts.dialog_arg1 ? opts.dialog_arg1 : "Enter value:");
 			if (opts.dialog_arg3) snprintf(in_res, sizeof(in_res), "%s", opts.dialog_arg3);
 			d_ok = ui_dialog_input(ititle, iprompt, in_res, sizeof(in_res));
-		} else if (opts.dialog_form) {
+		} else if (opts.dialog_form || (d_src[0] && strlen(d_src) > 7 && strcasecmp(d_src + strlen(d_src) - 7, ".dialog") == 0)) {
+			opts.dialog_form = 1;
 			const char *src_f = dyn_txt ? dyn_txt : d_src;
-			if (!opts.dialog_bg && src_f && (strstr(src_f, "\nbg=") || strncmp(src_f, "bg=", 3) == 0)) form_has_bg = 1;
+			if (!opts.dialog_bg && src_f && strstr(src_f, "bg=") != NULL) form_has_bg = 1;
 			d_ok = ui_dialog_run_form(src_f, opts.dialog_bg ? 0 : 1);
 		} else {
 			d_ok = ui_dialog_show(opts.dialog_confirm, d_title, dyn_txt ? dyn_txt : d_src);
 		}
 		free(dyn_txt);
 		if (pipe_tmp[0] != '\0') unlink(pipe_tmp);
-		free(left_panel.files); free(right_panel.files);
-		input_restore_sane(); if (opts.dialog_bg || form_has_bg) endwin(); input_restore_sane();
+		input_restore_sane(); if ((opts.dialog_bg || form_has_bg) && !isendwin()) endwin(); input_restore_sane();
 		if ((opts.dialog_input || opts.dialog_menu) && d_ok) { printf("%s\n", in_res); fflush(stdout); }
 		return ((opts.dialog_confirm || opts.dialog_form || opts.dialog_input || opts.dialog_menu) && !d_ok) ? 1 : 0;
 	}
@@ -1884,7 +1884,7 @@ int main(int argc, char **argv) {
 				char fp[MAX_PATH * 2];
 				if (strcmp(active_panel->current_path, "/") == 0) snprintf(fp, sizeof(fp), "/%s", cur->name);
 				else snprintf(fp, sizeof(fp), "%s/%s", active_panel->current_path, cur->name);
-				if (access(fp, X_OK) == 0) { char rc[MAX_FILENAME + 16]; snprintf(rc, sizeof(rc), "./\"%s\"", cur->name); execute_system_command(rc); reload_panels_keep_cursor(); }
+				if (access(fp, X_OK) == 0) { char rc[MAX_FILENAME + 16]; snprintf(rc, sizeof(rc), strchr(cur->name, ' ') ? "./\"%s\"" : "./%s", cur->name); history_add(rc); history_save(); execute_system_command(rc); reload_panels_keep_cursor(); }
 			}
 		} else if (ev.action == ACT_CTRL_PGUP) {
 			if (active_panel->is_temp && active_panel->count > 0 && active_panel->selected > 0) {

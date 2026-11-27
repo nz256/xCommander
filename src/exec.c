@@ -231,11 +231,22 @@ static int move_single_path(const char *src_full, const char *dst_full) {
 		if (ovr < 0) return -2;
 	}
 
-	if (rename(src_full, dst_full) != 0) {
+	if (rename(src_full, dst_full) == 0) {
+		if (g_prog) {
+			off_t sz = S_ISDIR(st_src.st_mode) ? 0 : st_src.st_size;
+			g_prog->done_files++;
+			g_prog->done_bytes += sz;
+			progress_update(g_prog, src_full, dst_full, sz, sz, 1);
+		}
+	} else {
 		if (errno == EXDEV) {
-			if (copy_recursive(src_full, dst_full) != 0 || delete_recursive(src_full) != 0) {
-				return -1;
-			}
+			int cr = copy_recursive(src_full, dst_full);
+			if (cr == -2) return -2;
+			if (cr != 0) return -1;
+			UiProgress *saved = g_prog; g_prog = NULL;
+			int dr = delete_recursive(src_full);
+			g_prog = saved;
+			if (dr != 0) return -1;
 		} else {
 			return -1;
 		}
@@ -446,8 +457,16 @@ static int move_items_ex(const Panel *src_panel, const Panel *dst_panel, int inp
 		}
 
 		g_overwrite_all = 0;
-		int mr = move_single_path(src_full, dst_full);
-		if (mr == -2) return 0;
+		UiProgress prog; int use_prog = !inplace;
+		if (use_prog) {
+			progress_open(&prog, "Moving (F6)", 1);
+			progress_scan_path(&prog, src_full);
+			g_prog = &prog;
+		}
+		int mr = (use_prog && prog.cancelled) ? -2 : move_single_path(src_full, dst_full);
+		g_prog = NULL;
+		if (use_prog) progress_close(&prog);
+		if (mr == -2) return 1;
 		if (mr != 0) {
 			ui_message("Error", "Failed to move or rename item");
 			return -1;
@@ -879,6 +898,7 @@ void execute_system_command(const char *cmd) {
 		refresh();
 	}
 	input_enable_raw();
+	input_set_mouse(!terminal_mode);
 }
 
 void view_file(const char *filename) {
